@@ -1176,3 +1176,40 @@ This project is developed as part of the ETDOX procurement platform project.
 🚧 **Under Development**
 
 Core architecture and procurement modules are being developed incrementally.
+
+## Implemented TypeScript API
+
+The production-oriented TypeScript API and PostgreSQL schema are in
+[`backend/`](./backend/). Its detailed route list and setup instructions are in
+[`backend/README.md`](./backend/README.md).
+
+Use Node.js 20+ and PostgreSQL 15+. From the repository root:
+
+```powershell
+cd backend
+npm install
+Copy-Item .env.example .env
+```
+
+Set `DATABASE_URL`, a unique `JWT_SECRET` of at least 32 characters, and
+`WEBHOOK_ENCRYPTION_KEY` as 32 random bytes encoded as 64 hex characters. For
+example, generate the values with:
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(48).toString('hex'))"
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+Use the first value for `JWT_SECRET` and the second for
+`WEBHOOK_ENCRYPTION_KEY`. Keep the webhook key safe and stable; encrypted
+webhook secrets cannot be decrypted after key rotation without re-encryption.
+
+Create the PostgreSQL database, then run `npm run migrate` from `backend/`, or
+apply the standalone SQL from `backend/` with:
+
+```powershell
+psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f .\database\schema.sql
+```
+
+Start the API with `npm run dev`; run `npm test` and `npm run build` to verify
+it.

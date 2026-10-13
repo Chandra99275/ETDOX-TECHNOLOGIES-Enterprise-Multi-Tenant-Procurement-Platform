@@ -1,0 +1,2 @@
+// TODO: receipts service
+export {};
