@@ -470,9 +470,15 @@ CREATE TABLE IF NOT EXISTS goods_receipt_items (
   condition text CHECK (condition IS NULL OR condition IN ('ACCEPTED','DAMAGED','REJECTED','PARTIAL')),
   notes text,
   created_at timestamptz NOT NULL DEFAULT now(),
+  -- Composite uniqueness is required by downstream tenant-scoped foreign keys.
+  UNIQUE (tenant_id, id),
   FOREIGN KEY (tenant_id, goods_receipt_id) REFERENCES goods_receipts(tenant_id, id) ON DELETE CASCADE,
   FOREIGN KEY (tenant_id, purchase_order_item_id) REFERENCES purchase_order_items(tenant_id, id) ON DELETE RESTRICT
 );
+
+-- Also repairs databases where goods_receipt_items already existed before this fix.
+CREATE UNIQUE INDEX IF NOT EXISTS goods_receipt_items_tenant_id_id_uq
+  ON goods_receipt_items (tenant_id, id);
 
 CREATE TABLE IF NOT EXISTS invoices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
