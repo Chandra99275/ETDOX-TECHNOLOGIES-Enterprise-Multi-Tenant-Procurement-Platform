@@ -1,87 +1,132 @@
-// src/config/env.js
-// Local development configuration — does not read from .env.
+import "dotenv/config";
 
-const nodeEnv = "development";
-const port = 5000;
-const host = "0.0.0.0";
+const nodeEnv = process.env.NODE_ENV || "development";
+const isProduction = nodeEnv === "production";
+const isDevelopment = !isProduction;
 
-// Replace YOUR_POSTGRES_PASSWORD with your actual PostgreSQL password.
-// Keep the database name and username consistent with your PostgreSQL setup.
+const port = Number.parseInt(process.env.PORT || process.env.BACKEND_PORT || "5000", 10);
+const host = process.env.HOST || "0.0.0.0";
+
 const databaseUrl =
-  "postgresql://etdox_user:YOUR_POSTGRES_PASSWORD@localhost:5432/etdox";
+  process.env.DATABASE_URL ||
+  "postgresql://etdox_user:EtDoxDb2026NewPass8391@localhost:5432/etdox";
 
-// Replace this with your existing JWT secret (at least 32 characters).
-const jwtSecret = "REPLACE_WITH_YOUR_EXISTING_JWT_SECRET";
+const jwtSecret =
+  process.env.JWT_SECRET ||
+  "e63da7e3016cdc9bcfcfc30779917328e9339a24cac9ad4dcb042ed50efaf7901eaa22dacc3560b6990f94d8316f9846";
 
-// Replace this with your existing 64-character hexadecimal key.
+const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
+const jwtIssuer = process.env.JWT_ISSUER || "etdox-api";
+const jwtAudience = process.env.JWT_AUDIENCE || "etdox-app";
+
 const webhookEncryptionKeyHex =
-  "REPLACE_WITH_YOUR_EXISTING_64_CHARACTER_HEX_KEY";
+  process.env.WEBHOOK_ENCRYPTION_KEY ||
+  "89d13a8203e2064eb669a3b9100cf2debfd90c7c6b518f26a897ce62623cf8c8";
 
-const jwtExpiresIn = "8h";
-const defaultCurrency = "USD";
+const defaultCurrency = process.env.DEFAULT_CURRENCY || "USD";
 
-// Local frontend addresses.
-const corsOrigins = [
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:5174",
-];
+const frontendUrl =
+  process.env.FRONTEND_URL ||
+  process.env.CORS_ORIGIN ||
+  "http://localhost:5173";
+
+const apiBaseUrl =
+  process.env.API_BASE_URL ||
+  `http://localhost:${port}/api/v1`;
+
+const configuredOrigins = [
+  process.env.CORS_ORIGINS,
+  process.env.CORS_ORIGIN,
+]
+  .filter(Boolean)
+  .flatMap((value) => value.split(","))
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
+const corsOrigins = Array.from(
+  new Set([
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    ...configuredOrigins,
+  ])
+);
 
 const corsOrigin = corsOrigins[0];
 
-// Local development settings.
-const demoLoginEnabled = true;
-const demoTenantId = "b4383f9e-8e4a-42d7-9d34-ba59e5ea9a9e";
+const demoLoginEnabled =
+  isDevelopment &&
+  (process.env.DEMO_LOGIN_ENABLED === "true" ||
+    process.env.ETDOX_DEMO_AUTH === "true");
 
-// Redis is disabled in this configuration.
-const redisUrl = "";
-const redisEnabled = false;
+const demoTenantId =
+  process.env.ETDOX_DEMO_TENANT_ID ||
+  "b4383f9e-8e4a-42d7-9d34-ba59e5ea9a9e";
+
+const redisUrl = process.env.REDIS_URL || "";
+const redisEnabled = Boolean(redisUrl && redisUrl.startsWith("redis://"));
 
 // --------------------------------------------------
-// Validate configuration
+// SMTP Email Configuration
+// Supports SMTP_* and fallback to EMAIL / SECRET (e.g. Gmail App Password)
 // --------------------------------------------------
 
-if (
-  databaseUrl.includes("YOUR_POSTGRES_PASSWORD") ||
-  !databaseUrl.startsWith("postgresql://")
-) {
-  throw new Error(
-    "Set your actual PostgreSQL credentials in src/config/env.js."
-  );
-}
+const rawEmail = (process.env.SMTP_USER || process.env.EMAIL || "").trim();
+const rawSecret = (process.env.SMTP_PASS || process.env.SECRET || "").trim();
+const cleanSecret = rawSecret.replace(/\s+/g, ""); // strip whitespace in Gmail app passwords
 
-if (
-  jwtSecret.startsWith("REPLACE_") ||
-  jwtSecret.length < 32
-) {
-  throw new Error(
-    "Set a valid JWT secret of at least 32 characters in src/config/env.js."
-  );
-}
+const isGmail = rawEmail.toLowerCase().endsWith("@gmail.com");
 
-if (
-  webhookEncryptionKeyHex.startsWith("REPLACE_") ||
-  !/^[0-9a-fA-F]{64}$/.test(webhookEncryptionKeyHex)
-) {
-  throw new Error(
-    "Set a valid 64-character hexadecimal webhook key in src/config/env.js."
-  );
-}
+const smtpHost =
+  process.env.SMTP_HOST ||
+  (isGmail ? "smtp.gmail.com" : "");
 
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  throw new Error("Invalid backend port in src/config/env.js.");
-}
-
-const webhookEncryptionKey = Buffer.from(
-  webhookEncryptionKeyHex,
-  "hex"
+const smtpPort = Number.parseInt(
+  process.env.SMTP_PORT || (isGmail ? "465" : "587"),
+  10
 );
+
+const smtpSecure =
+  process.env.SMTP_SECURE === "true" ||
+  (process.env.SMTP_SECURE === undefined && (smtpPort === 465 || isGmail));
+
+const smtpUser = rawEmail;
+const smtpPass = cleanSecret;
+
+const smtpFromEmail =
+  process.env.SMTP_FROM_EMAIL ||
+  smtpUser ||
+  "no-reply@etdox.com";
+
+const smtpFromName =
+  process.env.SMTP_FROM_NAME ||
+  "ETDOX Enterprise Platform";
+
+const emailVerificationTtlMinutes = Number.parseInt(
+  process.env.EMAIL_VERIFICATION_TTL_MINUTES || "1440",
+  10
+); // 24 hours
+
+const passwordResetTtlMinutes = Number.parseInt(
+  process.env.PASSWORD_RESET_TTL_MINUTES || "30",
+  10
+); // 30 minutes
+
+let webhookEncryptionKey;
+try {
+  webhookEncryptionKey = Buffer.from(
+    webhookEncryptionKeyHex.padEnd(64, "0").slice(0, 64),
+    "hex"
+  );
+} catch {
+  webhookEncryptionKey = Buffer.alloc(32);
+}
 
 const env = Object.freeze({
   nodeEnv,
-  isProduction: false,
-  isDevelopment: true,
+  isProduction,
+  isDevelopment,
   host,
   port,
 
@@ -92,6 +137,8 @@ const env = Object.freeze({
 
   jwtSecret,
   jwtExpiresIn,
+  jwtIssuer,
+  jwtAudience,
 
   demoLoginEnabled,
   demoTenantId,
@@ -99,9 +146,33 @@ const env = Object.freeze({
   webhookEncryptionKey,
 
   defaultCurrency,
+  frontendUrl,
+  apiBaseUrl,
   corsOrigin,
   corsOrigins,
+
+  // SMTP configuration
+  smtp: Object.freeze({
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
+    user: smtpUser,
+    pass: smtpPass,
+    fromEmail: smtpFromEmail,
+    fromName: smtpFromName,
+    isConfigured: Boolean(smtpHost && smtpUser && smtpPass),
+  }),
+
+  emailVerificationTtlMinutes,
+  passwordResetTtlMinutes,
 });
+
+export function parseWebhookEncryptionKey(raw) {
+  if (typeof raw !== 'string' || !/^[0-9a-fA-F]{64}$/.test(raw.trim())) {
+    throw new Error('WEBHOOK_ENCRYPTION_KEY must be exactly 64 hexadecimal characters.');
+  }
+  return Buffer.from(raw.trim(), 'hex');
+}
 
 export { env };
 export default env;

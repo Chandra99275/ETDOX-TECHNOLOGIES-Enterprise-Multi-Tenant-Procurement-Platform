@@ -1,0 +1,695 @@
+/* ==================================================
+   ETDOX REGISTER — ENTERPRISE REGISTRATION STYLING
+   Solid White Inputs, Autofill Protection & Top Role Grid
+================================================== */
+
+.register-page {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 40px 20px;
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 10% 12%, rgba(89, 122, 245, 0.14), transparent 30%),
+    radial-gradient(circle at 92% 88%, rgba(120, 145, 240, 0.12), transparent 35%),
+    linear-gradient(135deg, #f8faff 0%, #eef3fc 50%, #f7f9ff 100%);
+  color: #18233b;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.register-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 680px;
+  margin: auto;
+  padding: 38px 42px 30px;
+  border: 1px solid rgba(226, 232, 243, 0.95);
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow:
+    0 30px 80px rgba(28, 48, 93, 0.10),
+    0 8px 25px rgba(28, 48, 93, 0.04);
+  animation: loginAppear 0.4s ease both;
+}
+
+.register-heading {
+  margin-bottom: 24px;
+}
+
+.register-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #3156d9;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.register-eyebrow::before {
+  content: "";
+  width: 18px;
+  height: 2px;
+  border-radius: 5px;
+  background: #3156d9;
+}
+
+.register-heading h1 {
+  margin: 0 0 8px;
+  color: #14213d;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.6px;
+}
+
+.register-heading p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.register-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ==================================================
+   STEP SECTION HEADERS
+================================================== */
+
+.section-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #3156d9;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.section-label {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 2px;
+}
+
+.section-subtext {
+  display: block;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+/* ==================================================
+   STEP 1: ROLE SELECTION CARDS (AT TOP)
+================================================== */
+
+.role-selection-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.roles-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 8px;
+}
+
+@media (max-width: 600px) {
+  .roles-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.role-select-card {
+  position: relative;
+  text-align: left;
+  background: #ffffff;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.role-select-card:hover {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+}
+
+.role-select-card.selected {
+  border-color: #3156d9;
+  background: #f4f7ff;
+  box-shadow: 0 0 0 3px rgba(49, 86, 217, 0.12);
+}
+
+.role-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.role-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.role-select-card.selected .role-card-title {
+  color: #3156d9;
+}
+
+.role-card-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.role-card-desc {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.role-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.badge-green {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.badge-blue {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.badge-amber {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.badge-purple {
+  background: #f3e8ff;
+  color: #7e22ce;
+}
+
+/* ==================================================
+   STEP 2: ORGANIZATION MODE
+================================================== */
+
+.organization-section {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.radio-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+@media (max-width: 540px) {
+  .radio-options-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.radio-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.radio-card.active {
+  border-color: #3156d9;
+  background: #f4f7ff;
+  box-shadow: 0 0 0 3px rgba(49, 86, 217, 0.08);
+}
+
+.radio-card input {
+  margin-top: 3px;
+  accent-color: #3156d9;
+}
+
+.radio-icon {
+  color: #3156d9;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.radio-card strong {
+  display: block;
+  font-size: 12.5px;
+  color: #0f172a;
+  margin-bottom: 2px;
+}
+
+.radio-card small {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+/* ==================================================
+   STEP 3: USER DETAILS & CREDENTIALS
+================================================== */
+
+.user-details-section {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 540px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #334155;
+}
+
+/* ==================================================
+   SOLID WHITE INPUT BOXES & BROWSER AUTOFILL OVERRIDE
+================================================== */
+
+.input-wrapper {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1.5px solid #d1d5db;
+  border-radius: 12px;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #64748b;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-wrapper:focus-within {
+  border-color: #3156d9;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(49, 86, 217, 0.12);
+}
+
+.input-wrapper > svg {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+.input-wrapper:focus-within > svg {
+  color: #3156d9;
+}
+
+.input-wrapper input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  font-family: inherit;
+  font-size: 13.5px;
+}
+
+.input-wrapper input::placeholder {
+  color: #94a3b8;
+}
+
+.input-wrapper input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: #f8fafc !important;
+}
+
+/* Force solid white background during Chrome / Edge browser autofill */
+.input-wrapper input:-webkit-autofill,
+.input-wrapper input:-webkit-autofill:hover,
+.input-wrapper input:-webkit-autofill:focus,
+.input-wrapper input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #0f172a !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  caret-color: #0f172a !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.password-toggle {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8995aa;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.password-toggle:hover:not(:disabled) {
+  background: #edf1ff;
+  color: #3156d9;
+}
+
+.field-error-text {
+  font-size: 11.5px;
+  color: #dc2626;
+  margin-top: 2px;
+}
+
+.input-error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15) !important;
+}
+
+/* ==================================================
+   PASSWORD REQUIREMENTS CHECKLIST
+================================================== */
+
+.password-checklist {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  background: #f8fafc;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #edf2f7;
+}
+
+.req-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #94a3b8;
+  transition: color 0.2s ease;
+}
+
+.req-item.met {
+  color: #16a34a;
+  font-weight: 500;
+}
+
+.req-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+
+.req-item.met .req-dot {
+  background: #16a34a;
+}
+
+/* ==================================================
+   TERMS AND SUBMIT
+================================================== */
+
+.terms-checkbox-group {
+  margin-top: 2px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  margin-top: 2px;
+  accent-color: #3156d9;
+}
+
+.checkbox-label a {
+  color: #3156d9;
+  text-decoration: underline;
+}
+
+.register-submit {
+  margin-top: 4px;
+  width: 100%;
+}
+
+/* ==================================================
+   OTP VERIFICATION SCREEN
+================================================== */
+
+.otp-verification-card {
+  max-width: 480px;
+  text-align: center;
+  padding: 44px 38px;
+}
+
+.large-otp-input {
+  font-size: 26px !important;
+  font-weight: 800 !important;
+  letter-spacing: 12px !important;
+  text-align: center !important;
+  height: 56px !important;
+  color: #1e3a8a !important;
+}
+
+.large-otp-input:-webkit-autofill,
+.large-otp-input:-webkit-autofill:hover,
+.large-otp-input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #1e3a8a !important;
+}
+
+.otp-hint {
+  display: block;
+  font-size: 11.5px;
+  color: #64748b;
+  margin-top: 6px;
+  text-align: center;
+}
+
+.otp-resend-wrapper {
+  margin-top: 18px;
+  display: flex;
+  justify-content: center;
+}
+
+.resend-otp-btn {
+  background: transparent;
+  border: none;
+  color: #3156d9;
+  font-size: 12.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.resend-otp-btn:hover:not(:disabled) {
+  background: #f0f4ff;
+  text-decoration: underline;
+}
+
+.resend-otp-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ==================================================
+   SUCCESS STATES
+================================================== */
+
+.success-card {
+  max-width: 490px;
+  text-align: center;
+  padding: 44px 38px;
+}
+
+.success-icon-wrapper {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  background: #e0f2fe;
+  color: #0284c7;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 24px;
+  box-shadow: 0 10px 25px rgba(2, 132, 199, 0.15);
+}
+
+.verification-notice-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 16px;
+  text-align: left;
+  font-size: 13px;
+  color: #166534;
+  margin-bottom: 22px;
+  line-height: 1.5;
+}
+
+.notice-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.approval-warning {
+  color: #92400e;
+  font-size: 12px;
+}
+
+.resend-feedback {
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12.5px;
+  color: #334155;
+  margin-bottom: 16px;
+}
+
+.success-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resend-button {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #334155;
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.resend-button:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.secondary-btn {
+  background: #3156d9;
+  color: #fff !important;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.spin {
+  animation: spinAnim 1s linear infinite;
+}
+
+@keyframes spinAnim {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.login-link-bold {
+  color: #3156d9;
+  font-weight: 700;
+  text-decoration: none;
+}
