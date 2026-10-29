@@ -1,0 +1,224 @@
+/* ==================================================
+   ETDOX VERIFY EMAIL — STYLING
+================================================== */
+
+.verify-page {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background:
+    radial-gradient(circle at 10% 15%, rgba(89, 122, 245, 0.12), transparent 30%),
+    radial-gradient(circle at 90% 85%, rgba(120, 145, 240, 0.12), transparent 35%),
+    linear-gradient(135deg, #f8faff 0%, #eef3fc 50%, #f7f9ff 100%);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #18233b;
+}
+
+.verify-card {
+  width: 100%;
+  max-width: 480px;
+  margin: auto;
+  padding: 40px 42px 30px;
+  border: 1px solid rgba(226, 232, 243, 0.95);
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow:
+    0 30px 80px rgba(28, 48, 93, 0.10),
+    0 8px 25px rgba(28, 48, 93, 0.04);
+  text-align: center;
+  animation: loginAppear 0.4s ease both;
+}
+
+.status-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.status-icon-spin {
+  color: #3156d9;
+  margin-bottom: 20px;
+}
+
+.status-badge {
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 20px;
+}
+
+.success-badge {
+  background: #dcfce7;
+  color: #16a34a;
+  box-shadow: 0 10px 25px rgba(22, 163, 74, 0.15);
+}
+
+.pending-badge {
+  background: #fef3c7;
+  color: #d97706;
+  box-shadow: 0 10px 25px rgba(217, 119, 6, 0.15);
+}
+
+.error-badge {
+  background: #fee2e2;
+  color: #dc2626;
+  box-shadow: 0 10px 25px rgba(220, 38, 38, 0.15);
+}
+
+.neutral-badge {
+  background: #e0f2fe;
+  color: #0284c7;
+  box-shadow: 0 10px 25px rgba(2, 132, 199, 0.15);
+}
+
+.status-container h1 {
+  margin: 0 0 10px;
+  color: #14213d;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+
+.status-container p {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.status-actions {
+  width: 100%;
+  margin-top: 24px;
+}
+
+.resend-box {
+  width: 100%;
+  margin-top: 24px;
+  padding: 18px;
+  background: #f8fafc;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+.resend-box h3 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  color: #1e293b;
+}
+
+.resend-box p {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.resend-inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.resend-submit {
+  min-height: 44px;
+  font-size: 13px;
+}
+
+.manual-token-form {
+  width: 100%;
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Input Wrapper & Autofill Override */
+.input-wrapper {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1.5px solid #d1d5db;
+  border-radius: 12px;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #64748b;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-wrapper:focus-within {
+  border-color: #3156d9;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(49, 86, 217, 0.12);
+}
+
+.input-wrapper > svg {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+.input-wrapper:focus-within > svg {
+  color: #3156d9;
+}
+
+.input-wrapper input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  font-family: inherit;
+  font-size: 13.5px;
+}
+
+.input-wrapper input:-webkit-autofill,
+.input-wrapper input:-webkit-autofill:hover,
+.input-wrapper input:-webkit-autofill:focus,
+.input-wrapper input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #0f172a !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  caret-color: #0f172a !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+.resend-feedback {
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: #334155;
+  margin-top: 10px;
+}
+
+.text-link {
+  color: #3156d9;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  display: inline-block;
+  margin-top: 16px;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}

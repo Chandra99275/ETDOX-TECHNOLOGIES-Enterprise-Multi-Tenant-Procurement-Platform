@@ -3,6 +3,7 @@ import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 
 import { randomUUID } from 'node:crypto';
@@ -150,6 +151,8 @@ app.use(
   })
 );
 
+app.use(cookieParser());
+
 // --------------------------------------------------
 // REQUEST ID AND LOGGING
 // --------------------------------------------------
@@ -160,7 +163,7 @@ app.use((req, res, next) => {
   req.id =
     suppliedId && /^[a-zA-Z0-9._-]{1,100}$/.test(suppliedId)
       ? suppliedId
-      : randomUUID();
+      : `req_${randomUUID().replace(/-/g, '')}`;
 
   res.setHeader('X-Request-ID', req.id);
 
@@ -431,7 +434,7 @@ const routeGroups = [
     ],
   },
   {
-    paths: ['/api/v1/tenants'],
+    paths: ['/api/v1/tenants', '/api/v1'],
     candidates: [
       'modules/tenants/tenants.routes.js',
       'routes/tenants.routes.js',
@@ -439,7 +442,7 @@ const routeGroups = [
     ],
   },
   {
-    paths: ['/api/v1/attachments'],
+    paths: ['/api/v1/attachments', '/api/v1'],
     candidates: [
       'modules/attachments/attachments.routes.js',
       'routes/attachments.routes.js',
@@ -559,4 +562,5 @@ app.use((err, req, res, next) => {
   });
 });
 
+export { app };
 export default app;

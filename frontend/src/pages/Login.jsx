@@ -1,14 +1,16 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   Eye,
   EyeOff,
+  Info,
   LoaderCircle,
   LockKeyhole,
   Mail,
+  RefreshCw,
   ShieldCheck,
 } from "lucide-react";
 import "./Login.css";
@@ -23,9 +25,17 @@ const LOGIN_URL = `${API_BASE_URL}/auth/login`;
 
 const ROLE_DASHBOARDS = {
   admin: "/admin/dashboard",
+  organization_admin: "/admin/dashboard",
   employee: "/employee/dashboard",
+  requester: "/employee/dashboard",
   manager: "/manager/dashboard",
+  department_manager: "/manager/dashboard",
+  procurement_manager: "/manager/dashboard",
+  procurement_specialist: "/admin/dashboard",
   finance: "/finance/dashboard",
+  finance_manager: "/finance/dashboard",
+  auditor: "/admin/dashboard",
+  supplier_user: "/employee/dashboard",
 };
 
 function getRole(user) {
@@ -51,9 +61,7 @@ function getRole(user) {
 
 async function readResponse(response) {
   const body = await response.text();
-
   if (!body) return {};
-
   try {
     return JSON.parse(body);
   } catch {
@@ -71,25 +79,32 @@ function getErrorMessage(data, fallback) {
 function clearSession() {
   for (const key of ["token", "accessToken", "authToken", "user"]) {
     localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
   }
 }
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState("");
+  const [resending, setResending] = useState(false);
+  const [resendStatus, setResendStatus] = useState("");
+
+  const noticeMessage = location.state?.message;
 
   async function handleSubmit(event) {
     event.preventDefault();
-
-    // Prevent a second request while the first login is still running.
     if (loading) return;
 
     setError("");
+    setErrorCode("");
+    setResendStatus("");
 
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -113,6 +128,7 @@ export default function Login() {
             "Content-Type": "application/json",
             Accept: "application/json",
           },
+          credentials: "include", // Enables secure HTTP-only cookies
           body: JSON.stringify({
             email: normalizedEmail,
             password,
@@ -126,6 +142,9 @@ export default function Login() {
       const data = await readResponse(response);
 
       if (!response.ok) {
+        const code = data?.error?.code || data?.error || "";
+        setErrorCode(code);
+
         throw new Error(
           getErrorMessage(
             data,
@@ -136,8 +155,6 @@ export default function Login() {
         );
       }
 
-      // Supports responses shaped like { data: { token, user } }
-      // and { token, user }.
       const payload = data?.data ?? data;
       const token =
         payload?.accessToken ??
@@ -147,22 +164,12 @@ export default function Login() {
 
       const user = payload?.user ?? data?.user;
 
-      if (typeof token !== "string" || !token.trim()) {
-        throw new Error("The API response did not include an authentication token.");
-      }
-
       if (!user || typeof user !== "object" || Array.isArray(user)) {
         throw new Error("The API response did not include valid user details.");
       }
 
       const role = getRole(user);
-      const dashboard = ROLE_DASHBOARDS[role];
-
-      if (!dashboard) {
-        throw new Error(
-          `Unsupported account role: ${role || "unknown"}. Check the role assigned to this account in the backend.`
-        );
-      }
+      const dashboard = data?.redirectTo || ROLE_DASHBOARDS[role] || "/employee/dashboard";
 
       const authenticatedUser = {
         ...user,
@@ -172,16 +179,14 @@ export default function Login() {
 
       try {
         clearSession();
-        localStorage.setItem("token", token.trim());
+        if (token) {
+          localStorage.setItem("token", token.trim());
+        }
         localStorage.setItem("user", JSON.stringify(authenticatedUser));
       } catch {
-        clearSession();
-        throw new Error(
-          "Could not save the login session. Check your browser storage settings."
-        );
+        // Continue if storage is restricted
       }
 
-      // Navigate once, using the role returned by the API.
       navigate(dashboard, { replace: true });
     } catch (err) {
       if (err?.name === "AbortError") {
@@ -195,6 +200,32 @@ export default function Login() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResendVerification() {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || resending) return;
+
+    setResending(true);
+    setResendStatus("");
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/auth/resend-verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: normalizedEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setResendStatus("A new verification link has been sent to your email.");
+      } else {
+        setResendStatus(data.message || "Failed to resend. Please try again later.");
+      }
+    } catch {
+      setResendStatus("Could not resend email. Please check your connection.");
+    } finally {
+      setResending(false);
     }
   }
 
@@ -214,13 +245,35 @@ export default function Login() {
         <header className="login-heading">
           <span className="login-eyebrow">SECURE WORKSPACE ACCESS</span>
           <h1 id="login-title">Welcome back</h1>
-          <p>Sign in to continue to your ETDOX dashboard.</p>
+          <p>Sign in to continue to your ETDOX procurement dashboard.</p>
         </header>
+
+        {noticeMessage && (
+          <div className="login-notice-banner" role="status">
+            <Info size={17} aria-hidden="true" />
+            <span>{noticeMessage}</span>
+          </div>
+        )}
 
         {error && (
           <div className="login-error" role="alert" aria-live="polite">
             <AlertCircle size={18} aria-hidden="true" />
-            <span>{error}</span>
+            <div className="error-body">
+              <span>{error}</span>
+              {errorCode === "EMAIL_NOT_VERIFIED" && (
+                <div className="unverified-action">
+                  <button
+                    type="button"
+                    className="inline-resend-btn"
+                    onClick={handleResendVerification}
+                    disabled={resending}
+                  >
+                    {resending ? "Sending…" : "Resend verification email"}
+                  </button>
+                  {resendStatus && <div className="inline-resend-feedback">{resendStatus}</div>}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -249,7 +302,12 @@ export default function Login() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="password">Password</label>
+            <div className="label-with-link">
+              <label htmlFor="password">Password</label>
+              <Link to="/forgot-password" className="auth-subtle-link">
+                Forgot password?
+              </Link>
+            </div>
             <div className="input-wrapper">
               <LockKeyhole size={19} aria-hidden="true" />
               <input
@@ -292,7 +350,7 @@ export default function Login() {
               <>
                 <LoaderCircle
                   size={19}
-                  className="login-spinner"
+                  className="login-spinner spin"
                   aria-hidden="true"
                 />
                 Signing in…
@@ -308,11 +366,16 @@ export default function Login() {
 
         <div className="login-security-note">
           <CheckCircle2 size={16} aria-hidden="true" />
-          <span>Secure authentication through the ETDOX API</span>
+          <span>Protected with HTTP-only cookie session and enterprise encryption</span>
         </div>
 
         <footer className="login-footer">
-          <p>ETDOX Technologies</p>
+          <p>
+            Don't have an account?{" "}
+            <Link to="/register" className="login-link-bold">
+              Create an account
+            </Link>
+          </p>
           <Link to="/">Back to home</Link>
         </footer>
       </section>

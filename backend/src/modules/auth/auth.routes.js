@@ -1,21 +1,32 @@
-
 import { Router } from "express";
 import {
+  register,
+  verifyEmail,
+  resendVerification,
   login,
-  getMe,
   logout,
+  getMe,
+  forgotPassword,
+  resetPassword,
+  testSmtp,
 } from "./auth.controller.js";
 import authenticate from "../../middleware/authenticate.js";
 
 const router = Router();
 
-// Public endpoint: log in using a demo account.
+// Public Authentication Flow
+router.post("/register", register);
+router.post("/verify-email", verifyEmail);
+router.post("/resend-verification", resendVerification);
 router.post("/login", login);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 
-// Protected endpoint: retrieve the currently authenticated user.
+// Protected Identity & Session
 router.get("/me", authenticate, getMe);
-
-// Protected endpoint: log out.
 router.post("/logout", authenticate, logout);
+
+// Diagnostic SMTP endpoint (Development / Admin)
+router.post("/test-smtp", testSmtp);
 
 export default router;
