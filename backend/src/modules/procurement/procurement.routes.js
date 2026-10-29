@@ -6,6 +6,7 @@ import {
   updateRequest,
   submitRequest,
   financeDecision,
+  managerDecision,
 } from './procurement.controller.js';
 
 import { authenticate } from '../../middleware/authenticate.js';
@@ -21,7 +22,8 @@ router.post('/requests', createRequest);
 router.patch('/requests/:id', updateRequest);
 router.post('/requests/:id/submit', submitRequest);
 
-// Preserve the endpoint used by the ETDOX Finance dashboard.
+// Endpoints used by Manager and Finance dashboards
+router.patch('/requests/:id/manager-decision', managerDecision);
 router.patch('/requests/:id/finance-decision', financeDecision);
 
 export default router;

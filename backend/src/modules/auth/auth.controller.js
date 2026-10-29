@@ -133,11 +133,23 @@ export async function forgotPassword(req, res) {
   }
 }
 
+export async function verifyResetOtp(req, res) {
+  try {
+    const { email, otp } = req.body || {};
+    const result = await authService.verifyResetOtp({ email, otp });
+    return res.status(200).json(result);
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
 export async function resetPassword(req, res) {
   try {
-    const { token, newPassword, confirmPassword } = req.body || {};
+    const { token, email, otp, newPassword, confirmPassword } = req.body || {};
     const result = await authService.resetPassword({
       token,
+      email,
+      otp,
       newPassword,
       confirmPassword,
     });

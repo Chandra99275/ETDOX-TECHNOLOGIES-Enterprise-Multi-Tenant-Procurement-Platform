@@ -48,15 +48,7 @@ import "./ManagerPage.css";
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
-const productivityData = [
-  { day: "Mon", completed: 18, planned: 22 },
-  { day: "Tue", completed: 24, planned: 25 },
-  { day: "Wed", completed: 20, planned: 23 },
-  { day: "Thu", completed: 29, planned: 28 },
-  { day: "Fri", completed: 25, planned: 30 },
-  { day: "Sat", completed: 12, planned: 15 },
-  { day: "Sun", completed: 8, planned: 10 },
-];
+// productivityData is dynamically derived from requests
 
 const navItems = [
   { label: "Overview", icon: LayoutDashboard },
@@ -123,13 +115,18 @@ const statusLabel = (status) => {
 };
 
 const getToken = () =>
-  sessionStorage.getItem("authToken") ||
+  localStorage.getItem("token") ||
+  localStorage.getItem("accessToken") ||
+  localStorage.getItem("authToken") ||
   sessionStorage.getItem("token") ||
+  sessionStorage.getItem("accessToken") ||
+  sessionStorage.getItem("authToken") ||
   "";
 
 const getSavedUser = () => {
   try {
-    return JSON.parse(sessionStorage.getItem("user") || "{}");
+    const raw = localStorage.getItem("user") || sessionStorage.getItem("user");
+    return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
   }
@@ -237,67 +234,68 @@ export default function ManagerPage() {
   const [error, setError] = useState("");
   const [currentUser, setCurrentUser] = useState(getSavedUser);
 
-  const [tasks] = useState([
-    {
-      id: 101,
-      title: "Complete client dashboard UI",
-      project: "ETDOX Portal",
-      assignee: "Ananya Reddy",
-      priority: "High",
-      due: "Oct 22, 2026",
-      status: "In Progress",
-    },
-    {
-      id: 102,
-      title: "Integrate payment API",
-      project: "Finance Platform",
-      assignee: "Rahul Sharma",
-      priority: "High",
-      due: "Oct 21, 2026",
-      status: "In Progress",
-    },
-    {
-      id: 103,
-      title: "Review mobile wireframes",
-      project: "Mobile Experience",
-      assignee: "Priya Kumar",
-      priority: "Medium",
-      due: "Oct 23, 2026",
-      status: "Review",
-    },
-    {
-      id: 104,
-      title: "Run regression testing",
-      project: "ETDOX Portal",
-      assignee: "Arjun Rao",
-      priority: "Medium",
-      due: "Oct 24, 2026",
-      status: "Pending",
-    },
-    {
-      id: 105,
-      title: "Finish authentication module",
-      project: "Finance Platform",
-      assignee: "Sneha Patel",
-      priority: "Low",
-      due: "Oct 20, 2026",
-      status: "Completed",
-    },
-  ]);
+  // Dynamic tasks, projects and productivity derived directly from PostgreSQL data
+  const tasks = useMemo(() => {
+    return requests.map((req, idx) => ({
+      id: req.id || idx,
+      title: `Review ${req.productName || req.requestNumber || 'Purchase Request'}`,
+      project: req.department || 'Procurement',
+      assignee: req.requesterName || 'Employee',
+      priority: Number(req.total || req.amount || 0) > 50000 ? 'High' : 'Medium',
+      due: req.createdAt ? new Date(req.createdAt).toLocaleDateString('en-IN') : 'Recent',
+      status: normalizeStatus(req.status) === 'APPROVED' ? 'Completed' : 'In Progress',
+    }));
+  }, [requests]);
 
-  const [teamMembers] = useState([
-    { id: 1, name: "Ananya Reddy", role: "Frontend Developer", initials: "AR", color: "violet", tasks: 8, completed: 6, status: "Available" },
-    { id: 2, name: "Rahul Sharma", role: "Backend Developer", initials: "RS", color: "blue", tasks: 10, completed: 7, status: "Busy" },
-    { id: 3, name: "Priya Kumar", role: "UI/UX Designer", initials: "PK", color: "pink", tasks: 6, completed: 5, status: "Available" },
-    { id: 4, name: "Arjun Rao", role: "QA Engineer", initials: "AR", color: "green", tasks: 7, completed: 4, status: "In meeting" },
-    { id: 5, name: "Sneha Patel", role: "Full Stack Developer", initials: "SP", color: "orange", tasks: 9, completed: 8, status: "Available" },
-  ]);
+  const projects = useMemo(() => {
+    if (!budgets || budgets.length === 0) return [];
+    const colors = ['violet', 'blue', 'orange', 'green'];
+    return budgets.map((b, idx) => {
+      const allocated = Number(b.allocated || b.amount || 0);
+      const spent = Number(b.spent || 0);
+      const progress = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 0;
+      return {
+        name: b.name || `${b.department || 'Department'} Budget`,
+        client: `${b.department || 'General'} Division`,
+        progress,
+        color: colors[idx % colors.length],
+        status: b.status || 'Active',
+        due: b.fiscalYear ? `FY ${b.fiscalYear}` : 'FY 2026',
+      };
+    });
+  }, [budgets]);
 
-  const [projects] = useState([
-    { name: "ETDOX Portal", client: "Internal platform", progress: 78, color: "violet", status: "On track", due: "Oct 30, 2026" },
-    { name: "Finance Platform", client: "Finance department", progress: 56, color: "blue", status: "In progress", due: "Nov 05, 2026" },
-    { name: "Mobile Experience", client: "Customer experience", progress: 34, color: "orange", status: "At risk", due: "Nov 12, 2026" },
-  ]);
+  const productivityData = useMemo(() => {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const counts = {
+      Sun: { completed: 0, planned: 0 },
+      Mon: { completed: 0, planned: 0 },
+      Tue: { completed: 0, planned: 0 },
+      Wed: { completed: 0, planned: 0 },
+      Thu: { completed: 0, planned: 0 },
+      Fri: { completed: 0, planned: 0 },
+      Sat: { completed: 0, planned: 0 },
+    };
+
+    requests.forEach((req) => {
+      if (req.createdAt) {
+        const d = new Date(req.createdAt);
+        if (!isNaN(d.getTime())) {
+          const dayName = days[d.getDay()];
+          counts[dayName].planned += 1;
+          if (['APPROVED', 'COMPLETED'].includes(normalizeStatus(req.status))) {
+            counts[dayName].completed += 1;
+          }
+        }
+      }
+    });
+
+    return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => ({
+      day,
+      completed: counts[day].completed,
+      planned: counts[day].planned,
+    }));
+  }, [requests]);
 
   const showNotice = useCallback((message) => {
     setNotice(message);
@@ -1669,9 +1667,10 @@ export default function ManagerPage() {
   }
 
   function logout() {
-    sessionStorage.removeItem("authToken");
-    sessionStorage.removeItem("token");
-    sessionStorage.removeItem("user");
+    ["token", "accessToken", "authToken", "user"].forEach((k) => {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
+    });
     window.location.href = "/login";
   }
 

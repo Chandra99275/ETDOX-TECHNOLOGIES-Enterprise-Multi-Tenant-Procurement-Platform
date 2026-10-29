@@ -230,15 +230,30 @@ export async function sendMail({ to, subject, html, text }) {
     };
   }
 
-  const from = `"${env.smtp.fromName}" <${env.smtp.fromEmail}>`;
+  const fromName = env.smtp.fromName || "ETDOX";
+  const fromAddress = env.smtp.fromEmail || "etdox3300@gmail.com";
 
   try {
     const info = await transporter.sendMail({
-      from,
+      from: {
+        name: fromName,
+        address: fromAddress,
+      },
+      sender: {
+        name: fromName,
+        address: fromAddress,
+      },
+      replyTo: {
+        name: fromName,
+        address: fromAddress,
+      },
       to,
       subject,
       html,
       text,
+      headers: {
+        "X-Entity-Ref-ID": "ETDOX-SYS",
+      },
     });
 
     console.info(`[EmailService] Email delivered successfully to ${to}. MessageId: ${info.messageId}`);
@@ -323,17 +338,32 @@ If you did not create this account, please ignore this email.
 }
 
 /**
- * Send password reset link.
+ * Send password reset OTP and link.
  */
-export async function sendPasswordResetEmail({ to, name, token, expiresAt }) {
-  const resetUrl = `${env.frontendUrl}/reset-password?token=${encodeURIComponent(token)}`;
-  const title = "Reset your ETDOX password";
+export async function sendPasswordResetEmail({ to, name, token, otp, expiresAt }) {
+  const resetUrl = `${env.frontendUrl}/reset-password?token=${encodeURIComponent(token || "")}${otp ? `&otp=${encodeURIComponent(otp)}` : ""}`;
+  const title = otp
+    ? `[ETDOX] Your Password Reset Code is ${otp}`
+    : "Reset your ETDOX password";
+
+  const otpDisplayHtml = otp
+    ? `
+      <div style="text-align: center; margin: 24px 0; padding: 22px; background: #eff6ff; border: 2px dashed #2563eb; border-radius: 14px;">
+        <p style="margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #1d4ed8; font-weight: 700;">Your Password Reset Code</p>
+        <div style="font-size: 38px; font-weight: 900; letter-spacing: 8px; color: #1d4ed8; font-family: 'Courier New', monospace; margin: 4px 0;">
+          ${otp}
+        </div>
+        <p style="margin: 8px 0 0 0; font-size: 13px; color: #64748b;">Enter this 6-digit code on the reset screen to set your new password.</p>
+      </div>
+    `
+    : "";
 
   const bodyHtml = `
     <h1>Password Reset Request</h1>
     <p>Hello <strong>${name || "there"}</strong>,</p>
     <p>We received a request to reset the password for your ETDOX account associated with <strong>${to}</strong>.</p>
-    <p>Click the button below to choose a new password. This single-use link is valid for <strong>${env.passwordResetTtlMinutes} minutes</strong>.</p>
+    ${otpDisplayHtml}
+    <p>This verification code is valid for <strong>${env.passwordResetTtlMinutes} minutes</strong>.</p>
   `;
 
   const text = `
@@ -341,20 +371,24 @@ Password Reset Request
 
 Hello ${name || "there"},
 
-We received a request to reset your ETDOX password. Use the link below to set a new password:
+We received a request to reset your ETDOX password for ${to}.
 
+${otp ? `YOUR 6-DIGIT VERIFICATION CODE (OTP): ${otp}\n\n` : ""}
+Or use the direct password reset link below:
 ${resetUrl}
 
-This single-use link will expire in ${env.passwordResetTtlMinutes} minutes.
+This code will expire in ${env.passwordResetTtlMinutes} minutes.
 
 If you did not request a password reset, please ignore this email. Your password will remain unchanged.
 `;
 
   const html = createHtmlEmail({
     title,
-    preheader: "Reset instructions for your ETDOX account password.",
+    preheader: otp
+      ? `Your ETDOX password reset code is ${otp}. Valid for ${env.passwordResetTtlMinutes} minutes.`
+      : "Reset instructions for your ETDOX account password.",
     bodyHtml,
-    ctaText: "Reset Password",
+    ctaText: "Reset Password Directly",
     ctaUrl: resetUrl,
     footerNote: "If you did not request a password reset, no action is required and your account remains secure.",
   });

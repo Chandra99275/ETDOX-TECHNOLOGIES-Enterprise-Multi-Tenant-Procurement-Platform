@@ -17,7 +17,7 @@ function requireContext(tenantId, userId) {
   }
 }
 
-function isFinanceOrAdmin(roles) {
+function isFinanceOrAdmin(roles = []) {
   const normalized = roles.map((role) =>
     String(typeof role === 'string' ? role : role?.name ?? '')
       .toLowerCase()
@@ -30,6 +30,48 @@ function isFinanceOrAdmin(roles) {
       'organization_admin',
       'finance',
       'finance_manager',
+    ].includes(role)
+  );
+}
+
+function isManagerOrAdmin(roles = []) {
+  const normalized = roles.map((role) =>
+    String(typeof role === 'string' ? role : role?.name ?? '')
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+  );
+
+  return normalized.some((role) =>
+    [
+      'admin',
+      'organization_admin',
+      'manager',
+      'department_manager',
+      'procurement_manager',
+      'approver',
+    ].includes(role)
+  );
+}
+
+function canViewAllRequests(roles = []) {
+  const normalized = roles.map((role) =>
+    String(typeof role === 'string' ? role : role?.name ?? '')
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+  );
+
+  return normalized.some((role) =>
+    [
+      'admin',
+      'organization_admin',
+      'finance',
+      'finance_manager',
+      'manager',
+      'department_manager',
+      'procurement_manager',
+      'procurement_specialist',
+      'approver',
+      'auditor',
     ].includes(role)
   );
 }
@@ -118,7 +160,7 @@ export async function listRequests({
     status: status?.trim() || null,
     search: search.trim().slice(0, 100),
     userId,
-    canViewAll: isFinanceOrAdmin(roles),
+    canViewAll: canViewAllRequests(roles),
   });
 
   return {
@@ -145,7 +187,7 @@ export async function getRequest({
     tenantId,
     requestId,
     userId,
-    canViewAll: isFinanceOrAdmin(roles),
+    canViewAll: canViewAllRequests(roles),
   });
 
   if (!request) {
@@ -162,13 +204,14 @@ export async function createRequest({
 }) {
   requireContext(tenantId, userId);
 
-  const title = cleanText(input.title, 'Title', 200);
-  const description = cleanText(
-    input.description,
-    'Description',
-    5000
-  );
-  const amount = validateAmount(input.amount);
+  const rawTitle = input.title || input.productName || 'Purchase Request';
+  const title = cleanText(rawTitle, 'Title', 200);
+
+  const rawDescription = input.description || input.justification || title;
+  const description = cleanText(rawDescription, 'Description', 5000);
+
+  const rawAmount = input.amount !== undefined ? input.amount : input.total;
+  const amount = validateAmount(rawAmount);
 
   const currency = String(input.currency ?? 'INR').trim().toUpperCase();
 
@@ -187,6 +230,11 @@ export async function createRequest({
     description,
     amount,
     currency,
+    quantity: input.quantity,
+    unitPrice: input.unitPrice,
+    department: input.department,
+    budgetId: input.budgetId,
+    supplier: input.supplier,
   });
 }
 
@@ -280,6 +328,67 @@ export async function submitRequest({
   return request;
 }
 
+export async function managerDecision({
+  tenantId,
+  userId,
+  roles = [],
+  requestId,
+  decision,
+  comment,
+}) {
+  requireContext(tenantId, userId);
+  validateId(requestId);
+
+  if (!isManagerOrAdmin(roles)) {
+    throw appError(
+      403,
+      'Only managers or authorized administrators can decide requests.',
+      'MANAGER_PERMISSION_REQUIRED'
+    );
+  }
+
+  const normalizedDecision =
+    typeof decision === 'string' ? decision.trim().toLowerCase() : '';
+
+  if (!['accept', 'approve', 'decline', 'reject'].includes(normalizedDecision)) {
+    throw appError(
+      400,
+      'Decision must be approve or reject.',
+      'INVALID_MANAGER_DECISION'
+    );
+  }
+
+  const normalizedComment = comment?.trim() || null;
+
+  if (normalizedComment && normalizedComment.length > 2000) {
+    throw appError(
+      400,
+      'Comment must not exceed 2000 characters.',
+      'INVALID_COMMENT'
+    );
+  }
+
+  const result = await procurementRepository.recordManagerDecision({
+    tenantId,
+    requestId,
+    actorId: userId,
+    decision: ['accept', 'approve'].includes(normalizedDecision)
+      ? 'approved'
+      : 'rejected',
+    comment: normalizedComment,
+  });
+
+  if (!result) {
+    throw appError(
+      409,
+      'Request not found or not eligible for a manager decision.',
+      'MANAGER_DECISION_CONFLICT'
+    );
+  }
+
+  return result;
+}
+
 export async function financeDecision({
   tenantId,
   userId,
@@ -308,10 +417,6 @@ export async function financeDecision({
       'Decision must be accept or decline.',
       'INVALID_FINANCE_DECISION'
     );
-  }
-
-  if (comment !== undefined && typeof comment !== 'string') {
-    throw appError(400, 'Comment must be text.', 'INVALID_COMMENT');
   }
 
   const normalizedComment = comment?.trim() || null;
