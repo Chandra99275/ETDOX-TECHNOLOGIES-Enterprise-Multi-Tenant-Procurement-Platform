@@ -318,159 +318,138 @@ const routeGroups = [
     paths: ['/api/auth', '/api/v1/auth'],
     candidates: [
       'modules/auth/auth.routes.js',
-      'routes/authRoutes.js',
-      'routes/auth.routes.js',
     ],
   },
   {
-    paths: ['/api/users', '/api/v1/users'],
+    paths: ['/api/users', '/api/v1/users', '/api/v1/employees'],
     candidates: [
       'modules/users/users.routes.js',
-      'routes/users.routes.js',
-      'routes/userRoutes.js',
     ],
   },
   {
     paths: ['/api/procurement', '/api/v1/procurement'],
     candidates: [
       'modules/procurement/procurement.routes.js',
-      'routes/procurementRoutes.js',
-      'routes/procurement.routes.js',
     ],
   },
   {
     paths: ['/api/approvals', '/api/v1/approvals'],
     candidates: [
       'modules/approvals/approvals.routes.js',
-      'routes/approvals.routes.js',
-      'routes/approvalRoutes.js',
     ],
   },
   {
     paths: ['/api/finance', '/api/v1/finance'],
     candidates: [
       'modules/finance/finance.routes.js',
-      'routes/finance.routes.js',
-      'routes/financeRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/purchase-requests'],
     candidates: [
-      'routes/purchaseRequestRoutes.js',
-      'routes/purchase-requests.routes.js',
+      'modules/purchase-requests/purchase-requests.routes.js',
     ],
   },
   {
     paths: ['/api/v1/suppliers'],
     candidates: [
       'modules/suppliers/suppliers.routes.js',
-      'routes/suppliers.routes.js',
-      'routes/supplierRoutes.js',
+    ],
+  },
+  {
+    paths: ['/api/v1/clients'],
+    candidates: [
+      'modules/clients/clients.routes.js',
+    ],
+  },
+  {
+    paths: ['/api/v1/issues'],
+    candidates: [
+      'modules/issues/issues.routes.js',
     ],
   },
   {
     paths: ['/api/v1/purchase-orders'],
     candidates: [
       'modules/purchase-orders/purchase-orders.routes.js',
-      'routes/purchaseOrders.routes.js',
-      'routes/purchaseOrderRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/receipts'],
     candidates: [
       'modules/receipts/receipts.routes.js',
-      'routes/receipts.routes.js',
-      'routes/receiptRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/invoices'],
     candidates: [
       'modules/invoices/invoices.routes.js',
-      'routes/invoices.routes.js',
-      'routes/invoiceRoutes.js',
     ],
   },
   {
-    paths: ['/api/v1/budgets'],
+    paths: ['/api/v1/budgets', '/api/budgets', '/api/procurement/budgets', '/api/v1/procurement/budgets'],
     candidates: [
       'modules/budgets/budgets.routes.js',
-      'routes/budgets.routes.js',
-      'routes/budgetRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/transactions'],
     candidates: [
       'modules/transactions/transactions.routes.js',
-      'routes/transactions.routes.js',
-      'routes/transactionRoutes.js',
     ],
   },
   {
-    paths: ['/api/v1/analytics'],
+    paths: ['/api/v1/analytics', '/api/analytics'],
     candidates: [
       'modules/analytics/analytics.routes.js',
-      'routes/analytics.routes.js',
-      'routes/analyticsRoutes.js',
     ],
   },
   {
-    paths: ['/api/v1/audit-events'],
+    paths: ['/api/v1/audit-events', '/api/v1/audit'],
     candidates: [
       'modules/audit/audit.routes.js',
-      'routes/auditEvents.routes.js',
-      'routes/auditRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/webhooks'],
     candidates: [
       'modules/webhooks/webhooks.routes.js',
-      'routes/webhooks.routes.js',
-      'routes/webhookRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/tenants', '/api/v1'],
     candidates: [
       'modules/tenants/tenants.routes.js',
-      'routes/tenants.routes.js',
-      'routes/tenantRoutes.js',
     ],
   },
   {
-    paths: ['/api/v1/attachments', '/api/v1'],
+    paths: ['/api/v1/attachments'],
     candidates: [
       'modules/attachments/attachments.routes.js',
-      'routes/attachments.routes.js',
-      'routes/attachmentRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/contracts'],
     candidates: [
       'modules/contracts/contracts.routes.js',
-      'routes/contracts.routes.js',
-      'routes/contractRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/billing'],
     candidates: [
       'modules/billing/billing.routes.js',
-      'routes/billing.routes.js',
-      'routes/billingRoutes.js',
     ],
   },
   {
     paths: ['/api/v1/notifications'],
     candidates: [
       'modules/notifications/notifications.routes.js',
-      'routes/notifications.routes.js',
-      'routes/notificationRoutes.js',
+    ],
+  },
+  {
+    paths: ['/api/v1/workflows'],
+    candidates: [
+      'modules/workflows/workflows.routes.js',
     ],
   },
 ];
