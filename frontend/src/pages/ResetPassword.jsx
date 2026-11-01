@@ -9,6 +9,7 @@ import {
   KeyRound,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   ShieldCheck,
 } from "lucide-react";
 import "./ResetPassword.css";
@@ -23,7 +24,11 @@ export default function ResetPassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token") || "";
+  const otpFromUrl = searchParams.get("otp") || "";
+  const emailFromUrl = searchParams.get("email") || "";
 
+  const [otp, setOtp] = useState(otpFromUrl);
+  const [email, setEmail] = useState(emailFromUrl);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -32,6 +37,8 @@ export default function ResetPassword() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+
+  const hasCredentials = Boolean(token || (otp.trim() && email.trim()));
 
   const passwordRequirements = [
     { label: "At least 8 characters", valid: newPassword.length >= 8 },
@@ -48,8 +55,8 @@ export default function ResetPassword() {
 
     setError("");
 
-    if (!token) {
-      setError("Reset token is missing from the link. Please request a new password reset link.");
+    if (!token && (!otp.trim() || !email.trim())) {
+      setError("Please provide your email and the 6-digit verification code received.");
       return;
     }
 
@@ -71,28 +78,33 @@ export default function ResetPassword() {
     setLoading(true);
 
     try {
+      const payload = token.trim()
+        ? { token: token.trim(), newPassword, confirmPassword }
+        : {
+            email: email.trim().toLowerCase(),
+            otp: otp.trim(),
+            newPassword,
+            confirmPassword,
+          };
+
       const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-        body: JSON.stringify({
-          token: token.trim(),
-          newPassword,
-          confirmPassword,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.message || "Failed to reset password. The link may have expired.");
+        throw new Error(data.message || "Failed to reset password. The code or link may have expired.");
       }
 
       setSuccess(true);
     } catch (err) {
-      setError(err.message || "Password reset failed. Please request a new link.");
+      setError(err.message || "Password reset failed. Please check your verification code.");
     } finally {
       setLoading(false);
     }
@@ -133,10 +145,10 @@ export default function ResetPassword() {
               <p>Create a strong password to protect your corporate procurement account.</p>
             </header>
 
-            {!token && (
-              <div className="login-error" role="alert">
-                <AlertCircle size={18} aria-hidden="true" />
-                <span>No reset token provided. Please use the link sent to your email.</span>
+            {!hasCredentials && (
+              <div className="login-notice" style={{ marginBottom: "16px" }}>
+                <KeyRound size={18} aria-hidden="true" />
+                <span>Enter your registered email and the 6-digit OTP code below to set a new password.</span>
               </div>
             )}
 
@@ -148,6 +160,62 @@ export default function ResetPassword() {
             )}
 
             <form onSubmit={handleSubmit} className="reset-form" noValidate>
+              {!token && (
+                <>
+                  <div className="form-group">
+                    <label htmlFor="email">Work Email</label>
+                    <div className="input-wrapper">
+                      <Mail size={19} aria-hidden="true" />
+                      <input
+                        id="email"
+                        name="email"
+                        type="email"
+                        placeholder="your.email@company.com"
+                        value={email}
+                        onChange={(e) => {
+                          setEmail(e.target.value);
+                          setError("");
+                        }}
+                        autoComplete="email"
+                        required
+                        disabled={loading}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="otp">6-Digit Verification Code</label>
+                    <div className="input-wrapper">
+                      <KeyRound size={19} aria-hidden="true" />
+                      <input
+                        id="otp"
+                        name="otp"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={6}
+                        placeholder="• • • • • •"
+                        value={otp}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/\D/g, "").slice(0, 6);
+                          setOtp(val);
+                          setError("");
+                        }}
+                        required
+                        disabled={loading}
+                        style={{
+                          fontSize: "20px",
+                          letterSpacing: "6px",
+                          textAlign: "center",
+                          fontFamily: "monospace",
+                          fontWeight: "700",
+                        }}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
               <div className="form-group">
                 <label htmlFor="newPassword">New Password</label>
                 <div className="input-wrapper">
@@ -164,7 +232,7 @@ export default function ResetPassword() {
                     }}
                     autoComplete="new-password"
                     required
-                    disabled={loading || !token}
+                    disabled={loading || !hasCredentials}
                   />
                   <button
                     type="button"
@@ -193,7 +261,7 @@ export default function ResetPassword() {
                     }}
                     autoComplete="new-password"
                     required
-                    disabled={loading || !token}
+                    disabled={loading || !hasCredentials}
                   />
                   <button
                     type="button"
@@ -217,7 +285,7 @@ export default function ResetPassword() {
                 </div>
               )}
 
-              <button type="submit" className="login-button" disabled={loading || !token}>
+              <button type="submit" className="login-button" disabled={loading || !hasCredentials || !isPasswordValid}>
                 {loading ? (
                   <>
                     <LoaderCircle size={19} className="spin" aria-hidden="true" />

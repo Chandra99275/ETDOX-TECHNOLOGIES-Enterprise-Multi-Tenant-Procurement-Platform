@@ -1,20 +1,46 @@
-
 const VALID_ROLES = new Set([
   "admin",
+  "organization_admin",
+  "organization admin",
   "employee",
+  "requester",
   "manager",
+  "department_manager",
+  "procurement_manager",
+  "procurement_specialist",
   "finance",
+  "finance_manager",
+  "auditor",
+  "supplier_user",
 ]);
 
 function normalizeRole(role) {
   return typeof role === "string"
-    ? role.trim().toLowerCase()
+    ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
     : "";
+}
+
+function expandRoleAliases(roleSet) {
+  if (roleSet.has("organization_admin") || roleSet.has("admin")) {
+    roleSet.add("admin");
+    roleSet.add("organization_admin");
+  }
+  if (roleSet.has("requester") || roleSet.has("employee")) {
+    roleSet.add("employee");
+    roleSet.add("requester");
+  }
+  if (roleSet.has("department_manager") || roleSet.has("procurement_manager") || roleSet.has("manager")) {
+    roleSet.add("manager");
+    roleSet.add("department_manager");
+  }
+  if (roleSet.has("finance_manager") || roleSet.has("finance")) {
+    roleSet.add("finance");
+    roleSet.add("finance_manager");
+  }
 }
 
 function getUserRoles(req) {
   const roles = new Set();
-
   const user = req.user;
 
   if (user?.role) {
@@ -46,6 +72,7 @@ function getUserRoles(req) {
   }
 
   roles.delete("");
+  expandRoleAliases(roles);
   return roles;
 }
 
@@ -78,9 +105,6 @@ function sendForbidden(res, message = "You do not have permission to perform thi
 
 /**
  * Restrict a route to one or more roles.
- *
- * Example:
- * router.get("/admin", authenticate, requireRole("admin"), handler);
  */
 export function requireRole(...allowedRoles) {
   const normalizedAllowedRoles = allowedRoles
@@ -113,9 +137,6 @@ export function requireRole(...allowedRoles) {
 
 /**
  * Require all listed permissions.
- *
- * Example:
- * router.post("/", authenticate, requirePermission("procurement:create"), handler);
  */
 export function requirePermission(...requiredPermissions) {
   const required = requiredPermissions
@@ -141,20 +162,6 @@ export function requirePermission(...requiredPermissions) {
     }
 
     const permissions = getPermissions(req);
-    const roles = getUserRoles(req);
-
-    // Demo role access is intentionally simple for local UI testing.
-    // Do not use this role-to-permission mapping as production authorization.
-    if (req.user.isDemo === true) {
-      if (roles.has("admin")) {
-        return next();
-      }
-
-      return sendForbidden(
-        res,
-        "Demo users do not have configured granular permissions."
-      );
-    }
 
     const hasAllPermissions = required.every(
       (permission) =>
@@ -197,15 +204,6 @@ export function requireAnyPermission(...requiredPermissions) {
     }
 
     const permissions = getPermissions(req);
-
-    if (req.user.isDemo === true) {
-      return getUserRoles(req).has("admin")
-        ? next()
-        : sendForbidden(
-            res,
-            "Demo users do not have configured granular permissions."
-          );
-    }
 
     const hasAnyPermission = required.some(
       (permission) =>

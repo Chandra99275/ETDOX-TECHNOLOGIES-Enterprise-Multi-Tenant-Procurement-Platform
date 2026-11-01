@@ -7,6 +7,7 @@ import {
   logout,
   getMe,
   forgotPassword,
+  verifyResetOtp,
   resetPassword,
   testSmtp,
 } from "./auth.controller.js";
@@ -20,6 +21,7 @@ router.post("/verify-email", verifyEmail);
 router.post("/resend-verification", resendVerification);
 router.post("/login", login);
 router.post("/forgot-password", forgotPassword);
+router.post("/verify-reset-otp", verifyResetOtp);
 router.post("/reset-password", resetPassword);
 
 // Protected Identity & Session

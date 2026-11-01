@@ -21,6 +21,7 @@ export async function listRequests(req, res, next) {
     res.status(200).json({
       success: true,
       data: result.requests,
+      requests: result.requests, // compatibility
       pagination: result.pagination,
     });
   } catch (error) {
@@ -38,6 +39,7 @@ export async function getRequest(req, res, next) {
     res.status(200).json({
       success: true,
       data: request,
+      request,
     });
   } catch (error) {
     next(error);
@@ -55,6 +57,7 @@ export async function createRequest(req, res, next) {
       success: true,
       message: 'Purchase request created successfully.',
       data: request,
+      request,
     });
   } catch (error) {
     next(error);
@@ -73,6 +76,7 @@ export async function updateRequest(req, res, next) {
       success: true,
       message: 'Purchase request updated successfully.',
       data: request,
+      request,
     });
   } catch (error) {
     next(error);
@@ -90,6 +94,27 @@ export async function submitRequest(req, res, next) {
       success: true,
       message: 'Purchase request submitted successfully.',
       data: request,
+      request,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function managerDecision(req, res, next) {
+  try {
+    const request = await procurementService.managerDecision({
+      ...getContext(req),
+      requestId: req.params.id,
+      decision: req.body?.decision,
+      comment: req.body?.comment,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Manager decision recorded successfully.',
+      data: request,
+      request,
     });
   } catch (error) {
     next(error);
@@ -109,6 +134,7 @@ export async function financeDecision(req, res, next) {
       success: true,
       message: 'Finance decision recorded successfully.',
       data: request,
+      request,
     });
   } catch (error) {
     next(error);

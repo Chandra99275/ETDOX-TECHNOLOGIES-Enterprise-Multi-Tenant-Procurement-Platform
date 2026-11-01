@@ -1,3 +1,10 @@
+CREATE TABLE IF NOT EXISTS organizations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -6,13 +13,26 @@ CREATE TABLE IF NOT EXISTS roles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO roles (name, description)
-VALUES
-    ('admin', 'Organization administrator'),
-    ('employee', 'Creates procurement requests'),
-    ('manager', 'Reviews procurement requests'),
-    ('finance', 'Reviews financial decisions')
-ON CONFLICT (name) DO NOTHING;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns WHERE table_name = 'roles' AND column_name = 'tenant_id'
+  ) THEN
+    INSERT INTO roles (name, description)
+    VALUES
+        ('admin', 'Organization administrator'),
+        ('employee', 'Creates procurement requests'),
+        ('manager', 'Reviews procurement requests'),
+        ('finance', 'Reviews financial decisions')
+    ON CONFLICT (name) DO NOTHING;
+  END IF;
+END $$;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id UUID;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(160);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(120);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title VARCHAR(120);
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

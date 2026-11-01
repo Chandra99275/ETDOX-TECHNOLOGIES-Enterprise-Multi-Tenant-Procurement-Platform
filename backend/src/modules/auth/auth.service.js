@@ -389,6 +389,7 @@ export async function login({ email, password, ipAddress, userAgent }) {
 
   const primaryRole = resolvePrimaryRole(user.roles);
   const redirectTo = resolveDashboardRoute(user.roles);
+  const permissions = await authRepo.getUserPermissions(user.tenantId, user.roles);
 
   // Generate JWT access token
   const payload = {
@@ -399,7 +400,7 @@ export async function login({ email, password, ipAddress, userAgent }) {
     tenantId: user.tenantId,
     role: primaryRole,
     roles: user.roles,
-    permissions: [],
+    permissions,
     iss: env.jwtIssuer,
     aud: env.jwtAudience,
   };
@@ -454,6 +455,7 @@ export async function getCurrentUser(userId, tenantId) {
   }
 
   const primaryRole = resolvePrimaryRole(user.roles);
+  const permissions = await authRepo.getUserPermissions(user.tenantId, user.roles);
 
   return {
     id: user.id,
@@ -467,12 +469,12 @@ export async function getCurrentUser(userId, tenantId) {
     roleName: primaryRole,
     roles: user.roles,
     status: user.status,
-    permissions: [],
+    permissions,
   };
 }
 
 // ----------------------------------------------------------------------
-// 6. FORGOT PASSWORD
+// 6. FORGOT PASSWORD (OTP-First Flow)
 // ----------------------------------------------------------------------
 
 export async function forgotPassword({ email }) {
@@ -482,9 +484,9 @@ export async function forgotPassword({ email }) {
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  const remaining = checkRateLimit(`forgot:${normalizedEmail}`, 60);
+  const remaining = checkRateLimit(`forgot:${normalizedEmail}`, 15);
   if (remaining > 0) {
-    throw createAuthError(`Please wait ${remaining} seconds before requesting another password reset.`, 429, "RATE_LIMITED");
+    throw createAuthError(`Please wait ${remaining} seconds before requesting another verification code.`, 429, "RATE_LIMITED");
   }
 
   const user = await authRepo.findUserByEmail(normalizedEmail);
@@ -492,11 +494,13 @@ export async function forgotPassword({ email }) {
   if (user && user.isActive) {
     const rawToken = generateSecureToken();
     const tokenHash = hashToken(rawToken);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + env.passwordResetTtlMinutes * 60 * 1000);
 
     await authRepo.createPasswordResetToken({
       userId: user.id,
       tokenHash,
+      otp,
       expiresAt,
     });
 
@@ -504,24 +508,58 @@ export async function forgotPassword({ email }) {
       to: user.email,
       name: user.fullName,
       token: rawToken,
+      otp,
       expiresAt,
     });
   }
 
-  // Consistent message to prevent account enumeration
+  // Return success response to the user
   return {
     success: true,
-    message: "If an account with that email address exists, a password reset link has been sent.",
+    message: "If an account with that email address exists, a 6-digit verification code has been dispatched to your email.",
   };
 }
 
 // ----------------------------------------------------------------------
-// 7. RESET PASSWORD
+// 6b. VERIFY RESET OTP
 // ----------------------------------------------------------------------
 
-export async function resetPassword({ token, newPassword, confirmPassword }) {
-  if (!token || typeof token !== "string" || !token.trim()) {
-    throw createAuthError("Password reset token is required.", 400, "MISSING_TOKEN");
+export async function verifyResetOtp({ email, otp }) {
+  if (!email || !otp) {
+    throw createAuthError("Email address and 6-digit verification code are required.", 400, "VALIDATION_ERROR");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const cleanOtp = String(otp).trim();
+
+  const user = await authRepo.findUserByEmail(normalizedEmail);
+  if (!user || !user.isActive) {
+    throw createAuthError("Invalid or expired verification code.", 400, "INVALID_OTP");
+  }
+
+  const activeReset = await authRepo.findActivePasswordResetByOtp(normalizedEmail, cleanOtp);
+  if (!activeReset) {
+    throw createAuthError("Invalid or expired verification code.", 400, "INVALID_OTP");
+  }
+
+  return {
+    success: true,
+    message: "Verification code confirmed successfully. Please set your new password.",
+    verified: true,
+    email: normalizedEmail,
+  };
+}
+
+// ----------------------------------------------------------------------
+// 7. RESET PASSWORD (Supports both OTP & Direct Token)
+// ----------------------------------------------------------------------
+
+export async function resetPassword({ token, email, otp, newPassword, confirmPassword }) {
+  const hasOtp = Boolean(email && otp);
+  const hasToken = Boolean(token && typeof token === "string" && token.trim());
+
+  if (!hasOtp && !hasToken) {
+    throw createAuthError("Password reset verification code or token is required.", 400, "MISSING_TOKEN");
   }
 
   if (!newPassword || !confirmPassword) {
@@ -537,11 +575,16 @@ export async function resetPassword({ token, newPassword, confirmPassword }) {
     throw createAuthError(passwordError, 400, "WEAK_PASSWORD");
   }
 
-  const tokenHash = hashToken(token.trim());
-  const resetRecord = await authRepo.findAndConsumePasswordResetToken(tokenHash);
+  let resetRecord = null;
+  if (hasOtp) {
+    resetRecord = await authRepo.findAndConsumePasswordResetByOtp(email.trim().toLowerCase(), String(otp).trim());
+  } else if (hasToken) {
+    const tokenHash = hashToken(token.trim());
+    resetRecord = await authRepo.findAndConsumePasswordResetToken(tokenHash);
+  }
 
   if (!resetRecord) {
-    throw createAuthError("Reset link is invalid, expired, or has already been used.", 400, "INVALID_TOKEN");
+    throw createAuthError("Verification code or reset link is invalid, expired, or has already been used.", 400, "INVALID_TOKEN");
   }
 
   const user = await authRepo.findUserById(resetRecord.userId);

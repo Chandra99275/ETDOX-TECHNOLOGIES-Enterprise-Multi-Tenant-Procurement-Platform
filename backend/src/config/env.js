@@ -1,4 +1,11 @@
-import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+dotenv.config();
 
 const nodeEnv = process.env.NODE_ENV || "development";
 const isProduction = nodeEnv === "production";
@@ -9,7 +16,7 @@ const host = process.env.HOST || "0.0.0.0";
 
 const databaseUrl =
   process.env.DATABASE_URL ||
-  "postgresql://etdox_user:EtDoxDb2026NewPass8391@localhost:5432/etdox";
+  "postgresql://etdox_user:postgre99@localhost:5432/etdox_dev";
 
 const jwtSecret =
   process.env.JWT_SECRET ||
@@ -55,10 +62,7 @@ const corsOrigins = Array.from(
 
 const corsOrigin = corsOrigins[0];
 
-const demoLoginEnabled =
-  isDevelopment &&
-  (process.env.DEMO_LOGIN_ENABLED === "true" ||
-    process.env.ETDOX_DEMO_AUTH === "true");
+const demoLoginEnabled = false;
 
 const demoTenantId =
   process.env.ETDOX_DEMO_TENANT_ID ||
@@ -69,12 +73,11 @@ const redisEnabled = Boolean(redisUrl && redisUrl.startsWith("redis://"));
 
 // --------------------------------------------------
 // SMTP Email Configuration
-// Supports SMTP_* and fallback to EMAIL / SECRET (e.g. Gmail App Password)
 // --------------------------------------------------
 
-const rawEmail = (process.env.SMTP_USER || process.env.EMAIL || "").trim();
+const rawEmail = (process.env.SMTP_USER || process.env.EMAIL || "").trim().replace(/["']/g, "");
 const rawSecret = (process.env.SMTP_PASS || process.env.SECRET || "").trim();
-const cleanSecret = rawSecret.replace(/\s+/g, ""); // strip whitespace in Gmail app passwords
+const cleanSecret = rawSecret.replace(/["'\s]/g, "");
 
 const isGmail = rawEmail.toLowerCase().endsWith("@gmail.com");
 
@@ -95,23 +98,20 @@ const smtpUser = rawEmail;
 const smtpPass = cleanSecret;
 
 const smtpFromEmail =
-  process.env.SMTP_FROM_EMAIL ||
-  smtpUser ||
-  "no-reply@etdox.com";
+  (process.env.SMTP_FROM_EMAIL || smtpUser || "etdox3300@gmail.com").trim().replace(/["']/g, "");
 
 const smtpFromName =
-  process.env.SMTP_FROM_NAME ||
-  "ETDOX Enterprise Platform";
+  (process.env.SMTP_FROM_NAME || "ETDOX").trim().replace(/["']/g, "");
 
 const emailVerificationTtlMinutes = Number.parseInt(
   process.env.EMAIL_VERIFICATION_TTL_MINUTES || "1440",
   10
-); // 24 hours
+);
 
 const passwordResetTtlMinutes = Number.parseInt(
   process.env.PASSWORD_RESET_TTL_MINUTES || "30",
   10
-); // 30 minutes
+);
 
 let webhookEncryptionKey;
 try {
@@ -151,7 +151,6 @@ const env = Object.freeze({
   corsOrigin,
   corsOrigins,
 
-  // SMTP configuration
   smtp: Object.freeze({
     host: smtpHost,
     port: smtpPort,
