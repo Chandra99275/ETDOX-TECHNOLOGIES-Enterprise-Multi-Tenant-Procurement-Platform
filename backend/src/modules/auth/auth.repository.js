@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { randomUUID } from "node:crypto";
 import { pool } from "../../config/database.js";
 import { env } from "../../config/env.js";
@@ -467,6 +468,161 @@ export async function revokeUserSessions(userId) {
     console.warn("[AuthRepository] Could not revoke user_sessions:", err.message);
   }
   return true;
+=======
+
+import { pool, withTenantTransaction } from "../../config/database.js";
+
+/**
+ * Find a user by email before tenant context is established.
+ *
+ * The dedicated PostgreSQL function is required because the users
+ * table has forced row-level security.
+ *
+ * SECURITY:
+ * - The database function must be restricted to the application role.
+ * - Password hashes are used only by the authentication service.
+ * - Never expose this result directly through an API response.
+ */
+export async function findUserByEmail(email) {
+  if (typeof email !== "string" || !email.trim()) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        email,
+        password_hash,
+        tenant_id,
+        first_name,
+        last_name,
+        full_name,
+        is_active,
+        direct_role
+      FROM public.etdox_auth_user_by_email($1)
+    `,
+    [email.trim().toLowerCase()]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const user = result.rows[0];
+
+  // The authentication function should normally return the role.
+  // If it does not, do not query role tables outside tenant context.
+  if (!user.direct_role && user.tenant_id) {
+    user.direct_role = await findAssignedRole(
+      user.id,
+      user.tenant_id
+    );
+  }
+
+  return user;
+}
+
+/**
+ * Find an assigned role within the user's tenant.
+ *
+ * Uses a transaction so app.tenant_id is applied to the same database
+ * connection that performs the RLS-protected query.
+ */
+async function findAssignedRole(userId, tenantId) {
+  if (!userId || !tenantId) {
+    return null;
+  }
+
+  return withTenantTransaction(tenantId, async (client) => {
+    const result = await client.query(
+      `
+        SELECT r.name AS role
+        FROM public.user_roles AS ur
+        INNER JOIN public.roles AS r
+          ON r.id = ur.role_id
+        WHERE ur.user_id::text = $1::text
+        ORDER BY r.name
+        LIMIT 1
+      `,
+      [userId]
+    );
+
+    return result.rows[0]?.role ?? null;
+  });
+}
+
+/**
+ * Retrieve a user by ID within a specified tenant.
+ *
+ * Both IDs must originate from the verified JWT claims.
+ * The database query runs inside a tenant-scoped transaction.
+ *
+ * RLS remains enabled; this function does not bypass it.
+ */
+export async function findUserById(userId, tenantId) {
+  if (
+    typeof userId !== "string" ||
+    !userId.trim() ||
+    typeof tenantId !== "string" ||
+    !tenantId.trim()
+  ) {
+    return null;
+  }
+
+  return withTenantTransaction(tenantId, async (client) => {
+    const result = await client.query(
+      `
+        SELECT
+          u.id,
+          u.email,
+          u.tenant_id,
+          u.first_name,
+          u.last_name,
+          concat_ws(' ', u.first_name, u.last_name) AS full_name,
+          u.is_active
+        FROM public.users AS u
+        WHERE u.id::text = $1::text
+          AND u.tenant_id::text = $2::text
+        LIMIT 1
+      `,
+      [userId, tenantId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const user = result.rows[0];
+
+    // Resolve the role using the same tenant-scoped transaction.
+    const roleResult = await client.query(
+      `
+        SELECT r.name AS role
+        FROM public.user_roles AS ur
+        INNER JOIN public.roles AS r
+          ON r.id = ur.role_id
+        WHERE ur.user_id::text = $1::text
+        ORDER BY r.name
+        LIMIT 1
+      `,
+      [user.id]
+    );
+
+    user.direct_role = roleResult.rows[0]?.role ?? null;
+
+    return user;
+  });
+}
+
+/**
+ * Check that the database connection can execute a simple query.
+ */
+export async function checkAuthRepository() {
+  const result = await pool.query("SELECT 1 AS healthy");
+
+  return result.rows[0]?.healthy === 1;
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 }
 
 export async function getUserPermissions(tenantId, roles = []) {

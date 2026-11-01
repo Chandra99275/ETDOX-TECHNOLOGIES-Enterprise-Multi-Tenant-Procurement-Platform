@@ -1,47 +1,98 @@
-import { getRequestContext } from '../../middleware/auth.js';
+// backend/src/modules/receipts/receipts.controller.js
+
 import {
-  createReceipt,
-  listReceipts,
-  postReceipt,
-} from './receipts.repository.js';
+  listGoodsReceipts,
+  getGoodsReceipt,
+  createGoodsReceipt,
+  updateGoodsReceipt,
+  removeGoodsReceipt,
+} from "./receipts.service.js";
 
-export const create = async (req, res, next) => {
+function handleError(res, error) {
+  const statusCode = Number.isInteger(error.statusCode)
+    ? error.statusCode
+    : 500;
+
+  if (statusCode >= 500) {
+    console.error("[Goods Receipts]", error);
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode >= 500
+        ? "An error occurred while processing the goods receipt."
+        : error.message,
+  });
+}
+
+export async function listReceiptsController(req, res) {
   try {
-    res.status(201).json({
-      data: await createReceipt(
-        getRequestContext(req),
-        req.params.purchaseOrderId,
-        req.body
-      ),
+    const result = await listGoodsReceipts(req.user, req.query);
+
+    return res.status(200).json({
+      success: true,
+      ...result,
     });
   } catch (error) {
-    next(error);
+    return handleError(res, error);
   }
-};
+}
 
-export const list = async (req, res, next) => {
+export async function getReceiptController(req, res) {
   try {
-    res.json({
-      data: await listReceipts(
-        getRequestContext(req),
-        req.params.purchaseOrderId
-      ),
+    const receipt = await getGoodsReceipt(req.user, req.params.id);
+
+    return res.status(200).json({
+      success: true,
+      data: receipt,
     });
   } catch (error) {
-    next(error);
+    return handleError(res, error);
   }
-};
+}
 
-export const post = async (req, res, next) => {
+export async function createReceiptController(req, res) {
   try {
-    res.json({
-      data: await postReceipt(
-        getRequestContext(req),
-        req.params.purchaseOrderId,
-        req.params.receiptId
-      ),
+    const receipt = await createGoodsReceipt(req.user, req.body);
+
+    return res.status(201).json({
+      success: true,
+      message: "Goods receipt recorded successfully.",
+      data: receipt,
     });
   } catch (error) {
-    next(error);
+    return handleError(res, error);
   }
-};
+}
+
+export async function updateReceiptController(req, res) {
+  try {
+    const receipt = await updateGoodsReceipt(
+      req.user,
+      req.params.id,
+      req.body,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Goods receipt updated successfully.",
+      data: receipt,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
+export async function deleteReceiptController(req, res) {
+  try {
+    const result = await removeGoodsReceipt(req.user, req.params.id);
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}

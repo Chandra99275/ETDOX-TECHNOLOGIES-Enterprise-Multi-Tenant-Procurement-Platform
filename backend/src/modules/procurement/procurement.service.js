@@ -1,12 +1,19 @@
-import * as procurementRepository from './procurement.repository.js';
+import * as procurementRepository from "./procurement.repository.js";
 
-function appError(statusCode, message, code) {
-  return Object.assign(new Error(message), {
-    statusCode,
-    code,
-  });
+const PROCUREMENT_ROLES = new Set([
+  "admin",
+  "employee",
+  "manager",
+  "finance",
+]);
+
+function httpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
+<<<<<<< HEAD
 function requireContext(tenantId, userId) {
   if (!tenantId || !userId) {
     throw appError(
@@ -163,47 +170,82 @@ export async function listRequests({
     canViewAll: canViewAllRequests(roles),
   });
 
+=======
+function normalizeActor(actor) {
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
   return {
-    requests: result.requests,
-    pagination: {
-      page: parsedPage,
-      limit: parsedLimit,
-      total: result.total,
-      totalPages: Math.ceil(result.total / parsedLimit),
-    },
+    id: actor?.id ?? actor?.userId,
+    tenantId: actor?.tenantId ?? actor?.tenant_id,
+    role: String(actor?.role ?? "").toLowerCase(),
   };
 }
 
-export async function getRequest({
-  tenantId,
-  userId,
-  roles = [],
-  requestId,
-}) {
-  requireContext(tenantId, userId);
-  validateId(requestId);
+function requireActor(actor) {
+  const normalized = normalizeActor(actor);
 
+<<<<<<< HEAD
   const request = await procurementRepository.findById({
     tenantId,
     requestId,
     userId,
     canViewAll: canViewAllRequests(roles),
   });
+=======
+  if (!normalized.id || !normalized.tenantId) {
+    throw httpError(
+      "Authenticated user and tenant information are required",
+      401
+    );
+  }
+
+  if (!PROCUREMENT_ROLES.has(normalized.role)) {
+    throw httpError(
+      "Your account does not have procurement access",
+      403
+    );
+  }
+
+  return normalized;
+}
+
+export async function listRequests(actor, query) {
+  const user = requireActor(actor);
+
+  return procurementRepository.listRequests(
+    user.tenantId,
+    query
+  );
+}
+
+export async function getRequest(actor, requestId) {
+  const user = requireActor(actor);
+
+  const request = await procurementRepository.findRequestById(
+    user.tenantId,
+    requestId
+  );
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
   if (!request) {
-    throw appError(404, 'Purchase request not found.', 'REQUEST_NOT_FOUND');
+    throw httpError("Procurement request not found", 404);
+  }
+
+  // Managers, finance users, and administrators can view requests
+  // within their own tenant. Employees can view only their own.
+  if (
+    user.role === "employee" &&
+    String(request.requesterId) !== String(user.id)
+  ) {
+    throw httpError("You cannot access this procurement request", 403);
   }
 
   return request;
 }
 
-export async function createRequest({
-  tenantId,
-  userId,
-  input = {},
-}) {
-  requireContext(tenantId, userId);
+export async function createRequest(actor, input) {
+  const user = requireActor(actor);
 
+<<<<<<< HEAD
   const rawTitle = input.title || input.productName || 'Purchase Request';
   const title = cleanText(rawTitle, 'Title', 200);
 
@@ -236,84 +278,101 @@ export async function createRequest({
     budgetId: input.budgetId,
     supplier: input.supplier,
   });
+=======
+  return procurementRepository.createRequest(
+    user.tenantId,
+    user.id,
+    input
+  );
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 }
 
-export async function updateRequest({
-  tenantId,
-  userId,
-  roles = [],
-  requestId,
-  input = {},
-}) {
-  requireContext(tenantId, userId);
-  validateId(requestId);
+export async function updateRequest(actor, requestId, input) {
+  const user = requireActor(actor);
 
-  const updates = {};
-
-  if (input.title !== undefined) {
-    updates.title = cleanText(input.title, 'Title', 200);
-  }
-
-  if (input.description !== undefined) {
-    updates.description = cleanText(
-      input.description,
-      'Description',
-      5000
+  if (user.role === "finance") {
+    throw httpError(
+      "Finance users cannot edit procurement request details",
+      403
     );
   }
 
-  if (input.amount !== undefined) {
-    updates.amount = validateAmount(input.amount);
-  }
+  const isAdmin = user.role === "admin";
 
-  if (input.currency !== undefined) {
-    const currency = String(input.currency).trim().toUpperCase();
+  if (!isAdmin) {
+    const existing = await procurementRepository.findRequestById(
+      user.tenantId,
+      requestId
+    );
 
-    if (!/^[A-Z]{3}$/.test(currency)) {
-      throw appError(400, 'Invalid currency code.', 'INVALID_CURRENCY');
+    if (!existing) {
+      throw httpError("Procurement request not found", 404);
     }
 
-    updates.currency = currency;
+    if (String(existing.requesterId) !== String(user.id)) {
+      throw httpError(
+        "You can only edit your own procurement requests",
+        403
+      );
+    }
+
+    if (!["draft", "pending"].includes(existing.status)) {
+      throw httpError(
+        "Only draft or pending requests can be edited",
+        409
+      );
+    }
   }
 
-  if (Object.keys(updates).length === 0) {
-    throw appError(
-      400,
-      'Provide at least one supported field to update.',
-      'NO_UPDATE_FIELDS'
-    );
-  }
-
-  const request = await procurementRepository.updateDraft({
-    tenantId,
+  return procurementRepository.updateRequest(
+    user.tenantId,
     requestId,
-    userId,
-    canManageAll: isFinanceOrAdmin(roles),
-    updates,
-  });
-
-  if (!request) {
-    throw appError(
-      404,
-      'Draft purchase request not found or cannot be edited.',
-      'REQUEST_NOT_EDITABLE'
-    );
-  }
-
-  return request;
+    user.id,
+    isAdmin,
+    input
+  );
 }
 
-export async function submitRequest({
-  tenantId,
-  userId,
-  requestId,
-}) {
-  requireContext(tenantId, userId);
-  validateId(requestId);
+export async function submitRequest(actor, requestId) {
+  const user = requireActor(actor);
 
-  const request = await procurementRepository.submitDraft({
-    tenantId,
+  if (user.role === "finance") {
+    throw httpError(
+      "Finance users cannot submit procurement requests",
+      403
+    );
+  }
+
+  const existing = await procurementRepository.findRequestById(
+    user.tenantId,
+    requestId
+  );
+
+  if (!existing) {
+    throw httpError("Procurement request not found", 404);
+  }
+
+  if (
+    user.role !== "admin" &&
+    String(existing.requesterId) !== String(user.id)
+  ) {
+    throw httpError(
+      "You can only submit your own procurement requests",
+      403
+    );
+  }
+
+  if (!["draft", "pending"].includes(existing.status)) {
+    throw httpError(
+      "This request cannot be submitted in its current status",
+      409
+    );
+  }
+
+  return procurementRepository.submitRequest(
+    user.tenantId,
     requestId,
+<<<<<<< HEAD
     userId,
   });
 
@@ -449,3 +508,9 @@ export async function financeDecision({
 
   return result;
 }
+=======
+    user.id,
+    user.role === "admin"
+  );
+}
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)

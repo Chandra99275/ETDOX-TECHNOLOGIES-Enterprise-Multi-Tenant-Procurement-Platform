@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 CREATE TABLE IF NOT EXISTS organizations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
@@ -69,3 +70,6 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user
     ON user_sessions(user_id);
+=======
+Get-Content ".\backend\src\modules\auth\auth.repository.js" |
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)

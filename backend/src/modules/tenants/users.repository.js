@@ -439,7 +439,7 @@ async function getUserFromClient(client, tenantId, id) {
               '[]'::jsonb
             ) AS roles
      FROM users u
-     LEFT JOIN user_roles ur
+ Select-Object -Skip 200 -First 180 Select-Object -Skip 200 -First 180     LEFT JOIN user_roles ur
        ON ur.tenant_id = u.tenant_id AND ur.user_id = u.id
      LEFT JOIN roles r
        ON r.tenant_id = ur.tenant_id AND r.id = ur.role_id

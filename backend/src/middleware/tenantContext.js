@@ -1,50 +1,75 @@
+import { withTenantTransaction } from "../config/database.js";
 
-import { pool } from '../config/database.js';
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function tenantContext(req, res, next) {
-  if (!req.user?.id || !req.user?.tenantId) {
-    return res.status(401).json({
-      success: false,
-      message: 'Authenticated tenant context is required.',
-    });
-  }
+function createError(status, message, code) {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
 
-  // Never accept tenant identity from an arbitrary request header or body.
-  req.tenantId = req.user.tenantId;
-
-  /**
-   * Run tenant-scoped SQL in a transaction.
-   * SET LOCAL is automatically cleared when the transaction ends.
-   */
-  req.withTenantDb = async (callback) => {
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      await client.query(
-        "SELECT set_config('app.tenant_id', $1, true)",
-        [req.tenantId]
+export function tenantContext(req, _res, next) {
+  try {
+    if (!req.user) {
+      return next(
+        createError(
+          401,
+          "Authentication is required to establish tenant context.",
+          "UNAUTHORIZED"
+        )
       );
-
-      const result = await callback(client);
-
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // Preserve the original error.
-      }
-
-      throw error;
-    } finally {
-      client.release();
     }
-  };
 
-  return next();
+    const tenantId = req.user.tenantId;
+
+    if (typeof tenantId !== "string" || !UUID_REGEX.test(tenantId)) {
+      return next(
+        createError(
+          403,
+          "The authenticated user has an invalid tenant ID.",
+          "INVALID_TENANT"
+        )
+      );
+    }
+
+    // Reject a conflicting tenant ID supplied through a request header.
+    const requestedTenantId = req.headers["x-tenant-id"];
+
+    if (
+      requestedTenantId !== undefined &&
+      (
+        typeof requestedTenantId !== "string" ||
+        requestedTenantId.toLowerCase() !== tenantId.toLowerCase()
+      )
+    ) {
+      return next(
+        createError(
+          403,
+          "You cannot access another tenant's data.",
+          "TENANT_MISMATCH"
+        )
+      );
+    }
+
+    // The tenant ID is taken from the verified authentication context.
+    req.tenantId = tenantId;
+
+    /**
+     * Run tenant-scoped database operations inside a transaction.
+     *
+     * The callback receives the transaction's PostgreSQL client.
+     * All tenant-scoped queries must use that client so the
+     * transaction-local app.tenant_id setting remains in effect.
+     */
+    req.withTenantTransaction = (callback) =>
+      withTenantTransaction(req.tenantId, callback);
+
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 }
 
 export default tenantContext;

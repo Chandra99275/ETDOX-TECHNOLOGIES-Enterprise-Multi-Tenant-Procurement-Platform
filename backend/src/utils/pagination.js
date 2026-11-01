@@ -1,42 +1,49 @@
+import ApiError from "./ApiError.js";
 
 const DEFAULT_PAGE = 1;
-const DEFAULT_LIMIT = 20;
+const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 
-function parsePositiveInteger(value, fallback) {
-  if (value === undefined || value === null || value === '') {
+function parsePositiveInteger(value, fallback, fieldName) {
+  if (value === undefined || value === null || value === "") {
     return fallback;
   }
 
   const parsed = Number(value);
 
-  if (
-    !Number.isSafeInteger(parsed) ||
-    parsed < 1
-  ) {
-    return fallback;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw ApiError.badRequest(
+      `"${fieldName}" must be a positive integer.`
+    );
   }
 
   return parsed;
 }
 
+/**
+ * Read and normalize page and limit from query parameters.
+ *
+ * Example:
+ * GET /api/v1/procurement/requests?page=2&limit=20
+ */
 export function getPagination(query = {}) {
-  const page = parsePositiveInteger(query.page, DEFAULT_PAGE);
+  const page = parsePositiveInteger(
+    query.page,
+    DEFAULT_PAGE,
+    "page"
+  );
 
   const requestedLimit = parsePositiveInteger(
     query.limit,
-    DEFAULT_LIMIT
+    DEFAULT_LIMIT,
+    "limit"
   );
 
   const limit = Math.min(requestedLimit, MAX_LIMIT);
   const offset = (page - 1) * limit;
 
   if (!Number.isSafeInteger(offset)) {
-    return {
-      page: DEFAULT_PAGE,
-      limit: DEFAULT_LIMIT,
-      offset: 0,
-    };
+    throw ApiError.badRequest("Pagination offset is too large.");
   }
 
   return {
@@ -46,27 +53,46 @@ export function getPagination(query = {}) {
   };
 }
 
-export function getPaginationMeta(totalItems, page, limit) {
-  const total = Math.max(0, Number(totalItems) || 0);
-  const safePage = Math.max(1, Number(page) || DEFAULT_PAGE);
-  const safeLimit = Math.max(1, Number(limit) || DEFAULT_LIMIT);
-  const totalPages = Math.ceil(total / safeLimit);
+/**
+ * Create pagination metadata for an API response.
+ */
+export function getPaginationMetadata({ page, limit, total }) {
+  const normalizedPage = parsePositiveInteger(page, DEFAULT_PAGE, "page");
+  const normalizedLimit = parsePositiveInteger(limit, DEFAULT_LIMIT, "limit");
+
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw ApiError.badRequest(
+      '"total" must be a non-negative safe integer.'
+    );
+  }
+
+  const totalPages = Math.ceil(total / normalizedLimit);
 
   return {
-    page: safePage,
-    limit: safeLimit,
-    totalItems: total,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    total,
     totalPages,
-    hasPreviousPage: safePage > 1,
-    hasNextPage: safePage < totalPages,
+    hasNextPage: normalizedPage < totalPages,
+    hasPreviousPage: normalizedPage > 1,
   };
 }
 
-export function paginatedResponse(items, totalItems, pagination) {
-  const { page, limit } = pagination;
-
-  return {
-    items,
-    pagination: getPaginationMeta(totalItems, page, limit),
-  };
+/**
+ * Create pagination metadata using a database result.
+ */
+export function createPagination(page, limit, total) {
+  return getPaginationMetadata({
+    page,
+    limit,
+    total,
+  });
 }
+
+export { DEFAULT_PAGE, DEFAULT_LIMIT, MAX_LIMIT };
+
+export default {
+  getPagination,
+  getPaginationMetadata,
+  createPagination,
+};

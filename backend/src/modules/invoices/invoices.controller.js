@@ -1,92 +1,90 @@
+// backend/src/modules/invoices/invoices.controller.js
 
-import { getRequestContext } from '../../middleware/auth.js';
-import {
-  approveInvoice,
-  createInvoice,
-  getInvoice,
-  listInvoices,
-  transitionInvoice,
-  validateInvoice,
-} from './invoices.repository.js';
+import * as invoicesService from "./invoices.service.js";
 
-export const create = async (req, res, next) => {
+function sendError(res, error) {
+  const statusCode = error.statusCode || 500;
+
+  if (statusCode >= 500) {
+    console.error("[Invoices Controller]", error);
+  }
+
+  // Do not expose database internals to clients.
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode >= 500
+        ? "An internal error occurred while processing the invoice."
+        : error.message,
+  });
+}
+
+export async function listInvoices(req, res) {
   try {
-    res.status(201).json({
-      data: await createInvoice(getRequestContext(req), req.body),
+    const result = await invoicesService.listInvoices(
+      req.user,
+      req.validatedQuery ?? req.query,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Invoices retrieved successfully.",
+      data: result.items,
+      pagination: result.pagination,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
 
-export const list = async (req, res, next) => {
+export async function getInvoice(req, res) {
   try {
-    const query = req.query;
+    const invoice = await invoicesService.getInvoice(
+      req.user,
+      req.params.id,
+    );
 
-    res.json(await listInvoices(getRequestContext(req), query));
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const get = async (req, res, next) => {
-  try {
-    res.json({
-      data: await getInvoice(getRequestContext(req), req.params.id),
+    return res.status(200).json({
+      success: true,
+      message: "Invoice retrieved successfully.",
+      data: invoice,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
 
-export const validate = async (req, res, next) => {
+export async function createInvoice(req, res) {
   try {
-    res.json({
-      data: await validateInvoice(getRequestContext(req), req.params.id),
+    const invoice = await invoicesService.createInvoice(
+      req.user,
+      req.validatedBody,
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Invoice created successfully.",
+      data: invoice,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
 
-export const approve = async (req, res, next) => {
+export async function updateInvoice(req, res) {
   try {
-    res.json({
-      data: await approveInvoice(getRequestContext(req), req.params.id),
+    const invoice = await invoicesService.updateInvoice(
+      req.user,
+      req.params.id,
+      req.validatedBody,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Invoice updated successfully.",
+      data: invoice,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
-
-export const paymentReady = async (req, res, next) => {
-  try {
-    res.json({
-      data: await transitionInvoice(
-        getRequestContext(req),
-        req.params.id,
-        'APPROVED',
-        'PAYMENT_READY',
-        'invoice.payment_ready'
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const markPaid = async (req, res, next) => {
-  try {
-    res.json({
-      data: await transitionInvoice(
-        getRequestContext(req),
-        req.params.id,
-        'PAYMENT_READY',
-        'PAID',
-        'invoice.marked_paid'
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+}

@@ -1,73 +1,89 @@
-import { getRequestContext } from '../../middleware/auth.js';
-import {
-  changeSupplierStatus,
-  createSupplier,
-  getSupplier,
-  listSuppliers,
-  updateSupplier,
-} from './suppliers.repository.js';
+// backend/src/modules/suppliers/suppliers.controller.js
 
-export const create = async (req, res, next) => {
-  try {
-    res.status(201).json({
-      data: await createSupplier(getRequestContext(req), req.body),
-    });
-  } catch (error) {
-    next(error);
+import * as suppliersService from "./suppliers.service.js";
+
+function sendError(res, error) {
+  const statusCode = error.statusCode || 500;
+
+  if (statusCode >= 500) {
+    console.error("[Suppliers Controller]", error);
   }
-};
 
-export const list = async (req, res, next) => {
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode >= 500
+        ? "An internal error occurred while processing the supplier request."
+        : error.message,
+  });
+}
+
+export async function listSuppliers(req, res) {
   try {
-    const query = req.query;
-
-    res.json(
-      await listSuppliers(getRequestContext(req), {
-        status: query.status,
-        search: query.search,
-        limit: query.limit,
-        offset: query.offset,
-      })
+    const result = await suppliersService.listSuppliers(
+      req.user,
+      req.validatedQuery ?? req.query,
     );
-  } catch (error) {
-    next(error);
-  }
-};
 
-export const get = async (req, res, next) => {
-  try {
-    res.json({
-      data: await getSupplier(getRequestContext(req), req.params.id),
+    return res.status(200).json({
+      success: true,
+      message: "Suppliers retrieved successfully.",
+      data: result.items,
+      pagination: result.pagination,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
 
-export const update = async (req, res, next) => {
+export async function getSupplier(req, res) {
   try {
-    res.json({
-      data: await updateSupplier(
-        getRequestContext(req),
-        req.params.id,
-        req.body
-      ),
+    const supplier = await suppliersService.getSupplier(
+      req.user,
+      req.params.id,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Supplier retrieved successfully.",
+      data: supplier,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
 
-export const changeStatus = async (req, res, next) => {
+export async function createSupplier(req, res) {
   try {
-    res.json({
-      data: await changeSupplierStatus(
-        getRequestContext(req),
-        req.params.id,
-        req.body.status
-      ),
+    const supplier = await suppliersService.createSupplier(
+      req.user,
+      req.validatedBody,
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Supplier registered successfully.",
+      data: supplier,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
-};
+}
+
+export async function updateSupplier(req, res) {
+  try {
+    const supplier = await suppliersService.updateSupplier(
+      req.user,
+      req.params.id,
+      req.validatedBody,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Supplier updated successfully.",
+      data: supplier,
+    });
+  } catch (error) {
+    return sendError(res, error);
+  }
+}

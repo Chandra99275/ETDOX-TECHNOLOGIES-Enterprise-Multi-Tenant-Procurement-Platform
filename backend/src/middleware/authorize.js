@@ -1,260 +1,87 @@
+const normalize = (value) => String(value).trim().toLowerCase();
 
-import { AppError } from "../utils/errors.js";
-
-// --------------------------------------------------
-// 1. Normalize roles
-// --------------------------------------------------
-
-function getUserRoles(user) {
-  if (!user) return [];
-
-  const roles = Array.isArray(user.roles)
-    ? user.roles
-    : [];
-
-  const normalizedRoles = roles
-    .map((role) =>
-      typeof role === "string"
-        ? role
-        : role?.name
-    )
-    .filter(Boolean)
-    .map((role) => role.trim().toLowerCase());
-
-  // Support legacy middleware and login responses that
-  // expose a single role instead of a roles array.
-  if (normalizedRoles.length === 0) {
-    const singleRole =
-      typeof user.role === "string"
-        ? user.role
-        : typeof user.roleName === "string"
-          ? user.roleName
-          : null;
-
-    if (singleRole?.trim()) {
-      normalizedRoles.push(singleRole.trim().toLowerCase());
-    }
-  }
-
-  return [...new Set(normalizedRoles)];
+function forbidden(message = "You do not have permission to perform this action.") {
+  const error = new Error(message);
+  error.status = 403;
+  error.code = "FORBIDDEN";
+  return error;
 }
 
-// --------------------------------------------------
-// 2. Normalize permissions
-// --------------------------------------------------
-
-function getUserPermissions(req) {
-  const permissions = new Set();
-
-  const userPermissions = req.user?.permissions;
-  const contextPermissions = req.context?.permissions;
-
-  if (Array.isArray(userPermissions)) {
-    userPermissions.forEach((permission) => {
-      if (typeof permission === "string") {
-        permissions.add(permission.trim());
-      }
-    });
-  }
-
-  if (Array.isArray(contextPermissions)) {
-    contextPermissions.forEach((permission) => {
-      if (typeof permission === "string") {
-        permissions.add(permission.trim());
-      }
-    });
-  }
-
-  // Some authentication implementations store permissions
-  // on individual role objects.
-  for (const role of req.user?.roles ?? []) {
-    if (
-      role &&
-      typeof role === "object" &&
-      Array.isArray(role.permissions)
-    ) {
-      role.permissions.forEach((permission) => {
-        if (typeof permission === "string") {
-          permissions.add(permission.trim());
-        }
-      });
-    }
-  }
-
-  permissions.delete("");
-
-  return permissions;
-}
-
-// --------------------------------------------------
-// 3. Check whether a permission is granted
-// --------------------------------------------------
-
-function hasPermission(grantedPermissions, requiredPermission) {
-  return (
-    grantedPermissions.has("*") ||
-    grantedPermissions.has(requiredPermission)
-  );
-}
-
-// --------------------------------------------------
-// 4. Role-based authorization
-// --------------------------------------------------
-
+/**
+ * Restrict a route to one or more roles.
+ *
+ * Example:
+ * authorize("admin", "manager")
+ */
 export function authorize(...allowedRoles) {
-  const requiredRoles = allowedRoles
-    .flat()
-    .filter((role) => role !== null && role !== undefined)
-    .map((role) => String(role).trim().toLowerCase())
-    .filter(Boolean);
+  const permittedRoles = allowedRoles.flat().map(normalize);
 
-  return (req, res, next) => {
-    if (!req.user && !req.context) {
-      return next(
-        new AppError(
-          401,
-          "UNAUTHENTICATED",
-          "Authenticate before accessing this resource."
-        )
-      );
+  if (permittedRoles.length === 0) {
+    throw new Error("authorize() requires at least one allowed role.");
+  }
+
+  return function authorizeRole(req, _res, next) {
+    if (!req.user) {
+      const error = new Error("Authentication required.");
+      error.status = 401;
+      error.code = "UNAUTHORIZED";
+      return next(error);
     }
 
-    // An empty role list means authentication is sufficient.
-    if (requiredRoles.length === 0) {
-      return next();
-    }
+    const userRoles = [
+      ...(req.user.role ? [req.user.role] : []),
+      ...(Array.isArray(req.user.roles) ? req.user.roles : []),
+    ].map(normalize);
 
-    const userRoles = getUserRoles(req.user);
-
-    // Support context-only middleware.
-    if (userRoles.length === 0 && req.context) {
-      userRoles.push(
-        ...getUserRoles({
-          roles: req.context.roles,
-        })
-      );
-    }
-
-    const allowed = requiredRoles.some((role) =>
+    const hasPermission = permittedRoles.some((role) =>
       userRoles.includes(role)
     );
 
-    if (!allowed) {
-      return next(
-        new AppError(
-          403,
-          "FORBIDDEN",
-          "You do not have the required role."
-        )
-      );
+    if (!hasPermission) {
+      return next(forbidden());
     }
 
     return next();
   };
 }
 
-// --------------------------------------------------
-// 5. Permission-based authorization
-// --------------------------------------------------
-
+/**
+ * Require a specific permission.
+ *
+ * Example:
+ * requirePermission("invoices:approve")
+ */
 export function requirePermission(...requiredPermissions) {
-  const required = requiredPermissions
-    .flat()
-    .filter(
-      (permission) =>
-        permission !== null && permission !== undefined
-    )
-    .map((permission) => String(permission).trim())
-    .filter(Boolean);
+  const permissions = requiredPermissions.flat();
 
-  return (req, res, next) => {
-    if (!req.user && !req.context) {
-      return next(
-        new AppError(
-          401,
-          "UNAUTHENTICATED",
-          "Authentication is required."
-        )
-      );
+  if (permissions.length === 0) {
+    throw new Error(
+      "requirePermission() requires at least one permission."
+    );
+  }
+
+  return function permissionCheck(req, _res, next) {
+    if (!req.user) {
+      const error = new Error("Authentication required.");
+      error.status = 401;
+      error.code = "UNAUTHORIZED";
+      return next(error);
     }
 
-    // No requested permissions means authentication alone
-    // is sufficient.
-    if (required.length === 0) {
-      return next();
-    }
+    const userPermissions = Array.isArray(req.user.permissions)
+      ? req.user.permissions
+      : [];
 
-    const grantedPermissions = getUserPermissions(req);
-
-    const allowed = required.every((permission) =>
-      hasPermission(grantedPermissions, permission)
+    const allowed = permissions.every((permission) =>
+      userPermissions.includes(permission)
     );
 
     if (!allowed) {
-      return next(
-        new AppError(
-          403,
-          "FORBIDDEN",
-          "You do not have permission to perform this action."
-        )
-      );
+      return next(forbidden("Required permission is missing."));
     }
 
     return next();
   };
 }
-
-// --------------------------------------------------
-// 6. Require any one of several permissions
-// --------------------------------------------------
-
-export function requireAnyPermission(...requiredPermissions) {
-  const required = requiredPermissions
-    .flat()
-    .filter(
-      (permission) =>
-        permission !== null && permission !== undefined
-    )
-    .map((permission) => String(permission).trim())
-    .filter(Boolean);
-
-  return (req, res, next) => {
-    if (!req.user && !req.context) {
-      return next(
-        new AppError(
-          401,
-          "UNAUTHENTICATED",
-          "Authentication is required."
-        )
-      );
-    }
-
-    if (required.length === 0) {
-      return next();
-    }
-
-    const grantedPermissions = getUserPermissions(req);
-
-    const allowed = required.some((permission) =>
-      hasPermission(grantedPermissions, permission)
-    );
-
-    if (!allowed) {
-      return next(
-        new AppError(
-          403,
-          "FORBIDDEN",
-          "You do not have any of the required permissions."
-        )
-      );
-    }
-
-    return next();
-  };
-}
-
-// --------------------------------------------------
-// 7. Default export
-// --------------------------------------------------
 
 export default authorize;

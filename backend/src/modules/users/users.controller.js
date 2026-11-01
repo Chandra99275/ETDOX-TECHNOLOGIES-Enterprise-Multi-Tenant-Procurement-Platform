@@ -1,20 +1,34 @@
-import * as usersService from './users.service.js';
+import * as usersService from "./users.service.js";
 
-function getTenantId(req) {
-  return req.tenantId ?? req.user?.tenantId;
+function getActor(req) {
+  const user = req.user;
+
+  if (!user) {
+    const error = new Error("Authentication is required");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  return {
+    id: user.id ?? user.userId,
+    tenantId: user.tenantId ?? user.tenant_id,
+    role: user.role,
+  };
 }
 
+/**
+ * GET /api/v1/users
+ */
 export async function listUsers(req, res, next) {
   try {
-    const result = await usersService.listUsers({
-      tenantId: getTenantId(req),
-      page: req.query.page,
-      limit: req.query.limit,
-      search: req.query.search,
-    });
+    const result = await usersService.listUsers(
+      getActor(req),
+      req.validatedQuery
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
+      message: "Users retrieved successfully",
       data: result.users,
       pagination: result.pagination,
     });
@@ -23,15 +37,19 @@ export async function listUsers(req, res, next) {
   }
 }
 
+/**
+ * GET /api/v1/users/:id
+ */
 export async function getUser(req, res, next) {
   try {
-    const user = await usersService.getUser({
-      tenantId: getTenantId(req),
-      userId: req.params.id,
-    });
+    const user = await usersService.getUser(
+      getActor(req),
+      req.params.id
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
+      message: "User retrieved successfully",
       data: user,
     });
   } catch (error) {
@@ -39,16 +57,19 @@ export async function getUser(req, res, next) {
   }
 }
 
+/**
+ * POST /api/v1/users
+ */
 export async function createUser(req, res, next) {
   try {
-    const user = await usersService.createUser({
-      tenantId: getTenantId(req),
-      input: req.body,
-    });
+    const user = await usersService.createUser(
+      getActor(req),
+      req.validatedBody
+    );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'User created successfully.',
+      message: "User created successfully",
       data: user,
     });
   } catch (error) {
@@ -56,17 +77,20 @@ export async function createUser(req, res, next) {
   }
 }
 
+/**
+ * PATCH /api/v1/users/:id
+ */
 export async function updateUser(req, res, next) {
   try {
-    const user = await usersService.updateUser({
-      tenantId: getTenantId(req),
-      userId: req.params.id,
-      input: req.body,
-    });
+    const user = await usersService.updateUser(
+      getActor(req),
+      req.params.id,
+      req.validatedBody
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'User updated successfully.',
+      message: "User updated successfully",
       data: user,
     });
   } catch (error) {
@@ -74,26 +98,20 @@ export async function updateUser(req, res, next) {
   }
 }
 
+/**
+ * PATCH /api/v1/users/:id/deactivate
+ */
 export async function deactivateUser(req, res, next) {
   try {
-    const currentUserId = req.user?.id;
+    const result = await usersService.deactivateUser(
+      getActor(req),
+      req.params.id
+    );
 
-    if (currentUserId === req.params.id) {
-      return res.status(400).json({
-        success: false,
-        message: 'You cannot deactivate your own account.',
-      });
-    }
-
-    const user = await usersService.deactivateUser({
-      tenantId: getTenantId(req),
-      userId: req.params.id,
-    });
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'User deactivated successfully.',
-      data: user,
+      message: "User deactivated successfully",
+      data: result,
     });
   } catch (error) {
     next(error);

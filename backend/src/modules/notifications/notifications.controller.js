@@ -1,44 +1,121 @@
+// backend/src/modules/notifications/notifications.controller.js
 
-import { getRequestContext } from '../../middleware/auth.js';
 import {
-  getNotification,
-  listNotifications,
-  markNotificationRead,
-} from './notifications.repository.js';
+  listNotificationsService,
+  getNotificationService,
+  createNotificationService,
+  markNotificationReadService,
+  markAllNotificationsReadService,
+  deleteNotificationService,
+} from "./notifications.service.js";
 
-export const list = async (req, res, next) => {
+function handleError(res, error) {
+  const statusCode = Number.isInteger(error.statusCode)
+    ? error.statusCode
+    : 500;
+
+  if (statusCode >= 500) {
+    console.error("[Notifications]", error);
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode >= 500
+        ? "An error occurred while processing notifications."
+        : error.message,
+  });
+}
+
+export async function listNotificationsController(req, res) {
   try {
-    const query = req.query;
-    res.json(
-      await listNotifications(getRequestContext(req), query)
+    const result = await listNotificationsService(req.user, req.query);
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
+export async function getNotificationController(req, res) {
+  try {
+    const notification = await getNotificationService(
+      req.user,
+      req.params.id,
     );
-  } catch (error) {
-    next(error);
-  }
-};
 
-export const get = async (req, res, next) => {
-  try {
-    res.json({
-      data: await getNotification(
-        getRequestContext(req),
-        req.params.id
-      ),
+    return res.status(200).json({
+      success: true,
+      data: notification,
     });
   } catch (error) {
-    next(error);
+    return handleError(res, error);
   }
-};
+}
 
-export const markRead = async (req, res, next) => {
+export async function createNotificationController(req, res) {
   try {
-    res.json({
-      data: await markNotificationRead(
-        getRequestContext(req),
-        req.params.id
-      ),
+    const notification = await createNotificationService(
+      req.user,
+      req.body,
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Notification created successfully.",
+      data: notification,
     });
   } catch (error) {
-    next(error);
+    return handleError(res, error);
   }
-};
+}
+
+export async function markNotificationReadController(req, res) {
+  try {
+    const notification = await markNotificationReadService(
+      req.user,
+      req.params.id,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification marked as read.",
+      data: notification,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
+export async function markAllNotificationsReadController(req, res) {
+  try {
+    const result = await markAllNotificationsReadService(req.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "All notifications marked as read.",
+      data: result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}
+
+export async function deleteNotificationController(req, res) {
+  try {
+    const result = await deleteNotificationService(
+      req.user,
+      req.params.id,
+    );
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return handleError(res, error);
+  }
+}

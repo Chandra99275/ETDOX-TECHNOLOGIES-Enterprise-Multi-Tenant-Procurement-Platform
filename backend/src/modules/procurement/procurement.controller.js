@@ -1,98 +1,120 @@
-import * as procurementService from './procurement.service.js';
+import * as procurementService from "./procurement.service.js";
 
-function getContext(req) {
+function getActor(req) {
+  const user = req.user;
+
+  if (!user) {
+    const error = new Error("Authentication is required");
+    error.statusCode = 401;
+    throw error;
+  }
+
   return {
-    tenantId: req.tenantId ?? req.user?.tenantId,
-    userId: req.user?.id,
-    roles: req.user?.roles ?? [],
+    id: user.id ?? user.userId,
+    tenantId: user.tenantId ?? user.tenant_id,
+    role: user.role,
   };
 }
 
+/**
+ * GET /api/v1/procurement
+ */
 export async function listRequests(req, res, next) {
   try {
-    const result = await procurementService.listRequests({
-      ...getContext(req),
-      page: req.query.page,
-      limit: req.query.limit,
-      status: req.query.status,
-      search: req.query.search,
-    });
+    const result = await procurementService.listRequests(
+      getActor(req),
+      req.validatedQuery ?? req.query
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
+      message: "Procurement requests retrieved successfully",
       data: result.requests,
       requests: result.requests, // compatibility
       pagination: result.pagination,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
 
+/**
+ * GET /api/v1/procurement/:id
+ */
 export async function getRequest(req, res, next) {
   try {
-    const request = await procurementService.getRequest({
-      ...getContext(req),
-      requestId: req.params.id,
-    });
+    const request = await procurementService.getRequest(
+      getActor(req),
+      req.params.id
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
+      message: "Procurement request retrieved successfully",
       data: request,
       request,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
 
+/**
+ * POST /api/v1/procurement
+ */
 export async function createRequest(req, res, next) {
   try {
-    const request = await procurementService.createRequest({
-      ...getContext(req),
-      input: req.body,
-    });
+    const request = await procurementService.createRequest(
+      getActor(req),
+      req.validatedBody
+    );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Purchase request created successfully.',
+      message: "Procurement request created successfully",
       data: request,
       request,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
 
+/**
+ * PATCH /api/v1/procurement/:id
+ */
 export async function updateRequest(req, res, next) {
   try {
-    const request = await procurementService.updateRequest({
-      ...getContext(req),
-      requestId: req.params.id,
-      input: req.body,
-    });
+    const request = await procurementService.updateRequest(
+      getActor(req),
+      req.params.id,
+      req.validatedBody
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Purchase request updated successfully.',
+      message: "Procurement request updated successfully",
       data: request,
       request,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
 
+/**
+ * POST /api/v1/procurement/:id/submit
+ */
 export async function submitRequest(req, res, next) {
   try {
-    const request = await procurementService.submitRequest({
-      ...getContext(req),
-      requestId: req.params.id,
-    });
+    const request = await procurementService.submitRequest(
+      getActor(req),
+      req.params.id
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Purchase request submitted successfully.',
+      message: "Procurement request submitted successfully",
       data: request,
       request,
     });
@@ -117,6 +139,7 @@ export async function managerDecision(req, res, next) {
       request,
     });
   } catch (error) {
+<<<<<<< HEAD
     next(error);
   }
 }
@@ -138,5 +161,8 @@ export async function financeDecision(req, res, next) {
     });
   } catch (error) {
     next(error);
+=======
+    return next(error);
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
   }
 }

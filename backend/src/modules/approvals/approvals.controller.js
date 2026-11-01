@@ -1,63 +1,115 @@
-import * as approvalsService from './approvals.service.js';
+// backend/src/modules/approvals/approvals.controller.js
 
-function getContext(req) {
-  return {
-    tenantId: req.tenantId ?? req.user?.tenantId,
-    userId: req.user?.id,
-    roles: req.user?.roles ?? [],
-  };
+import * as approvalsService from "./approvals.service.js";
+
+function getRequestId(req) {
+  return req.params.id;
 }
 
-export async function listApprovals(req, res, next) {
-  try {
-    const result = await approvalsService.listApprovals({
-      ...getContext(req),
-      page: req.query.page,
-      limit: req.query.limit,
-      status: req.query.status,
-    });
+function getComments(req) {
+  return String(req.body?.comments ?? "").trim();
+}
 
-    res.status(200).json({
+function sendError(res, error) {
+  const statusCode = error.statusCode || 500;
+
+  if (statusCode >= 500) {
+    console.error("[Approvals Controller]", error);
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    message:
+      statusCode >= 500
+        ? "An internal error occurred while processing the approval."
+        : error.message,
+  });
+}
+
+export async function listApprovals(req, res) {
+  try {
+    const result = await approvalsService.listApprovals(
+      req.user,
+      req.validatedQuery ?? req.query,
+    );
+
+    return res.status(200).json({
       success: true,
-      data: result.approvals,
+      message: "Approval requests retrieved successfully.",
+      data: result.items,
       pagination: result.pagination,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
 }
 
-export async function getApproval(req, res, next) {
+export async function getApproval(req, res) {
   try {
-    const approval = await approvalsService.getApproval({
-      ...getContext(req),
-      approvalId: req.params.id,
-    });
+    const result = await approvalsService.getApproval(
+      req.user,
+      getRequestId(req),
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      data: approval,
+      message: "Approval request retrieved successfully.",
+      data: result,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
   }
 }
 
-export async function decideApproval(req, res, next) {
+export async function approveRequest(req, res) {
   try {
-    const approval = await approvalsService.decideApproval({
-      ...getContext(req),
-      approvalId: req.params.id,
-      decision: req.body?.decision ?? req.body?.action,
-      comment: req.body?.comment,
-    });
+    const result = await approvalsService.approveRequest(
+      req.user,
+      getRequestId(req),
+      getComments(req),
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Approval decision recorded successfully.',
-      data: approval,
+      message: "Procurement request approved successfully.",
+      data: result,
     });
   } catch (error) {
-    next(error);
+    return sendError(res, error);
+  }
+}
+
+export async function rejectRequest(req, res) {
+  try {
+    const result = await approvalsService.rejectRequest(
+      req.user,
+      getRequestId(req),
+      getComments(req),
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Procurement request rejected successfully.",
+      data: result,
+    });
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
+export async function getApprovalHistory(req, res) {
+  try {
+    const result = await approvalsService.getHistory(
+      req.user,
+      getRequestId(req),
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Approval history retrieved successfully.",
+      data: result,
+    });
+  } catch (error) {
+    return sendError(res, error);
   }
 }

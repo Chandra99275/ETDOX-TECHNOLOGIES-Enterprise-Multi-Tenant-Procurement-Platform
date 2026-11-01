@@ -1,42 +1,35 @@
-import { Router } from 'express';
-import { authenticate } from '../../middleware/auth.js';
-import { requirePermission } from '../../middleware/rbac.js';
-import { validate } from '../../middleware/validate.js';
-import {
-  create,
-  list,
-  post,
-} from './receipts.controller.js';
-import {
-  createReceiptSchema,
-  emptyBodySchema,
-  receiptItemParamsSchema,
-  receiptParamsSchema,
-} from './receipts.schema.js';
+// backend/src/modules/receipts/receipts.routes.js
 
-export const router = Router();
+import { Router } from "express";
 
+import {
+  listReceiptsController,
+  getReceiptController,
+  createReceiptController,
+  updateReceiptController,
+  deleteReceiptController,
+} from "./receipts.controller.js";
+
+import { authenticate } from "../../middleware/authenticate.js";
+
+const router = Router();
+
+// All receipt endpoints require authentication.
 router.use(authenticate);
 
-router.get(
-  '/:purchaseOrderId/receipts',
-  requirePermission('receipts:read'),
-  validate(receiptParamsSchema, 'params'),
-  list
-);
+// GET /api/v1/receipts
+router.get("/", listReceiptsController);
 
-router.post(
-  '/:purchaseOrderId/receipts',
-  requirePermission('receipts:manage'),
-  validate(receiptParamsSchema, 'params'),
-  validate(createReceiptSchema),
-  create
-);
+// GET /api/v1/receipts/:id
+router.get("/:id", getReceiptController);
 
-router.post(
-  '/:purchaseOrderId/receipts/:receiptId/post',
-  requirePermission('receipts:manage'),
-  validate(receiptItemParamsSchema, 'params'),
-  validate(emptyBodySchema),
-  post
-);
+// POST /api/v1/receipts
+router.post("/", createReceiptController);
+
+// PATCH /api/v1/receipts/:id
+router.patch("/:id", updateReceiptController);
+
+// DELETE /api/v1/receipts/:id
+router.delete("/:id", deleteReceiptController);
+
+export default router;

@@ -1,183 +1,138 @@
+import { Router } from "express";
+import { z } from "zod";
 
-import { Router } from 'express';
-
-import { authenticate } from '../../middleware/auth.js';
-import { requirePermission } from '../../middleware/rbac.js';
-import { validate } from '../../middleware/validate.js';
+import { authenticate } from "../../middleware/authenticate.js";
 
 import {
-  addCostCenter,
-  addDepartment,
-  getCostCenters,
-  getDepartments,
-  getOrganization,
-  getRoles,
-  getUserById,
-  getUsers,
-  updateOrganization,
-  addRole,
-  addUser,
-  removeRole,
-  changeUserPassword,
-  updateRoleById,
-  updateUserById,
-  updateUserRoles,
-} from './tenants.controller.js';
+  listTenants,
+  getMyTenant,
+  getTenant,
+  createTenant,
+  updateTenant,
+} from "./tenants.controller.js";
 
-import {
-  costCenterSchema,
-  departmentSchema,
-  updateTenantSchema,
-} from './tenants.schema.js';
+const router = Router();
 
-import {
-  assignRolesSchema,
-  createUserSchema,
-  listUsersSchema,
-  resetPasswordSchema,
-  updateUserSchema,
-  userIdSchema,
-} from './users.schema.js';
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-import {
-  createRoleSchema,
-  roleIdSchema,
-  updateRoleSchema,
-} from './roles.schema.js';
+const listSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  search: z.string().trim().max(100).optional(),
+});
 
-export const router = Router();
+const createSchema = z.object({
+  name: z.string().trim().min(1).max(150),
 
-// Organization
-router.get(
-  '/organization',
-  authenticate,
-  requirePermission('organization:read'),
-  getOrganization
-);
+  slug: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
 
+});
+
+const updateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(150).optional(),
+
+    slug: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+      .optional(),
+
+    status: z.enum(["active", "inactive", "suspended"]).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, {
+    message: "Provide at least one field to update",
+  });
+
+function validateTenantId(req, res, next) {
+  if (!UUID_REGEX.test(req.params.id ?? "")) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid tenant ID",
+    });
+  }
+
+  next();
+}
+
+function validateList(req, res, next) {
+  const result = listSchema.safeParse(req.query);
+
+  if (!result.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid tenant query parameters",
+      errors: result.error.issues,
+    });
+  }
+
+  req.validatedQuery = result.data;
+  next();
+}
+
+function validateCreate(req, res, next) {
+  const result = createSchema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid tenant details",
+      errors: result.error.issues,
+    });
+  }
+
+  req.validatedBody = result.data;
+  next();
+}
+
+function validateUpdate(req, res, next) {
+  const result = updateSchema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid tenant update",
+      errors: result.error.issues,
+    });
+  }
+
+  req.validatedBody = result.data;
+  next();
+}
+
+// Every endpoint requires a valid access token.
+router.use(authenticate);
+
+// Get the authenticated user's own tenant.
+router.get("/me", getMyTenant);
+
+// Platform-wide tenant listing.
+// The service performs the platform-admin authorization check.
+router.get("/", validateList, listTenants);
+
+// Create a new tenant.
+router.post("/", validateCreate, createTenant);
+
+// Get one tenant by UUID.
+// The service prevents unauthorized cross-tenant access.
+router.get("/:id", validateTenantId, getTenant);
+
+// Update tenant metadata.
 router.patch(
-  '/organization',
-  authenticate,
-  requirePermission('organization:manage'),
-  validate(updateTenantSchema),
-  updateOrganization
-);
-
-// Departments
-router.get(
-  '/departments',
-  authenticate,
-  requirePermission('organization:read'),
-  getDepartments
-);
-
-router.post(
-  '/departments',
-  authenticate,
-  requirePermission('organization:manage'),
-  validate(departmentSchema),
-  addDepartment
-);
-
-// Cost centers
-router.get(
-  '/cost-centers',
-  authenticate,
-  requirePermission('organization:read'),
-  getCostCenters
-);
-
-router.post(
-  '/cost-centers',
-  authenticate,
-  requirePermission('organization:manage'),
-  validate(costCenterSchema),
-  addCostCenter
-);
-
-// Users
-router.get(
-  '/users',
-  authenticate,
-  requirePermission('users:read'),
-  validate(listUsersSchema, 'query'),
-  getUsers
-);
-
-router.post(
-  '/users',
-  authenticate,
-  requirePermission('users:manage'),
-  validate(createUserSchema),
-  addUser
-);
-
-router.get(
-  '/users/:id',
-  authenticate,
-  requirePermission('users:read'),
-  validate(userIdSchema, 'params'),
-  getUserById
-);
-
-router.patch(
-  '/users/:id',
-  authenticate,
-  requirePermission('users:manage'),
-  validate(userIdSchema, 'params'),
-  validate(updateUserSchema),
-  updateUserById
-);
-
-router.put(
-  '/users/:id/roles',
-  authenticate,
-  requirePermission('roles:manage'),
-  validate(userIdSchema, 'params'),
-  validate(assignRolesSchema),
-  updateUserRoles
-);
-
-router.put(
-  '/users/:id/password',
-  authenticate,
-  requirePermission('users:manage'),
-  validate(userIdSchema, 'params'),
-  validate(resetPasswordSchema),
-  changeUserPassword
-);
-
-// Roles
-router.get(
-  '/roles',
-  authenticate,
-  requirePermission('roles:manage'),
-  getRoles
-);
-
-router.post(
-  '/roles',
-  authenticate,
-  requirePermission('roles:manage'),
-  validate(createRoleSchema),
-  addRole
-);
-
-router.patch(
-  '/roles/:id',
-  authenticate,
-  requirePermission('roles:manage'),
-  validate(roleIdSchema, 'params'),
-  validate(updateRoleSchema),
-  updateRoleById
-);
-
-router.delete(
-  '/roles/:id',
-  authenticate,
-  requirePermission('roles:manage'),
-  validate(roleIdSchema, 'params'),
-  removeRole
+  "/:id",
+  validateTenantId,
+  validateUpdate,
+  updateTenant
 );
 
 export default router;

@@ -1,78 +1,228 @@
+import "dotenv/config";
+import { Worker } from "bullmq";
+import IORedis from "ioredis";
+import { pathToFileURL } from "node:url";
 
-import { Worker } from 'bullmq';
-import { redisConnection } from '../config/redis.js';
+import { QUEUE_NAMES } from "./queue.js";
+import { createNotification } from "../modules/notifications/notifications.repository.js";
 
-const QUEUE_NAME = 'notifications';
+// --------------------------------------------------
+// Redis connection
+// --------------------------------------------------
 
-async function processNotification(job) {
-  const { type, recipient, subject, message, metadata } = job.data ?? {};
+function createWorkerRedisConnection() {
+  const options = {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+  };
 
-  if (!type || !recipient || !message) {
-    throw new Error(
-      'Invalid notification job: type, recipient, and message are required.'
-    );
+  if (process.env.REDIS_URL) {
+    return new IORedis(process.env.REDIS_URL, options);
   }
 
-  switch (type) {
-    case 'email': {
-      // TODO: Connect your configured email provider here.
-      // Do not mark this as delivered until the provider confirms success.
-      console.info('[Notification Worker] Email job received', {
-        jobId: job.id,
-        recipient,
-        subject: subject ?? '(no subject)',
-      });
-
-      throw new Error(
-        'Email delivery is not configured. Connect an email provider before enabling email jobs.'
-      );
-    }
-
-    case 'in_app': {
-      // TODO: Persist the notification in your existing notifications table.
-      // The database schema has not yet been verified.
-      console.info('[Notification Worker] In-app notification received', {
-        jobId: job.id,
-        recipient,
-        message,
-        metadata: metadata ?? {},
-      });
-
-      throw new Error(
-        'In-app notification persistence is not configured yet.'
-      );
-    }
-
-    default:
-      throw new Error(`Unsupported notification type: ${type}`);
-  }
+  return new IORedis({
+    host: process.env.REDIS_HOST || "127.0.0.1",
+    port: Number.parseInt(process.env.REDIS_PORT || "6379", 10),
+    username: process.env.REDIS_USERNAME || undefined,
+    password: process.env.REDIS_PASSWORD || undefined,
+    db: Number.parseInt(process.env.REDIS_DB || "0", 10),
+    ...options,
+  });
 }
 
+const connection = createWorkerRedisConnection();
+
+// --------------------------------------------------
+// Notification job validation
+// --------------------------------------------------
+
+function validateNotificationJob(data) {
+  if (!data || typeof data !== "object") {
+    throw new Error("Notification job data is missing.");
+  }
+
+  const requiredFields = [
+    "tenantId",
+    "recipientId",
+    "title",
+    "message",
+  ];
+
+  for (const field of requiredFields) {
+    if (
+      data[field] === undefined ||
+      data[field] === null ||
+      String(data[field]).trim() === ""
+    ) {
+      throw new Error(
+        `Invalid notification job: ${field} is required.`
+      );
+    }
+  }
+
+  if (typeof data.title !== "string" || typeof data.message !== "string") {
+    throw new Error("Notification title and message must be strings.");
+  }
+
+  if (data.title.length > 200) {
+    throw new Error("Notification title exceeds 200 characters.");
+  }
+
+  if (data.message.length > 10000) {
+    throw new Error("Notification message exceeds 10000 characters.");
+  }
+
+  return {
+    tenantId: String(data.tenantId),
+    recipientId: String(data.recipientId),
+    title: data.title.trim(),
+    message: data.message.trim(),
+    type: data.type || "info",
+    link: data.link ?? null,
+    metadata: data.metadata ?? null,
+  };
+}
+
+// --------------------------------------------------
+// Process a notification
+// --------------------------------------------------
+
+async function processNotification(job) {
+  const notification = validateNotificationJob(job.data);
+
+  console.info("[Notification Worker] Processing job", {
+    jobId: job.id,
+    tenantId: notification.tenantId,
+    recipientId: notification.recipientId,
+    type: notification.type,
+  });
+
+  /*
+   * IMPORTANT:
+   * This call assumes your existing repository exports:
+   *
+   * createNotification(tenantId, notificationData)
+   *
+   * If your notifications.repository.js uses a different signature,
+   * align this call with that existing function.
+   */
+  const savedNotification = await createNotification(
+    notification.tenantId,
+    {
+      recipientId: notification.recipientId,
+      title: notification.title,
+      message: notification.message,
+      type: notification.type,
+      link: notification.link,
+      metadata: notification.metadata,
+    }
+  );
+
+  console.info("[Notification Worker] Notification created", {
+    jobId: job.id,
+    notificationId: savedNotification?.id ?? null,
+  });
+
+  return {
+    success: true,
+    jobId: job.id,
+    notificationId: savedNotification?.id ?? null,
+  };
+}
+
+// --------------------------------------------------
+// Start worker
+// --------------------------------------------------
+
 export const notificationWorker = new Worker(
-  QUEUE_NAME,
+  QUEUE_NAMES.NOTIFICATIONS,
   processNotification,
   {
-    connection: redisConnection,
-    concurrency: 5,
+    connection,
+    concurrency: Number.parseInt(
+      process.env.NOTIFICATION_WORKER_CONCURRENCY || "5",
+      10
+    ),
   }
 );
 
-notificationWorker.on('completed', (job) => {
-  console.info(`[Notification Worker] Job ${job.id} completed`);
+// --------------------------------------------------
+// Worker events
+// --------------------------------------------------
+
+notificationWorker.on("ready", () => {
+  console.info(
+    `[Notification Worker] Listening on queue "${QUEUE_NAMES.NOTIFICATIONS}".`
+  );
 });
 
-notificationWorker.on('failed', (job, error) => {
-  console.error('[Notification Worker] Job failed', {
-    jobId: job?.id,
-    attemptsMade: job?.attemptsMade,
+notificationWorker.on("active", (job) => {
+  console.info("[Notification Worker] Job started:", job.id);
+});
+
+notificationWorker.on("completed", (job, result) => {
+  console.info("[Notification Worker] Job completed:", {
+    jobId: job.id,
+    notificationId: result?.notificationId ?? null,
+  });
+});
+
+notificationWorker.on("failed", (job, error) => {
+  console.error("[Notification Worker] Job failed:", {
+    jobId: job?.id ?? null,
+    attemptsMade: job?.attemptsMade ?? null,
     error: error.message,
   });
 });
 
-notificationWorker.on('error', (error) => {
-  console.error('[Notification Worker] Worker error:', error.message);
+notificationWorker.on("error", (error) => {
+  console.error("[Notification Worker] Worker error:", error.message);
 });
 
-export async function closeNotificationWorker() {
-  await notificationWorker.close();
+// --------------------------------------------------
+// Graceful shutdown
+// --------------------------------------------------
+
+let shuttingDown = false;
+
+async function shutdown(signal = "shutdown") {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+
+  console.info(`[Notification Worker] Received ${signal}; shutting down.`);
+
+  try {
+    await notificationWorker.close();
+    await connection.quit();
+
+    console.info("[Notification Worker] Shutdown complete.");
+  } catch (error) {
+    console.error(
+      "[Notification Worker] Shutdown error:",
+      error.message
+    );
+
+    process.exitCode = 1;
+  }
+}
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+// --------------------------------------------------
+// Handle direct execution
+// --------------------------------------------------
+
+const isDirectExecution =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectExecution) {
+  console.info("[Notification Worker] Starting...");
 }

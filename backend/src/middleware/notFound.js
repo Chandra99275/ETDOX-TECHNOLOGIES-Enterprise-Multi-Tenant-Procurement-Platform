@@ -1,10 +1,12 @@
+export function notFound(req, _res, next) {
+  const error = new Error(
+    `Route not found: ${req.method} ${req.originalUrl}`
+  );
 
-export function notFound(req, res) {
-  return res.status(404).json({
-    success: false,
-    message: `Route not found: ${req.method} ${req.path}`,
-    requestId: req.requestId ?? null,
-  });
+  error.status = 404;
+  error.code = "ROUTE_NOT_FOUND";
+
+  next(error);
 }
 
 export default notFound;

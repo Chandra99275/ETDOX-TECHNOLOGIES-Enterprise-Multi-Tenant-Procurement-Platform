@@ -1,29 +1,90 @@
-import { Router } from 'express';
+import { Router } from "express";
+
+import { authenticate } from "../../middleware/authenticate.js";
+
+import {
+  validateListUsers,
+  validateUserId,
+  validateCreateUser,
+  validateUpdateUser,
+} from "./users.validation.js";
+
 import {
   listUsers,
   getUser,
   createUser,
   updateUser,
   deactivateUser,
-} from './users.controller.js';
-
-import { authenticate } from '../../middleware/authenticate.js';
-import { authorize } from '../../middleware/authorize.js';
+} from "./users.controller.js";
 
 const router = Router();
 
-// All user-management routes require authentication.
+function allowRoles(...allowedRoles) {
+  return function roleAuthorization(req, res, next) {
+    const role = String(req.user?.role ?? "").toLowerCase();
+
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication is required",
+      });
+    }
+
+    if (!allowedRoles.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to perform this operation",
+      });
+    }
+
+    next();
+  };
+}
+
+const adminOnly = allowRoles("admin");
+const adminOrManager = allowRoles("admin", "manager");
+
 router.use(authenticate);
 
-// Restrict user administration to authorized admin roles.
-router.use(
-  authorize('admin', 'organization_admin', 'organization admin')
+// List users belonging to the authenticated tenant.
+router.get(
+  "/",
+  adminOrManager,
+  validateListUsers,
+  listUsers
 );
 
-router.get('/', listUsers);
-router.get('/:id', getUser);
-router.post('/', createUser);
-router.patch('/:id', updateUser);
-router.patch('/:id/deactivate', deactivateUser);
+// Create a user in the authenticated tenant.
+router.post(
+  "/",
+  adminOnly,
+  validateCreateUser,
+  createUser
+);
+
+// View one user belonging to the authenticated tenant.
+router.get(
+  "/:id",
+  adminOrManager,
+  validateUserId,
+  getUser
+);
+
+// Update an existing user.
+router.patch(
+  "/:id",
+  adminOnly,
+  validateUserId,
+  validateUpdateUser,
+  updateUser
+);
+
+// Deactivate an account without physically deleting its record.
+router.patch(
+  "/:id/deactivate",
+  adminOnly,
+  validateUserId,
+  deactivateUser
+);
 
 export default router;

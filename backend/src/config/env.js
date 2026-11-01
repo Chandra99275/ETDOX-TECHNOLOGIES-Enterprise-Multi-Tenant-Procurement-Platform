@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -6,60 +7,61 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 dotenv.config();
+=======
+import "dotenv/config";
+import { z } from "zod";
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
-const nodeEnv = process.env.NODE_ENV || "development";
-const isProduction = nodeEnv === "production";
-const isDevelopment = !isProduction;
+const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
 
-const port = Number.parseInt(process.env.PORT || process.env.BACKEND_PORT || "5000", 10);
-const host = process.env.HOST || "0.0.0.0";
+  PORT: z.coerce.number().int().min(1).max(65535).default(5000),
 
+<<<<<<< HEAD
 const databaseUrl =
   process.env.DATABASE_URL ||
   "postgresql://etdox_user:postgre99@localhost:5432/etdox_dev";
+=======
+  HOST: z.string().default("0.0.0.0"),
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
-const jwtSecret =
-  process.env.JWT_SECRET ||
-  "e63da7e3016cdc9bcfcfc30779917328e9339a24cac9ad4dcb042ed50efaf7901eaa22dacc3560b6990f94d8316f9846";
+  FRONTEND_URL: z.string().url().default("http://localhost:5173"),
 
-const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
-const jwtIssuer = process.env.JWT_ISSUER || "etdox-api";
-const jwtAudience = process.env.JWT_AUDIENCE || "etdox-app";
+  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
-const webhookEncryptionKeyHex =
-  process.env.WEBHOOK_ENCRYPTION_KEY ||
-  "89d13a8203e2064eb669a3b9100cf2debfd90c7c6b518f26a897ce62623cf8c8";
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
 
-const defaultCurrency = process.env.DEFAULT_CURRENCY || "USD";
+  DB_SSL: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 
-const frontendUrl =
-  process.env.FRONTEND_URL ||
-  process.env.CORS_ORIGIN ||
-  "http://localhost:5173";
+  JWT_SECRET: z
+    .string()
+    .min(32, "JWT_SECRET must contain at least 32 characters")
+    .refine(
+      (value) =>
+        !/change[-_ ]?me|replace[-_ ]?with|your[-_ ]?secret|placeholder/i.test(
+          value
+        ),
+      "JWT_SECRET must not be a placeholder"
+    ),
 
-const apiBaseUrl =
-  process.env.API_BASE_URL ||
-  `http://localhost:${port}/api/v1`;
+  JWT_EXPIRES_IN: z.string().default("1h"),
 
-const configuredOrigins = [
-  process.env.CORS_ORIGINS,
-  process.env.CORS_ORIGIN,
-]
-  .filter(Boolean)
-  .flatMap((value) => value.split(","))
-  .map((origin) => origin.trim().replace(/\/+$/, ""))
-  .filter(Boolean);
+  ETDOX_DEMO_TENANT_ID: z
+    .string()
+    .uuid()
+    .default("b4383f9e-8e4a-42d7-9d34-ba59e5ea9a9e"),
 
-const corsOrigins = Array.from(
-  new Set([
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174",
-    ...configuredOrigins,
-  ])
-);
+  ETDOX_DEMO_AUTH: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 
+<<<<<<< HEAD
 const corsOrigin = corsOrigins[0];
 
 const demoLoginEnabled = false;
@@ -164,14 +166,49 @@ const env = Object.freeze({
 
   emailVerificationTtlMinutes,
   passwordResetTtlMinutes,
+=======
+  LOG_LEVEL: z
+    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+    .default("info"),
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 });
 
-export function parseWebhookEncryptionKey(raw) {
-  if (typeof raw !== 'string' || !/^[0-9a-fA-F]{64}$/.test(raw.trim())) {
-    throw new Error('WEBHOOK_ENCRYPTION_KEY must be exactly 64 hexadecimal characters.');
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  console.error("❌ Invalid backend environment configuration:");
+
+  for (const issue of parsed.error.issues) {
+    console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
   }
-  return Buffer.from(raw.trim(), 'hex');
+
+  throw new Error("Backend environment validation failed.");
 }
 
+<<<<<<< HEAD
 export { env };
 export default env;
+=======
+export const env = Object.freeze({
+  nodeEnv: parsed.data.NODE_ENV,
+  isDevelopment: parsed.data.NODE_ENV === "development",
+  isProduction: parsed.data.NODE_ENV === "production",
+  isTest: parsed.data.NODE_ENV === "test",
+
+  port: parsed.data.PORT,
+  host: parsed.data.HOST,
+  frontendUrl: parsed.data.FRONTEND_URL,
+
+  databaseUrl: parsed.data.DATABASE_URL,
+  dbPoolMax: parsed.data.DB_POOL_MAX,
+  dbSsl: parsed.data.DB_SSL,
+
+  jwtSecret: parsed.data.JWT_SECRET,
+  jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
+
+  demoTenantId: parsed.data.ETDOX_DEMO_TENANT_ID,
+  demoAuthEnabled: parsed.data.ETDOX_DEMO_AUTH,
+
+  logLevel: parsed.data.LOG_LEVEL,
+});
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)

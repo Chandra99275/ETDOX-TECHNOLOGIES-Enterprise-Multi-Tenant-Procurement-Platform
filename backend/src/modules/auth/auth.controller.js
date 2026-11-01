@@ -1,128 +1,78 @@
-import * as authService from "./auth.service.js";
-import { env } from "../../config/env.js";
 
-function sendError(res, error) {
-  const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
-  return res.status(statusCode).json({
-    success: false,
-    message: statusCode === 500 ? (error?.message || "An unexpected error occurred.") : error.message,
-    error: {
-      code: error.code || "AUTH_ERROR",
-      message: error.message,
-      ...(error.fields ? { fields: error.fields } : {}),
-    },
-  });
-}
+import {
+  login as loginService,
+  getCurrentUser,
+} from "./auth.service.js";
 
-function setAuthCookie(res, token) {
-  res.cookie("etdox_token", token, {
-    httpOnly: true,
-    secure: env.isProduction,
-    sameSite: env.isProduction ? "strict" : "lax",
-    path: "/",
-    maxAge: 8 * 3600 * 1000, // 8 hours
-  });
-}
+import { AUTH_MESSAGES } from "./auth.constants.js";
 
-function clearAuthCookie(res) {
-  res.clearCookie("etdox_token", {
-    httpOnly: true,
-    secure: env.isProduction,
-    sameSite: env.isProduction ? "strict" : "lax",
-    path: "/",
-  });
-}
-
-export async function register(req, res) {
+/**
+ * POST /api/v1/auth/login
+ *
+ * Authenticates a user and returns a JWT.
+ */
+export async function login(req, res, next) {
   try {
-    const result = await authService.register(req.body || {});
-    return res.status(201).json(result);
-  } catch (error) {
-    return sendError(res, error);
-  }
-}
+    const { email, password } = req.validatedBody ?? req.body;
 
-export async function verifyEmail(req, res) {
-  try {
-    const { token, otp, email } = req.body || {};
-    const result = await authService.verifyEmail({ token, otp, email });
-    return res.status(200).json(result);
-  } catch (error) {
-    return sendError(res, error);
-  }
-}
-
-export async function resendVerification(req, res) {
-  try {
-    const { email } = req.body || {};
-    const result = await authService.resendVerification({ email });
-    return res.status(200).json(result);
-  } catch (error) {
-    return sendError(res, error);
-  }
-}
-
-export async function login(req, res) {
-  try {
-    const { email, password } = req.body || {};
-    const ipAddress = req.ip || req.headers["x-forwarded-for"];
-    const userAgent = req.headers["user-agent"];
-
-    const result = await authService.login({
+    const result = await loginService({
       email,
       password,
-      ipAddress,
-      userAgent,
     });
-
-    setAuthCookie(res, result.accessToken);
-
-    return res.status(200).json(result);
-  } catch (error) {
-    return sendError(res, error);
-  }
-}
-
-export async function logout(req, res) {
-  try {
-    const userId = req.user?.id || req.user?.sub;
-    await authService.logout(userId);
-    clearAuthCookie(res);
 
     return res.status(200).json({
       success: true,
-      message: "Logged out successfully.",
+      message: AUTH_MESSAGES.LOGIN_SUCCESS,
+      data: result,
     });
   } catch (error) {
-    return sendError(res, error);
+    return next(error);
   }
 }
 
-export async function getMe(req, res) {
+/**
+ * GET /api/v1/auth/me
+ *
+ * Requires a valid bearer token.
+ * The authentication middleware must populate req.user
+ * with the verified JWT claims.
+ */
+export async function me(req, res, next) {
   try {
-    const userId = req.user?.id || req.user?.sub;
-    const tenantId = req.user?.tenantId || req.user?.tenant_id;
+    // Support common JWT middleware claim formats.
+    const userId =
+      req.user?.sub ??
+      req.user?.id ??
+      req.user?.userId;
 
-    if (!userId) {
+    const tenantId =
+      req.user?.tenantId ??
+      req.user?.tenant_id;
+
+    // Both values are required for tenant-scoped access.
+    if (!userId || !tenantId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required.",
-        error: "UNAUTHENTICATED",
+        message: AUTH_MESSAGES.UNAUTHORIZED,
       });
     }
 
-    const user = await authService.getCurrentUser(userId, tenantId);
+    // Fetch the user within the verified tenant context.
+    const user = await getCurrentUser(userId, tenantId);
 
     return res.status(200).json({
       success: true,
-      user,
-      data: { user },
+      message: "Authenticated user retrieved successfully",
+      data: {
+        user,
+      },
     });
   } catch (error) {
-    return sendError(res, error);
+    return next(error);
   }
 }
 
+<<<<<<< HEAD
 export async function forgotPassword(req, res) {
   try {
     const { email } = req.body || {};
@@ -167,4 +117,19 @@ export async function testSmtp(req, res) {
   } catch (error) {
     return sendError(res, error);
   }
+=======
+/**
+ * POST /api/v1/auth/logout
+ *
+ * Authentication uses stateless JWTs. The client should discard
+ * its token after logout. This endpoint does not revoke an
+ * already-issued token.
+ */
+export async function logout(req, res) {
+  return res.status(200).json({
+    success: true,
+    message: AUTH_MESSAGES.LOGOUT_SUCCESS,
+    data: null,
+  });
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 }

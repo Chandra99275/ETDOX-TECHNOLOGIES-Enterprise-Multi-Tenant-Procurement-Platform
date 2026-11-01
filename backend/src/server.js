@@ -3,195 +3,149 @@ import "dotenv/config";
 import app from "./app.js";
 import { closeDatabase } from "./config/database.js";
 
-// ==================================================
-// 1. SERVER CONFIGURATION
-// ==================================================
+// --------------------------------------------------
+// Server configuration
+// --------------------------------------------------
 
 const PORT = Number.parseInt(process.env.PORT || "5000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const NODE_ENV = process.env.NODE_ENV || "development";
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL ||
-  process.env.CORS_ORIGIN ||
-  "http://localhost:5173";
-
-// Demo login is permitted ONLY in local development.
-const DEMO_LOGIN_ENABLED =
-  NODE_ENV === "development" &&
-  (
-    process.env.DEMO_LOGIN_ENABLED === "true" ||
-    process.env.ETDOX_DEMO_AUTH === "true"
-  );
-
-// Validate configuration.
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error(
-    "PORT must be a valid TCP port between 1 and 65535."
-  );
+  throw new Error("PORT must be a valid TCP port between 1 and 65535.");
 }
 
-if (
-  !process.env.JWT_SECRET ||
-  process.env.JWT_SECRET.length < 32
-) {
-  throw new Error(
-    "JWT_SECRET must be configured with at least 32 characters."
-  );
-}
+let isShuttingDown = false;
+let shutdownTimeout;
 
-// ==================================================
-// 2. LOGGING UTILITIES
-// ==================================================
-
-function timestamp() {
-  return new Date().toISOString();
-}
-
-function logInfo(message, ...details) {
-  console.info(`[${timestamp()}] [INFO] ${message}`, ...details);
-}
-
-function logWarn(message, ...details) {
-  console.warn(`[${timestamp()}] [WARN] ${message}`, ...details);
-}
-
-function logError(message, error) {
-  console.error(`[${timestamp()}] [ERROR] ${message}`);
-
-  if (error) {
-    console.error(error.stack || error.message || error);
-  }
-}
-
-// ==================================================
-// 3. PROCESS-LEVEL ERROR HANDLING
-// ==================================================
-
-process.on("unhandledRejection", (reason) => {
-  logError("Unhandled Promise Rejection", reason);
-});
-
-process.on("uncaughtException", (error) => {
-  logError("Uncaught Exception", error);
-  process.exit(1);
-});
-
-// ==================================================
-// 4. START HTTP SERVER
-// ==================================================
+// --------------------------------------------------
+// Start HTTP server
+// --------------------------------------------------
 
 const server = app.listen(PORT, HOST, () => {
-  console.info("");
-  console.info("==================================================");
-  console.info("           ETDOX PROCUREMENT API");
-  console.info("==================================================");
-
-  logInfo(`Environment       : ${NODE_ENV}`);
-  logInfo(`Host              : ${HOST}`);
-  logInfo(`Port              : ${PORT}`);
-  logInfo(`Health            : http://localhost:${PORT}/api/health`);
-  logInfo("API prefix        : /api/v1");
-  logInfo(`Frontend          : ${FRONTEND_URL}`);
-  logInfo(
-    `Local demo login  : ${
-      DEMO_LOGIN_ENABLED ? "enabled" : "disabled"
-    }`
-  );
-
-  if (
-    (
-      process.env.DEMO_LOGIN_ENABLED === "true" ||
-      process.env.ETDOX_DEMO_AUTH === "true"
-    ) &&
-    NODE_ENV !== "development"
-  ) {
-    logWarn(
-      "Demo login was requested, but is disabled outside development."
-    );
-  }
-
-  console.info("==================================================");
-
-  logInfo("Server started successfully.");
-  logInfo("Waiting for incoming HTTP requests...");
-  console.info("");
+  console.info("--------------------------------------------");
+  console.info("ETDOX PROCUREMENT API");
+  console.info("--------------------------------------------");
+  console.info(`Environment : ${NODE_ENV}`);
+  console.info(`Host        : ${HOST}`);
+  console.info(`Port        : ${PORT}`);
+  console.info(`API         : http://localhost:${PORT}/api/v1`);
+  console.info(`Health      : http://localhost:${PORT}/api/health`);
+  console.info(`Started     : ${new Date().toISOString()}`);
+  console.info("--------------------------------------------");
 });
 
-// ==================================================
-// 5. SERVER ERROR HANDLING
-// ==================================================
+// --------------------------------------------------
+// Server error handling
+// --------------------------------------------------
 
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
-    logError(
-      `Port ${PORT} is already in use. Stop the other server before restarting.`
+    console.error(
+      `[Server] Port ${PORT} is already in use. ` +
+      "Stop the other process or configure a different PORT."
     );
   } else if (error.code === "EACCES") {
-    logError(`Permission denied on ${HOST}:${PORT}.`);
+    console.error(
+      `[Server] Permission denied when attempting to listen on port ${PORT}.`
+    );
   } else {
-    logError("HTTP server error", error);
+    console.error("[Server] Failed to start:", error);
   }
 
-  process.exit(1);
+  process.exitCode = 1;
 });
 
-// ==================================================
-// 6. GRACEFUL SHUTDOWN
-// ==================================================
+// --------------------------------------------------
+// Graceful shutdown
+// --------------------------------------------------
 
-let isShuttingDown = false;
-
-async function shutdown(signal) {
+async function shutdown(signal, exitCode = 0) {
   if (isShuttingDown) {
+    console.warn("[Server] Shutdown already in progress.");
     return;
   }
 
   isShuttingDown = true;
+  process.exitCode = exitCode;
 
-  logWarn(`Received ${signal}. Shutting down ETDOX API...`);
+  console.info(`[Server] Received ${signal}. Starting graceful shutdown...`);
 
-  const forceExitTimer = setTimeout(() => {
-    logError("Shutdown timed out. Forcing process exit.");
-    process.exit(1);
-  }, 15000);
-
-  forceExitTimer.unref();
-
-  try {
-    if (server.listening) {
-      await new Promise((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
-
-      logInfo("HTTP server closed.");
+  // Stop accepting new connections and give active requests time to finish.
+  const closeHttpServer = new Promise((resolve) => {
+    if (!server.listening) {
+      resolve();
+      return;
     }
 
-    await closeDatabase();
+    server.close((error) => {
+      if (error) {
+        console.error("[Server] HTTP shutdown error:", error.message);
+      } else {
+        console.info("[Server] HTTP server closed.");
+      }
 
-    logInfo("Database connection pool closed.");
-    logInfo("ETDOX API shutdown completed.");
+      resolve();
+    });
+  });
 
-    clearTimeout(forceExitTimer);
-    process.exit(0);
-  } catch (error) {
-    logError("Failed during shutdown", error);
+  // Prevent the process from hanging indefinitely during shutdown.
+  shutdownTimeout = setTimeout(() => {
+    console.error(
+      "[Server] Graceful shutdown timed out. Forcing remaining connections closed."
+    );
 
-    clearTimeout(forceExitTimer);
-    process.exit(1);
+    server.closeAllConnections?.();
+  }, 10000);
+
+  shutdownTimeout.unref();
+
+  try {
+    await closeHttpServer;
+  } finally {
+    try {
+      await closeDatabase();
+      console.info("[Server] Database connections closed.");
+    } catch (error) {
+      process.exitCode = 1;
+      console.error(
+        "[Server] Failed to close database connections:",
+        error.message
+      );
+    }
+
+    clearTimeout(shutdownTimeout);
+
+    console.info("[Server] Shutdown complete.");
   }
 }
 
-process.on("SIGINT", () => {
+// --------------------------------------------------
+// Operating system signals
+// --------------------------------------------------
+
+process.once("SIGINT", () => {
   void shutdown("SIGINT");
 });
 
-process.on("SIGTERM", () => {
+process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
+
+// --------------------------------------------------
+// Unexpected application errors
+// --------------------------------------------------
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[Process] Unhandled promise rejection:", reason);
+
+  void shutdown("unhandledRejection", 1);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[Process] Uncaught exception:", error);
+
+  void shutdown("uncaughtException", 1);
+});
+
+export default server;

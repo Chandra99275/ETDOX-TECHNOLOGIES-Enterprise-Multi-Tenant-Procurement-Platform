@@ -1,212 +1,345 @@
+// backend/src/modules/budgets/budgets.repository.js
 
-import { withTenantTransaction } from '../../database/db.js';
-import { AppError } from '../../utils/errors.js';
+import { pool } from "../../config/database.js";
 
-export async function listBudgets(context, options) {
-  return withTenantTransaction(context.tenantId, async (client) => {
-    const values = [context.tenantId];
-    const filters = ['tenant_id = $1'];
+const TABLE = "budgets";
 
-    if (options.fiscalYear !== undefined) {
-      values.push(options.fiscalYear);
-      filters.push(`fiscal_year = $${values.length}`);
-    }
+const CANDIDATES = {
+  id: ["id", "budget_id"],
+  tenant: ["tenant_id", "tenantId"],
+  name: ["name", "budget_name", "title"],
+  description: ["description", "purpose"],
+  department: ["department", "department_name", "cost_center"],
+  category: ["category", "budget_category"],
+  allocated: [
+    "allocated_amount",
+    "total_amount",
+    "budget_amount",
+    "amount",
+    "limit_amount",
+  ],
+  spent: ["spent_amount", "used_amount", "actual_amount", "utilized_amount"],
+  currency: ["currency", "currency_code"],
+  fiscalYear: ["fiscal_year", "financial_year", "year"],
+  startDate: ["start_date", "period_start"],
+  endDate: ["end_date", "period_end"],
+  status: ["status", "budget_status"],
+  createdBy: ["created_by", "created_by_user_id", "user_id"],
+  createdAt: ["created_at", "createdAt"],
+  updatedAt: ["updated_at", "updatedAt"],
+};
 
-    if (options.departmentId !== undefined) {
-      values.push(options.departmentId);
-      filters.push(`department_id = $${values.length}`);
-    }
+const quote = (name) => `"${String(name).replaceAll('"', '""')}"`;
 
-    if (options.costCenterId !== undefined) {
-      values.push(options.costCenterId);
-      filters.push(`cost_center_id = $${values.length}`);
-    }
+function httpError(message, statusCode = 500) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
 
-    const where = filters.join(' AND ');
+function getTenantId(user) {
+  const id = user?.tenantId ?? user?.tenant_id;
 
-    const result = await client.query(
-      `SELECT id, department_id, cost_center_id, fiscal_year, currency,
-              allocated::text, reserved::text, committed::text, spent::text,
-              created_at, updated_at
-       FROM budgets
-       WHERE ${where}
-       ORDER BY fiscal_year DESC, currency, id
-       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-      [...values, options.limit, options.offset]
+  if (!id) {
+    throw httpError("Tenant context is missing.", 403);
+  }
+
+  return String(id);
+}
+
+function getUserId(user) {
+  return user?.id ?? user?.userId ?? user?.user_id ?? null;
+}
+
+async function withTenantTransaction(user, callback) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true)",
+      [getTenantId(user)],
     );
 
-    const count = await client.query(
-      `SELECT count(*)::text AS total FROM budgets WHERE ${where}`,
-      values
+    const result = await callback(client);
+
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function getBudgetColumns(client) {
+  const result = await client.query(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1`,
+    [TABLE],
+  );
+
+  const all = result.rows.map((row) => row.column_name);
+
+  if (!all.length) {
+    throw httpError(`The "${TABLE}" table was not found.`, 500);
+  }
+
+  const mapped = { all };
+
+  for (const [key, candidates] of Object.entries(CANDIDATES)) {
+    mapped[key] = candidates.find((candidate) => all.includes(candidate)) ?? null;
+  }
+
+  if (!mapped.id || !mapped.tenant || !mapped.allocated) {
+    throw httpError(
+      'The budgets table must contain an ID, tenant ID, and budget amount column.',
+      500,
+    );
+  }
+
+  return mapped;
+}
+
+function selectColumns(columns) {
+  return columns.all.map(quote).join(", ");
+}
+
+function normalizeBudget(row, columns) {
+  if (!row) return null;
+
+  const allocated = Number(row[columns.allocated] ?? 0);
+  const spent = columns.spent ? Number(row[columns.spent] ?? 0) : null;
+
+  return {
+    id: row[columns.id],
+    name: columns.name ? row[columns.name] ?? null : null,
+    description: columns.description ? row[columns.description] ?? null : null,
+    department: columns.department ? row[columns.department] ?? null : null,
+    category: columns.category ? row[columns.category] ?? null : null,
+    allocatedAmount: allocated,
+    spentAmount: spent,
+    remainingAmount: spent === null ? null : allocated - spent,
+    utilizationPercentage:
+      spent === null || allocated <= 0
+        ? null
+        : Math.round((spent / allocated) * 10000) / 100,
+    currency: columns.currency ? row[columns.currency] ?? "INR" : "INR",
+    fiscalYear: columns.fiscalYear ? row[columns.fiscalYear] ?? null : null,
+    startDate: columns.startDate ? row[columns.startDate] ?? null : null,
+    endDate: columns.endDate ? row[columns.endDate] ?? null : null,
+    status: columns.status ? row[columns.status] ?? null : null,
+    createdBy: columns.createdBy ? row[columns.createdBy] ?? null : null,
+    createdAt: columns.createdAt ? row[columns.createdAt] ?? null : null,
+    updatedAt: columns.updatedAt ? row[columns.updatedAt] ?? null : null,
+    raw: row,
+  };
+}
+
+export async function listBudgets(user, filters = {}) {
+  return withTenantTransaction(user, async (client) => {
+    const columns = await getBudgetColumns(client);
+    const conditions = [];
+    const params = [];
+
+    if (filters.status && columns.status) {
+      params.push(filters.status);
+      conditions.push(`${quote(columns.status)}::text = $${params.length}`);
+    }
+
+    if (filters.department && columns.department) {
+      params.push(filters.department);
+      conditions.push(`${quote(columns.department)}::text = $${params.length}`);
+    }
+
+    if (filters.fiscalYear && columns.fiscalYear) {
+      params.push(filters.fiscalYear);
+      conditions.push(`${quote(columns.fiscalYear)}::text = $${params.length}`);
+    }
+
+    if (filters.search) {
+      const searchable = [columns.name, columns.description, columns.category]
+        .filter(Boolean);
+
+      if (searchable.length) {
+        params.push(`%${filters.search}%`);
+        const placeholder = `$${params.length}`;
+
+        conditions.push(
+          `(${searchable
+            .map((column) => `${quote(column)}::text ILIKE ${placeholder}`)
+            .join(" OR ")})`,
+        );
+      }
+    }
+
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const page = Math.max(1, Number.parseInt(filters.page, 10) || 1);
+    const limit = Math.min(
+      100,
+      Math.max(1, Number.parseInt(filters.limit, 10) || 20),
+    );
+    const offset = (page - 1) * limit;
+
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS total FROM ${quote(TABLE)} ${where}`,
+      params,
+    );
+
+    const dataParams = [...params, limit, offset];
+
+    const result = await client.query(
+      `SELECT ${selectColumns(columns)}
+         FROM ${quote(TABLE)}
+         ${where}
+        ORDER BY ${
+          columns.createdAt
+            ? `${quote(columns.createdAt)} DESC NULLS LAST`
+            : `${quote(columns.id)} DESC`
+        }
+        LIMIT $${dataParams.length - 1}
+       OFFSET $${dataParams.length}`,
+      dataParams,
     );
 
     return {
-      data: result.rows,
+      items: result.rows.map((row) => normalizeBudget(row, columns)),
       pagination: {
-        limit: options.limit,
-        offset: options.offset,
-        total: Number(count.rows[0].total),
+        page,
+        limit,
+        total: countResult.rows[0].total,
+        totalPages: Math.ceil(countResult.rows[0].total / limit),
       },
     };
   });
 }
 
-export async function createBudget(context, input) {
-  return withTenantTransaction(context.tenantId, async (client) => {
-    try {
-      const result = await client.query(
-        `INSERT INTO budgets
-           (tenant_id, department_id, cost_center_id, fiscal_year, currency,
-            allocated, reserved, committed, spent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, department_id, cost_center_id, fiscal_year, currency,
-                   allocated::text, reserved::text, committed::text, spent::text,
-                   created_at, updated_at`,
-        [
-          context.tenantId,
-          input.departmentId ?? null,
-          input.costCenterId ?? null,
-          input.fiscalYear,
-          input.currency,
-          input.allocated,
-          input.reserved,
-          input.committed,
-          input.spent,
-        ]
-      );
+export async function findBudgetById(user, budgetId) {
+  return withTenantTransaction(user, async (client) => {
+    const columns = await getBudgetColumns(client);
 
-      await audit(
-        client,
-        context,
-        'budget.created',
-        result.rows[0].id,
-        {
-          fiscalYear: input.fiscalYear,
-          currency: input.currency,
-        }
-      );
+    const result = await client.query(
+      `SELECT ${selectColumns(columns)}
+         FROM ${quote(TABLE)}
+        WHERE ${quote(columns.id)}::text = $1
+        LIMIT 1`,
+      [String(budgetId)],
+    );
 
-      return result.rows[0];
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        throw new AppError(
-          409,
-          'BUDGET_DIMENSIONS_EXISTS',
-          'A budget already exists for these period dimensions'
-        );
-      }
-
-      if (isForeignKeyViolation(error)) {
-        throw new AppError(
-          400,
-          'INVALID_BUDGET_DIMENSION',
-          'The department or cost center does not exist in this organization'
-        );
-      }
-
-      throw error;
-    }
+    return normalizeBudget(result.rows[0] ?? null, columns);
   });
 }
 
-export async function updateBudget(context, id, input) {
-  return withTenantTransaction(context.tenantId, async (client) => {
-    try {
-      const result = await client.query(
-        `UPDATE budgets SET
-           department_id = CASE WHEN $3::boolean THEN $4::uuid ELSE department_id END,
-           cost_center_id = CASE WHEN $5::boolean THEN $6::uuid ELSE cost_center_id END,
-           fiscal_year = COALESCE($7, fiscal_year),
-           currency = COALESCE($8, currency),
-           allocated = COALESCE($9, allocated),
-           reserved = COALESCE($10, reserved),
-           committed = COALESCE($11, committed),
-           spent = COALESCE($12, spent),
-           updated_at = now()
-         WHERE tenant_id = $1 AND id = $2
-         RETURNING id, department_id, cost_center_id, fiscal_year, currency,
-                   allocated::text, reserved::text, committed::text, spent::text,
-                   created_at, updated_at`,
-        [
-          context.tenantId,
-          id,
-          Object.prototype.hasOwnProperty.call(input, 'departmentId'),
-          input.departmentId ?? null,
-          Object.prototype.hasOwnProperty.call(input, 'costCenterId'),
-          input.costCenterId ?? null,
-          input.fiscalYear ?? null,
-          input.currency ?? null,
-          input.allocated ?? null,
-          input.reserved ?? null,
-          input.committed ?? null,
-          input.spent ?? null,
-        ]
-      );
+export async function createBudget(user, input) {
+  return withTenantTransaction(user, async (client) => {
+    const columns = await getBudgetColumns(client);
+    const data = {};
 
-      if (!result.rowCount) {
-        throw new AppError(404, 'NOT_FOUND', 'Budget not found');
-      }
+    const assign = (column, value) => {
+      if (column && value !== undefined) data[column] = value;
+    };
 
-      await audit(client, context, 'budget.updated', id, {
-        fields: Object.keys(input),
-      });
+    assign(columns.tenant, getTenantId(user));
+    assign(columns.name, input.name);
+    assign(columns.description, input.description);
+    assign(columns.department, input.department);
+    assign(columns.category, input.category);
+    assign(columns.allocated, input.allocatedAmount);
+    assign(columns.currency, input.currency ?? "INR");
+    assign(columns.fiscalYear, input.fiscalYear);
+    assign(columns.startDate, input.startDate);
+    assign(columns.endDate, input.endDate);
+    assign(columns.status, input.status ?? "active");
+    assign(columns.createdBy, getUserId(user));
 
-      return result.rows[0];
-    } catch (error) {
-      if (error instanceof AppError) {
-        throw error;
-      }
+    if (columns.spent) assign(columns.spent, 0);
+    if (columns.createdAt) assign(columns.createdAt, new Date());
+    if (columns.updatedAt) assign(columns.updatedAt, new Date());
 
-      if (isUniqueViolation(error)) {
-        throw new AppError(
-          409,
-          'BUDGET_DIMENSIONS_EXISTS',
-          'A budget already exists for these period dimensions'
-        );
-      }
+    const entries = Object.entries(data);
 
-      if (isForeignKeyViolation(error)) {
-        throw new AppError(
-          400,
-          'INVALID_BUDGET_DIMENSION',
-          'The department or cost center does not exist in this organization'
-        );
-      }
-
-      throw error;
+    if (!entries.some(([column]) => column === columns.tenant)) {
+      throw httpError("Unable to set the budget tenant.", 500);
     }
+
+    const values = entries.map(([, value]) => value);
+    const placeholders = values.map((_, index) => `$${index + 1}`);
+
+    const result = await client.query(
+      `INSERT INTO ${quote(TABLE)}
+        (${entries.map(([column]) => quote(column)).join(", ")})
+       VALUES (${placeholders.join(", ")})
+       RETURNING ${selectColumns(columns)}`,
+      values,
+    );
+
+    return normalizeBudget(result.rows[0], columns);
   });
 }
 
-async function audit(client, context, action, id, metadata) {
-  await client.query(
-    `INSERT INTO audit_events
-       (tenant_id, actor_type, actor_id, action, resource_type, resource_id, metadata)
-     VALUES ($1, 'USER', $2, $3, 'budget', $4, $5::jsonb)`,
-    [
-      context.tenantId,
-      context.userId,
-      action,
-      id,
-      JSON.stringify(metadata),
-    ]
-  );
-}
+export async function updateBudget(user, budgetId, input) {
+  return withTenantTransaction(user, async (client) => {
+    const columns = await getBudgetColumns(client);
 
-function isUniqueViolation(error) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === '23505'
-  );
-}
+    const locked = await client.query(
+      `SELECT ${selectColumns(columns)}
+         FROM ${quote(TABLE)}
+        WHERE ${quote(columns.id)}::text = $1
+        FOR UPDATE`,
+      [String(budgetId)],
+    );
 
-function isForeignKeyViolation(error) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === '23503'
-  );
+    if (!locked.rowCount) {
+      throw httpError("Budget not found.", 404);
+    }
+
+    const data = {};
+
+    const assign = (column, value) => {
+      if (column && value !== undefined) data[column] = value;
+    };
+
+    assign(columns.name, input.name);
+    assign(columns.description, input.description);
+    assign(columns.department, input.department);
+    assign(columns.category, input.category);
+    assign(columns.allocated, input.allocatedAmount);
+    assign(columns.currency, input.currency);
+    assign(columns.fiscalYear, input.fiscalYear);
+    assign(columns.startDate, input.startDate);
+    assign(columns.endDate, input.endDate);
+    assign(columns.status, input.status);
+
+    if (columns.updatedAt) data[columns.updatedAt] = new Date();
+
+    const entries = Object.entries(data);
+
+    if (!entries.length) {
+      return normalizeBudget(locked.rows[0], columns);
+    }
+
+    const values = entries.map(([, value]) => value);
+    const assignments = entries.map(
+      ([column], index) => `${quote(column)} = $${index + 1}`,
+    );
+
+    values.push(String(budgetId));
+
+    const result = await client.query(
+      `UPDATE ${quote(TABLE)}
+          SET ${assignments.join(", ")}
+        WHERE ${quote(columns.id)}::text = $${values.length}
+        RETURNING ${selectColumns(columns)}`,
+      values,
+    );
+
+    return normalizeBudget(result.rows[0], columns);
+  });
 }

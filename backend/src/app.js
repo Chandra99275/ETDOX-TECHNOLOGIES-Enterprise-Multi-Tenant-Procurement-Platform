@@ -1,259 +1,286 @@
-import 'dotenv/config';
+import "dotenv/config";
 
-import express from 'express';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import cookieParser from "cookie-parser";
+import morgan from "morgan";
+import rateLimit from "express-rate-limit";
 
-import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+// --------------------------------------------------
+// Route imports
+// --------------------------------------------------
+
+import authRoutes from "./modules/auth/auth.routes.js";
+import procurementRoutes from "./modules/procurement/procurement.routes.js";
+import approvalsRoutes from "./modules/approvals/approvals.routes.js";
+import budgetsRoutes from "./modules/budgets/budgets.routes.js";
+import invoicesRoutes from "./modules/invoices/invoices.routes.js";
+import suppliersRoutes from "./modules/suppliers/suppliers.routes.js";
+import purchaseOrdersRoutes from "./modules/purchase-orders/purchase-orders.routes.js";
+import receiptsRoutes from "./modules/receipts/receipts.routes.js";
+import employeesRoutes from "./modules/employees/employees.routes.js";
+import notificationsRoutes from "./modules/notifications/notifications.routes.js";
+import analyticsRoutes from "./modules/analytics/analytics.routes.js";
+
+// --------------------------------------------------
+// Application
+// --------------------------------------------------
 
 const app = express();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+app.disable("x-powered-by");
 
-const isProduction = process.env.NODE_ENV === 'production';
-
-app.disable('x-powered-by');
-
-app.set(
-  'trust proxy',
-  process.env.TRUST_PROXY === 'true' ? 1 : false
-);
-
-// --------------------------------------------------
-// CORS CONFIGURATION
-// --------------------------------------------------
-
-const configuredOrigins = [
-  process.env.CORS_ORIGINS,
-  process.env.CORS_ORIGIN,
-]
-  .filter(Boolean)
-  .flatMap((value) => value.split(','))
-  .map((origin) => origin.trim().replace(/\/+$/, ''))
-  .filter(Boolean);
-
-const allowedOrigins = new Set([
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:5174',
-  ...configuredOrigins,
-]);
-
-function isAllowedOrigin(origin) {
-  if (!origin) return true;
-
-  const normalizedOrigin = origin.trim().replace(/\/+$/, '');
-
-  if (allowedOrigins.has(normalizedOrigin)) {
-    return true;
-  }
-
-  if (!isProduction) {
-    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(
-      normalizedOrigin
-    );
-  }
-
-  return false;
+// Configure trust proxy explicitly when deploying behind a known proxy.
+// Example: set TRUST_PROXY=1 when there is exactly one trusted proxy.
+if (process.env.TRUST_PROXY === "1") {
+  app.set("trust proxy", 1);
 }
 
-// Handle CORS before Helmet, rate limiting, and routes.
-// This explicitly responds to browser OPTIONS preflight requests.
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
+// --------------------------------------------------
+// CORS
+// --------------------------------------------------
 
-  if (origin && isAllowedOrigin(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Expose-Headers', 'X-Request-ID');
-  }
+const configuredOrigins = (
+  process.env.CORS_ORIGIN ||
+  "http://localhost:5173,http://127.0.0.1:5173"
+)
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
 
-  if (req.method === 'OPTIONS') {
-    if (origin && !isAllowedOrigin(origin)) {
-      console.warn(`[CORS] Rejected origin: ${origin}`);
-      return res.status(403).end();
+const corsOptions = {
+  origin(origin, callback) {
+    // Requests without an Origin header can include server-to-server calls.
+    if (!origin) {
+      return callback(null, true);
     }
 
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET, POST, PUT, PATCH, DELETE, OPTIONS'
-    );
+    const normalizedOrigin = origin.replace(/\/+$/, "");
 
-    const requestedHeaders =
-      req.headers['access-control-request-headers'];
-
-    const allowedHeaders = new Set([
-      'content-type',
-      'authorization',
-      'x-request-id',
-      'accept',
-    ]);
-
-    const headersToAllow = requestedHeaders
-      ? requestedHeaders
-          .split(',')
-          .map((header) => header.trim().toLowerCase())
-      : ['content-type', 'authorization', 'x-request-id', 'accept'];
-
-    const invalidHeader = headersToAllow.find(
-      (header) => !allowedHeaders.has(header)
-    );
-
-    if (invalidHeader) {
-      return res.status(403).json({
-        success: false,
-        message: `CORS request header not allowed: ${invalidHeader}`,
-        error: {
-          code: 'CORS_HEADER_NOT_ALLOWED',
-        },
-      });
+    if (configuredOrigins.includes(normalizedOrigin)) {
+      return callback(null, true);
     }
 
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      headersToAllow.join(', ')
-    );
+    const error = new Error("Origin is not allowed by CORS.");
+    error.statusCode = 403;
 
-    res.setHeader('Access-Control-Max-Age', '86400');
+    return callback(error);
+  },
 
-    return res.status(204).end();
-  }
+  credentials: true,
 
-  next();
-});
+  methods: [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Request-ID",
+  ],
+
+  exposedHeaders: ["X-Request-ID"],
+
+  optionsSuccessStatus: 204,
+};
 
 // --------------------------------------------------
-// SECURITY AND REQUEST PARSING
+// Security and request middleware
 // --------------------------------------------------
 
 app.use(
   helmet({
     crossOriginResourcePolicy: {
-      policy: 'cross-origin',
+      policy: "cross-origin",
     },
   })
 );
 
-app.use(express.json({ limit: '1mb' }));
+app.use(cors(corsOptions));
+
+app.use(
+  express.json({
+    limit: "2mb",
+    strict: true,
+  })
+);
 
 app.use(
   express.urlencoded({
     extended: false,
-    limit: '1mb',
+    limit: "2mb",
   })
 );
 
 app.use(cookieParser());
 
+// Morgan logging can be disabled with HTTP_LOGGING=false.
+if (process.env.HTTP_LOGGING !== "false") {
+  app.use(
+    morgan(
+      process.env.NODE_ENV === "production"
+        ? "combined"
+        : "dev"
+    )
+  );
+}
+
 // --------------------------------------------------
-// REQUEST ID AND LOGGING
+// Request ID
 // --------------------------------------------------
 
 app.use((req, res, next) => {
-  const suppliedId = req.get('x-request-id');
+  const suppliedId = req.get("x-request-id");
 
-  req.id =
+  // Do not blindly trust an arbitrarily long client-supplied value.
+  const requestId =
     suppliedId && /^[a-zA-Z0-9._-]{1,100}$/.test(suppliedId)
       ? suppliedId
-      : `req_${randomUUID().replace(/-/g, '')}`;
+      : cryptoRandomId();
 
-  res.setHeader('X-Request-ID', req.id);
+  req.requestId = requestId;
+  res.setHeader("X-Request-ID", requestId);
 
   next();
 });
 
-app.use(
-  morgan(isProduction ? 'combined' : 'dev', {
-    skip: (req) => req.path === '/api/health',
-  })
-);
+function cryptoRandomId() {
+  return globalThis.crypto.randomUUID();
+}
 
 // --------------------------------------------------
-// RATE LIMITING
+// Rate limiting
 // --------------------------------------------------
 
-const apiLimiter = rateLimit({
+const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 300,
-  standardHeaders: 'draft-8',
+  limit: Number.parseInt(
+    process.env.AUTH_RATE_LIMIT_MAX || "100",
+    10
+  ),
+  standardHeaders: "draft-8",
   legacyHeaders: false,
 
   message: {
     success: false,
-    message: 'Too many requests. Please try again later.',
-    error: {
-      code: 'RATE_LIMIT_EXCEEDED',
-    },
+    message: "Too many authentication requests. Please try again later.",
   },
 
+  // Avoid returning rate-limit internals in responses.
   handler(req, res) {
     res.status(429).json({
       success: false,
-      message: 'Too many requests. Please try again later.',
-      error: {
-        code: 'RATE_LIMIT_EXCEEDED',
-      },
-      requestId: req.id,
+      message: "Too many authentication requests. Please try again later.",
+      requestId: req.requestId,
     });
   },
 });
 
 // --------------------------------------------------
-// HEALTH ENDPOINTS
+// Health endpoints
 // --------------------------------------------------
 
-function healthHandler(req, res) {
+app.get("/health", (req, res) => {
   res.status(200).json({
     success: true,
-    status: 'ok',
-    service: 'etdox-procurement-api',
+    status: "ok",
+    service: "etdox-procurement-api",
     timestamp: new Date().toISOString(),
-    requestId: req.id,
   });
-}
+});
 
-app.get('/health', healthHandler);
-app.get('/api/health', healthHandler);
-app.get('/api/v1/health', healthHandler);
-
-// --------------------------------------------------
-// ROOT INFORMATION ENDPOINT
-// --------------------------------------------------
-
-app.get('/', (req, res) => {
+app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
-    service: 'ETDOX Procurement API',
-    version: '1.0.0',
-    health: '/api/health',
-    requestId: req.id,
+    status: "ok",
+    service: "etdox-procurement-api",
+    timestamp: new Date().toISOString(),
   });
 });
 
 // --------------------------------------------------
-// API RATE LIMITING
+// API routes
 // --------------------------------------------------
 
-app.use('/api', (req, res, next) => {
-  if (
-    req.path === '/health' ||
-    req.path === '/v1/health'
-  ) {
-    return next();
-  }
+const API_PREFIX = "/api/v1";
 
-  return apiLimiter(req, res, next);
-});
+// Authentication
+app.use(
+  `${API_PREFIX}/auth`,
+  authRateLimiter,
+  authRoutes
+);
+
+// Procurement and approvals
+app.use(
+  `${API_PREFIX}/procurement`,
+  procurementRoutes
+);
+
+app.use(
+  `${API_PREFIX}/approvals`,
+  approvalsRoutes
+);
+
+// Suppliers and purchasing
+app.use(
+  `${API_PREFIX}/suppliers`,
+  suppliersRoutes
+);
+
+app.use(
+  `${API_PREFIX}/purchase-orders`,
+  purchaseOrdersRoutes
+);
+
+app.use(
+  `${API_PREFIX}/receipts`,
+  receiptsRoutes
+);
+
+// Finance
+app.use(
+  `${API_PREFIX}/budgets`,
+  budgetsRoutes
+);
+
+app.use(
+  `${API_PREFIX}/invoices`,
+  invoicesRoutes
+);
+
+// Employees
+app.use(
+  `${API_PREFIX}/employees`,
+  employeesRoutes
+);
+
+// Compatibility alias for clients using /users.
+// Both paths use the same employee router and its existing authorization.
+app.use(
+  `${API_PREFIX}/users`,
+  employeesRoutes
+);
+
+// Notifications and analytics
+app.use(
+  `${API_PREFIX}/notifications`,
+  notificationsRoutes
+);
+
+app.use(
+  `${API_PREFIX}/analytics`,
+  analyticsRoutes
+);
 
 // --------------------------------------------------
+<<<<<<< HEAD
 // OPTIONAL ROUTE LOADING
 // --------------------------------------------------
 
@@ -460,86 +487,66 @@ for (const group of routeGroups) {
 
 // --------------------------------------------------
 // 404 HANDLER
+=======
+// 404 handler
+// Must be after all route registrations.
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 // --------------------------------------------------
 
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: `Route not found: ${req.method} ${req.originalUrl}`,
-    error: {
-      code: 'ROUTE_NOT_FOUND',
-    },
-    requestId: req.id,
+    message: "API endpoint not found.",
+    path: req.originalUrl,
+    requestId: req.requestId,
   });
 });
 
 // --------------------------------------------------
-// CENTRALIZED ERROR HANDLER
+// Global error handler
+// Must be the last middleware.
 // --------------------------------------------------
 
-app.use((err, req, res, next) => {
+app.use((error, req, res, next) => {
   if (res.headersSent) {
-    return next(err);
+    return next(error);
   }
 
-  if (
-    err instanceof SyntaxError &&
-    err.status === 400 &&
-    'body' in err
-  ) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid JSON request body.',
-      error: {
-        code: 'INVALID_JSON',
-      },
-      requestId: req.id,
-    });
-  }
-
-  const statusCode =
-    Number.isInteger(err.statusCode) &&
-    err.statusCode >= 400 &&
-    err.statusCode <= 599
-      ? err.statusCode
-      : Number.isInteger(err.status) &&
-          err.status >= 400 &&
-          err.status <= 599
-        ? err.status
-        : 500;
-
-  const code =
-    typeof err.code === 'string'
-      ? err.code
-      : 'INTERNAL_SERVER_ERROR';
-
-  const message =
-    statusCode >= 500 && isProduction
-      ? 'An unexpected server error occurred.'
-      : err.message || 'An unexpected server error occurred.';
+  const statusCode = Number(error.statusCode || error.status) || 500;
 
   if (statusCode >= 500) {
-    console.error('[API Error]', {
-      requestId: req.id,
+    console.error("[API Error]", {
+      requestId: req.requestId,
       method: req.method,
       path: req.originalUrl,
-      error: err.message,
-      stack: isProduction ? undefined : err.stack,
+      message: error.message,
+      code: error.code,
+    });
+  } else if (statusCode >= 400) {
+    console.warn("[API Client Error]", {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode,
+      message: error.message,
     });
   }
 
-  return res.status(statusCode).json({
+  const safeStatusCode =
+    statusCode >= 400 && statusCode <= 599
+      ? statusCode
+      : 500;
+
+  res.status(safeStatusCode).json({
     success: false,
-    message,
-    error: {
-      code,
-      ...(!isProduction && err.details !== undefined
-        ? { details: err.details }
-        : {}),
-    },
-    requestId: req.id,
+
+    message:
+      safeStatusCode >= 500
+        ? "An internal server error occurred."
+        : error.message || "The request could not be processed.",
+
+    requestId: req.requestId,
   });
 });
 
-export { app };
 export default app;

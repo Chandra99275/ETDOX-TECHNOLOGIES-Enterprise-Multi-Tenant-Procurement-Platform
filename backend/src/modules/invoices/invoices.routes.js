@@ -1,79 +1,55 @@
+// backend/src/modules/invoices/invoices.routes.js
 
-import { Router } from 'express';
-import { authenticate } from '../../middleware/auth.js';
-import { requirePermission } from '../../middleware/rbac.js';
-import { validate as validateRequest } from '../../middleware/validate.js';
+import { Router } from "express";
 
-import {
-  approve,
-  create,
-  get,
-  list,
-  markPaid,
-  paymentReady,
-  validate,
-} from './invoices.controller.js';
+import { authenticate } from "../../middleware/authenticate.js";
 
 import {
-  createInvoiceSchema,
-  emptyBodySchema,
-  invoiceIdSchema,
-  listInvoicesSchema,
-} from './invoices.schema.js';
+  listInvoices,
+  getInvoice,
+  createInvoice,
+  updateInvoice,
+} from "./invoices.controller.js";
 
-export const router = Router();
+import {
+  validateInvoiceId,
+  validateListInvoices,
+  validateCreateInvoice,
+  validateUpdateInvoice,
+} from "./invoices.validation.js";
 
+const router = Router();
+
+// All invoice endpoints require authentication.
 router.use(authenticate);
 
+// GET /api/v1/invoices
 router.get(
-  '/',
-  requirePermission('invoices:read'),
-  validateRequest(listInvoicesSchema, 'query'),
-  list
+  "/",
+  validateListInvoices,
+  listInvoices,
 );
 
+// POST /api/v1/invoices
 router.post(
-  '/',
-  requirePermission('invoices:manage'),
-  validateRequest(createInvoiceSchema),
-  create
+  "/",
+  validateCreateInvoice,
+  createInvoice,
 );
 
+// GET /api/v1/invoices/:id
 router.get(
-  '/:id',
-  requirePermission('invoices:read'),
-  validateRequest(invoiceIdSchema, 'params'),
-  get
+  "/:id",
+  validateInvoiceId,
+  getInvoice,
 );
 
-router.post(
-  '/:id/validate',
-  requirePermission('invoices:manage'),
-  validateRequest(invoiceIdSchema, 'params'),
-  validateRequest(emptyBodySchema),
-  validate
+// PATCH /api/v1/invoices/:id
+router.patch(
+  "/:id",
+  validateInvoiceId,
+  validateUpdateInvoice,
+  updateInvoice,
 );
 
-router.post(
-  '/:id/approve',
-  requirePermission('invoices:approve'),
-  validateRequest(invoiceIdSchema, 'params'),
-  validateRequest(emptyBodySchema),
-  approve
-);
-
-router.post(
-  '/:id/payment-ready',
-  requirePermission('invoices:manage'),
-  validateRequest(invoiceIdSchema, 'params'),
-  validateRequest(emptyBodySchema),
-  paymentReady
-);
-
-router.post(
-  '/:id/mark-paid',
-  requirePermission('invoices:manage'),
-  validateRequest(invoiceIdSchema, 'params'),
-  validateRequest(emptyBodySchema),
-  markPaid
-);
+export default router;

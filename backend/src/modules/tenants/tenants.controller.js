@@ -1,224 +1,116 @@
+import * as tenantsService from "./tenants.service.js";
 
-import { getRequestContext } from '../../middleware/auth.js';
+function getActor(req) {
+  const user = req.user;
 
-import {
-  createCostCenter,
-  createDepartment,
-  getTenant,
-  listCostCenters,
-  listDepartments,
-  updateTenant,
-} from './tenants.repository.js';
-
-import {
-  assignUserRoles,
-  createUser,
-  getUser,
-  listUsers,
-  resetUserPassword,
-  updateUser,
-} from './users.repository.js';
-
-import {
-  createRole,
-  deleteRole,
-  listRoles,
-  updateRole,
-} from './roles.repository.js';
-
-export const getOrganization = async (req, res, next) => {
-  try {
-    res.json({
-      data: await getTenant(getRequestContext(req)),
-    });
-  } catch (error) {
-    next(error);
+  if (!user) {
+    const error = new Error("Authentication is required");
+    error.statusCode = 401;
+    throw error;
   }
-};
 
-export const updateOrganization = async (req, res, next) => {
+  return {
+    id: user.id ?? user.userId,
+    tenantId: user.tenantId ?? user.tenant_id,
+    role: user.role,
+  };
+}
+
+/**
+ * GET /api/v1/tenants
+ */
+export async function listTenants(req, res, next) {
   try {
-    res.json({
-      data: await updateTenant(getRequestContext(req), req.body),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getDepartments = async (req, res, next) => {
-  try {
-    res.json({
-      data: await listDepartments(getRequestContext(req)),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const addDepartment = async (req, res, next) => {
-  try {
-    res.status(201).json({
-      data: await createDepartment(getRequestContext(req), req.body),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getCostCenters = async (req, res, next) => {
-  try {
-    res.json({
-      data: await listCostCenters(getRequestContext(req)),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const addCostCenter = async (req, res, next) => {
-  try {
-    res.status(201).json({
-      data: await createCostCenter(getRequestContext(req), req.body),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getUsers = async (req, res, next) => {
-  try {
-    const query = {
-      active:
-        req.query.active === 'true'
-          ? 'true'
-          : req.query.active === 'false'
-            ? 'false'
-            : undefined,
-      search:
-        typeof req.query.search === 'string'
-          ? req.query.search
-          : undefined,
-      limit: Number(req.query.limit),
-      offset: Number(req.query.offset),
-    };
-
-    res.json(
-      await listUsers(getRequestContext(req), query)
-    );
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const addUser = async (req, res, next) => {
-  try {
-    res.status(201).json({
-      data: await createUser(getRequestContext(req), req.body),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getUserById = async (req, res, next) => {
-  try {
-    res.json({
-      data: await getUser(
-        getRequestContext(req),
-        req.params.id
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateUserById = async (req, res, next) => {
-  try {
-    res.json({
-      data: await updateUser(
-        getRequestContext(req),
-        req.params.id,
-        req.body
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateUserRoles = async (req, res, next) => {
-  try {
-    res.json({
-      data: await assignUserRoles(
-        getRequestContext(req),
-        req.params.id,
-        req.body.roleIds
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const changeUserPassword = async (req, res, next) => {
-  try {
-    await resetUserPassword(
-      getRequestContext(req),
-      req.params.id,
-      req.body.password
+    const result = await tenantsService.listTenants(
+      getActor(req),
+      req.validatedQuery ?? req.query
     );
 
-    res.status(204).end();
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getRoles = async (req, res, next) => {
-  try {
-    res.json({
-      data: await listRoles(getRequestContext(req)),
+    return res.status(200).json({
+      success: true,
+      message: "Tenants retrieved successfully",
+      data: result.tenants,
+      pagination: result.pagination,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
-};
+}
 
-export const addRole = async (req, res, next) => {
+/**
+ * GET /api/v1/tenants/me
+ */
+export async function getMyTenant(req, res, next) {
   try {
-    res.status(201).json({
-      data: await createRole(getRequestContext(req), req.body),
+    const tenant = await tenantsService.getMyTenant(getActor(req));
+
+    return res.status(200).json({
+      success: true,
+      message: "Your tenant was retrieved successfully",
+      data: tenant,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
-};
+}
 
-export const updateRoleById = async (req, res, next) => {
+/**
+ * GET /api/v1/tenants/:id
+ */
+export async function getTenant(req, res, next) {
   try {
-    res.json({
-      data: await updateRole(
-        getRequestContext(req),
-        req.params.id,
-        req.body
-      ),
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const removeRole = async (req, res, next) => {
-  try {
-    await deleteRole(
-      getRequestContext(req),
+    const tenant = await tenantsService.getTenant(
+      getActor(req),
       req.params.id
     );
 
-    res.status(204).end();
+    return res.status(200).json({
+      success: true,
+      message: "Tenant retrieved successfully",
+      data: tenant,
+    });
   } catch (error) {
-    next(error);
+    return next(error);
   }
-};
+}
+
+/**
+ * POST /api/v1/tenants
+ */
+export async function createTenant(req, res, next) {
+  try {
+    const tenant = await tenantsService.createTenant(
+      getActor(req),
+      req.validatedBody
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Tenant created successfully",
+      data: tenant,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/**
+ * PATCH /api/v1/tenants/:id
+ */
+export async function updateTenant(req, res, next) {
+  try {
+    const tenant = await tenantsService.updateTenant(
+      getActor(req),
+      req.params.id,
+      req.validatedBody
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Tenant updated successfully",
+      data: tenant,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}

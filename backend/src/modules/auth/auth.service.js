@@ -1,50 +1,41 @@
-import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+
 import { env } from "../../config/env.js";
-import * as authRepo from "./auth.repository.js";
-import * as emailService from "../email/email.service.js";
 
-// Rate-limiting cache for sensitive operations like resend verification & forgot password
-const rateLimitCache = new Map();
+import {
+  findUserByEmail,
+  findUserById,
+} from "./auth.repository.js";
 
-function checkRateLimit(key, windowSeconds = 60) {
-  const now = Date.now();
-  const lastTime = rateLimitCache.get(key);
-  if (lastTime && now - lastTime < windowSeconds * 1000) {
-    const remaining = Math.ceil((windowSeconds * 1000 - (now - lastTime)) / 1000);
-    return remaining;
-  }
-  rateLimitCache.set(key, now);
-  return 0;
-}
+import {
+  AUTH_CONSTANTS,
+  AUTH_MESSAGES,
+} from "./auth.constants.js";
 
-function hashToken(rawToken) {
-  return createHash("sha256").update(rawToken).digest("hex");
-}
+// --------------------------------------------------
+// UUID validation
+// --------------------------------------------------
 
-function generateSecureToken() {
-  return randomBytes(32).toString("hex");
-}
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function createAuthError(message, statusCode = 400, code = "AUTH_ERROR") {
+// --------------------------------------------------
+// Create application error
+// --------------------------------------------------
+
+function createAuthError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
-  error.code = code;
   return error;
 }
 
-export const VALID_ROLES = [
-  "requester",
-  "department_manager",
-  "procurement_specialist",
-  "procurement_manager",
-  "finance_manager",
-  "organization_admin",
-  "auditor",
-  "supplier_user",
-];
+// --------------------------------------------------
+// Public user response
+// Never expose password hashes or internal fields.
+// --------------------------------------------------
 
+<<<<<<< HEAD
 export const ROLE_DASHBOARDS = Object.freeze({
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
@@ -456,10 +447,21 @@ export async function getCurrentUser(userId, tenantId) {
 
   const primaryRole = resolvePrimaryRole(user.roles);
   const permissions = await authRepo.getUserPermissions(user.tenantId, user.roles);
+=======
+function toPublicUser(user) {
+  const fullName =
+    user.full_name ||
+    [user.first_name, user.last_name]
+      .filter(Boolean)
+      .join(" ")
+      .trim() ||
+    user.email;
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
   return {
     id: user.id,
     email: user.email,
+<<<<<<< HEAD
     name: user.fullName,
     firstName: user.firstName,
     lastName: user.lastName,
@@ -476,21 +478,126 @@ export async function getCurrentUser(userId, tenantId) {
 // ----------------------------------------------------------------------
 // 6. FORGOT PASSWORD (OTP-First Flow)
 // ----------------------------------------------------------------------
+=======
+    name: fullName,
+    firstName: user.first_name ?? null,
+    lastName: user.last_name ?? null,
+    tenantId: user.tenant_id,
+    role: String(user.direct_role || user.role || "")
+      .trim()
+      .toLowerCase(),
+  };
+}
 
-export async function forgotPassword({ email }) {
-  if (!email || typeof email !== "string") {
-    throw createAuthError("Please provide an email address.", 400, "VALIDATION_ERROR");
+// --------------------------------------------------
+// Validate identity before issuing or returning a
+// user's authenticated identity.
+// --------------------------------------------------
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+
+function validateIdentity(user) {
+  if (!user?.id || !UUID_REGEX.test(String(user.id))) {
+    throw createAuthError(
+      "Authentication configuration error: the database user ID must be a UUID",
+      500
+    );
+  }
+
+  if (
+    !user.tenant_id ||
+    !UUID_REGEX.test(String(user.tenant_id))
+  ) {
+    throw createAuthError(
+      "Authentication configuration error: the user must have a valid tenant UUID",
+      500
+    );
+  }
+
+  const role = String(user.direct_role || user.role || "")
+    .trim()
+    .toLowerCase();
+
+  if (!role) {
+    throw createAuthError(
+      "Authentication configuration error: no role is assigned to this user",
+      403
+    );
+  }
+
+  return role;
+}
+
+// --------------------------------------------------
+// Generate access token
+// --------------------------------------------------
+
+function generateAccessToken(user, role) {
+  if (!env.jwtSecret) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
+  const payload = {
+    sub: String(user.id),
+    tenantId: String(user.tenant_id),
+    role,
+    roles: [role],
+    permissions: [],
+  };
+
+  return jwt.sign(payload, env.jwtSecret, {
+    algorithm: "HS256",
+    expiresIn:
+      env.jwtExpiresIn ||
+      AUTH_CONSTANTS.DEFAULT_TOKEN_EXPIRES_IN,
+    issuer: "etdox-api",
+    audience: "etdox-frontend",
+  });
+}
+
+// --------------------------------------------------
+// Authenticate user
+// --------------------------------------------------
+
+export async function login({ email, password }) {
+  if (
+    typeof email !== "string" ||
+    typeof password !== "string" ||
+    !email.trim() ||
+    !password
+  ) {
+    throw createAuthError(
+      AUTH_MESSAGES.INVALID_CREDENTIALS,
+      401
+    );
   }
 
   const normalizedEmail = email.trim().toLowerCase();
 
+<<<<<<< HEAD
   const remaining = checkRateLimit(`forgot:${normalizedEmail}`, 15);
   if (remaining > 0) {
     throw createAuthError(`Please wait ${remaining} seconds before requesting another verification code.`, 429, "RATE_LIMITED");
   }
+=======
+  // Repository must retrieve the account using the
+  // existing secure authentication lookup.
+  const user = await findUserByEmail(normalizedEmail);
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
-  const user = await authRepo.findUserByEmail(normalizedEmail);
+  // Diagnostic logging: never log passwords, hashes,
+  // tokens, or authentication secrets.
+  console.log("[AUTH DEBUG] User lookup:", {
+    email: normalizedEmail,
+    userFound: Boolean(user),
+    active: user?.is_active,
+    hasPasswordHash:
+      typeof user?.password_hash === "string" &&
+      user.password_hash.length > 0,
+    roleFound: Boolean(user?.direct_role || user?.role),
+    tenantFound: Boolean(user?.tenant_id),
+  });
 
+<<<<<<< HEAD
   if (user && user.isActive) {
     const rawToken = generateSecureToken();
     const tokenHash = hashToken(rawToken);
@@ -588,48 +695,141 @@ export async function resetPassword({ token, email, otp, newPassword, confirmPas
   }
 
   const user = await authRepo.findUserById(resetRecord.userId);
+=======
+>>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
   if (!user) {
-    throw createAuthError("User account not found.", 404, "USER_NOT_FOUND");
+    throw createAuthError(
+      AUTH_MESSAGES.INVALID_CREDENTIALS,
+      401
+    );
   }
 
-  // Hash new password and update
-  const newPasswordHash = await bcrypt.hash(newPassword, 10);
-  await authRepo.updateUserPassword(user.id, newPasswordHash);
+  // Reject disabled accounts.
+  if (
+    user.is_active === false ||
+    user.is_active === 0 ||
+    user.is_active === "false"
+  ) {
+    throw createAuthError(
+      AUTH_MESSAGES.ACCOUNT_DISABLED,
+      403
+    );
+  }
 
-  // Invalidate all existing sessions
-  await authRepo.revokeUserSessions(user.id);
+  if (
+    typeof user.password_hash !== "string" ||
+    !user.password_hash
+  ) {
+    console.error(
+      "[AUTH ERROR] User has no usable password credential:",
+      normalizedEmail
+    );
 
-  // Send security confirmation email
-  await emailService.sendPasswordChangedEmail({
-    to: user.email,
-    name: user.fullName,
+    throw createAuthError(
+      "The account has no configured password credential",
+      500
+    );
+  }
+
+  // Compare password against the database bcrypt hash.
+  const passwordMatches = await bcrypt.compare(
+    password,
+    user.password_hash
+  );
+
+  if (!passwordMatches) {
+    throw createAuthError(
+      AUTH_MESSAGES.INVALID_CREDENTIALS,
+      401
+    );
+  }
+
+  // Validate user, tenant, and assigned role.
+  const role = validateIdentity(user);
+
+  // Generate signed access token.
+  const accessToken = generateAccessToken(user, role);
+
+  console.log("[AUTH DEBUG] Authentication successful:", {
+    email: normalizedEmail,
+    role,
   });
 
   return {
-    success: true,
-    message: "Your password has been reset successfully. Please sign in with your new password.",
+    accessToken,
+    tokenType: AUTH_CONSTANTS.TOKEN_TYPE,
+    user: toPublicUser({
+      ...user,
+      direct_role: role,
+    }),
   };
 }
 
-// ----------------------------------------------------------------------
-// 8. LOGOUT
-// ----------------------------------------------------------------------
+// --------------------------------------------------
+// Retrieve currently authenticated user
+//
+// IMPORTANT:
+// userId and tenantId must come from verified JWT
+// claims, not from frontend request parameters.
+//
+// The repository must apply the tenant context before
+// querying tables protected by row-level security.
+// --------------------------------------------------
 
-export async function logout(userId) {
-  if (userId) {
-    await authRepo.revokeUserSessions(userId);
+export async function getCurrentUser(userId, tenantId) {
+  if (
+    typeof userId !== "string" ||
+    !UUID_REGEX.test(userId) ||
+    typeof tenantId !== "string" ||
+    !UUID_REGEX.test(tenantId)
+  ) {
+    throw createAuthError(
+      "Invalid authentication token",
+      401
+    );
   }
-  return {
-    success: true,
-    message: "Logged out successfully.",
-  };
-}
 
-// ----------------------------------------------------------------------
-// 9. SMTP DIAGNOSTIC TEST
-// ----------------------------------------------------------------------
+  // The repository must verify BOTH identifiers and
+  // perform the lookup under the specified tenant.
+  const user = await findUserById(userId, tenantId);
 
-export async function testSmtpConnection(targetEmail) {
-  const emailToTest = targetEmail || env.smtp.user || "etdox3300@gmail.com";
-  return emailService.testSmtp(emailToTest);
+  if (!user) {
+    throw createAuthError(
+      "User account was not found or is disabled",
+      401
+    );
+  }
+
+  if (
+    user.is_active === false ||
+    user.is_active === 0 ||
+    user.is_active === "false"
+  ) {
+    throw createAuthError(
+      "User account was not found or is disabled",
+      401
+    );
+  }
+
+  // Ensure the retrieved account belongs to the same
+  // tenant that was authenticated by the JWT.
+  if (
+    String(user.id).toLowerCase() !==
+      userId.toLowerCase() ||
+    String(user.tenant_id).toLowerCase() !==
+      tenantId.toLowerCase()
+  ) {
+    throw createAuthError(
+      "Authenticated user does not belong to this tenant",
+      403
+    );
+  }
+
+  // Use the role retrieved from the database.
+  const role = validateIdentity(user);
+
+  return toPublicUser({
+    ...user,
+    direct_role: role,
+  });
 }
