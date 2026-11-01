@@ -1,3 +1,4 @@
+
 {
   "name": "etdox-procurement-api",
   "version": "0.1.0",
@@ -42,11 +43,8 @@
     "@types/node": "^20.14.0",
     "@types/pg": "^8.11.6",
     "@types/supertest": "^6.0.2",
-<<<<<<< HEAD
     "prisma": "^7.10.1",
-=======
     "pino-pretty": "^13.2.0",
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
     "supertest": "^7.3.1",
     "vitest": "^2.1.9"
   }
