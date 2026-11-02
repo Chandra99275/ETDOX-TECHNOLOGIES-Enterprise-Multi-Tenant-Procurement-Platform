@@ -1,12 +1,12 @@
+
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "node:crypto";
 
 import { env } from "../../config/env.js";
 
-import {
-  findUserByEmail,
-  findUserById,
-} from "./auth.repository.js";
+import * as authRepo from "./auth.repository.js";
+import * as emailService from "./email.service.js";
 
 import {
   AUTH_CONSTANTS,
@@ -14,28 +14,87 @@ import {
 } from "./auth.constants.js";
 
 // --------------------------------------------------
-// UUID validation
+// Configuration and validation
 // --------------------------------------------------
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-// --------------------------------------------------
-// Create application error
-// --------------------------------------------------
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function createAuthError(message, statusCode) {
+const rateLimits = new Map();
+
+function createAuthError(message, statusCode = 400, code) {
   const error = new Error(message);
   error.statusCode = statusCode;
+
+  if (code) {
+    error.code = code;
+  }
+
   return error;
 }
 
+function normalizeEmail(email) {
+  if (typeof email !== "string") {
+    return "";
+  }
+
+  return email.trim().toLowerCase();
+}
+
+function generateSecureToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashToken(token) {
+  return crypto
+    .createHash("sha256")
+    .update(String(token))
+    .digest("hex");
+}
+
+function generateOtp() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function checkRateLimit(key, cooldownSeconds) {
+  const now = Date.now();
+  const previous = rateLimits.get(key);
+
+  if (previous && now < previous) {
+    return Math.ceil((previous - now) / 1000);
+  }
+
+  rateLimits.set(key, now + cooldownSeconds * 1000);
+
+  return 0;
+}
+
+function validatePasswordPolicy(password) {
+  if (typeof password !== "string" || password.length < 8) {
+    return "Password must be at least 8 characters long.";
+  }
+
+  if (!/[A-Z]/.test(password)) {
+    return "Password must include at least one uppercase letter.";
+  }
+
+  if (!/[a-z]/.test(password)) {
+    return "Password must include at least one lowercase letter.";
+  }
+
+  if (!/[0-9]/.test(password)) {
+    return "Password must include at least one number.";
+  }
+
+  return null;
+}
+
 // --------------------------------------------------
-// Public user response
-// Never expose password hashes or internal fields.
+// Role and dashboard mapping
 // --------------------------------------------------
 
-<<<<<<< HEAD
 export const ROLE_DASHBOARDS = Object.freeze({
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
@@ -52,41 +111,250 @@ export const ROLE_DASHBOARDS = Object.freeze({
 });
 
 export function resolvePrimaryRole(roles = []) {
-  const normalized = roles.map((r) => String(r).toLowerCase().trim());
-  if (normalized.includes("organization_admin") || normalized.includes("admin")) return "organization_admin";
-  if (normalized.includes("finance_manager") || normalized.includes("finance")) return "finance_manager";
-  if (normalized.includes("procurement_manager")) return "procurement_manager";
-  if (normalized.includes("department_manager") || normalized.includes("manager")) return "department_manager";
-  if (normalized.includes("procurement_specialist")) return "procurement_specialist";
-  if (normalized.includes("auditor")) return "auditor";
-  if (normalized.includes("supplier_user")) return "supplier_user";
+  const normalized = roles.map((role) =>
+    String(role).toLowerCase().trim()
+  );
+
+  if (
+    normalized.includes("organization_admin") ||
+    normalized.includes("admin")
+  ) {
+    return "organization_admin";
+  }
+
+  if (
+    normalized.includes("finance_manager") ||
+    normalized.includes("finance")
+  ) {
+    return "finance_manager";
+  }
+
+  if (normalized.includes("procurement_manager")) {
+    return "procurement_manager";
+  }
+
+  if (
+    normalized.includes("department_manager") ||
+    normalized.includes("manager")
+  ) {
+    return "department_manager";
+  }
+
+  if (normalized.includes("procurement_specialist")) {
+    return "procurement_specialist";
+  }
+
+  if (normalized.includes("auditor")) {
+    return "auditor";
+  }
+
+  if (normalized.includes("supplier_user")) {
+    return "supplier_user";
+  }
+
+  if (normalized.includes("employee")) {
+    return "employee";
+  }
+
   return "requester";
 }
 
 export function resolveDashboardRoute(roles = []) {
+  const role = resolvePrimaryRole(roles);
+
+  return ROLE_DASHBOARDS[role] || "/employee/dashboard";
+}
+
+// --------------------------------------------------
+// Database record compatibility
+// Supports snake_case and camelCase fields.
+// --------------------------------------------------
+
+function getField(user, snakeCase, camelCase) {
+  return user?.[snakeCase] ?? user?.[camelCase] ?? null;
+}
+
+function getUserId(user) {
+  return getField(user, "id", "id");
+}
+
+function getTenantId(user) {
+  return getField(user, "tenant_id", "tenantId");
+}
+
+function getPasswordHash(user) {
+  return getField(user, "password_hash", "passwordHash");
+}
+
+function getUserEmail(user) {
+  return getField(user, "email", "email");
+}
+
+function getUserStatus(user) {
+  return getField(user, "status", "status");
+}
+
+function getIsActive(user) {
+  return getField(user, "is_active", "isActive");
+}
+
+function getFullName(user) {
+  const existingName =
+    getField(user, "full_name", "fullName") ??
+    getField(user, "name", "name");
+
+  if (existingName) {
+    return existingName;
+  }
+
+  const firstName =
+    getField(user, "first_name", "firstName") ?? "";
+
+  const lastName =
+    getField(user, "last_name", "lastName") ?? "";
+
+  return `${firstName} ${lastName}`.trim() || getUserEmail(user);
+}
+
+function getUserRoles(user) {
+  const roles = user?.roles;
+
+  if (Array.isArray(roles) && roles.length > 0) {
+    return roles.map((role) => String(role).toLowerCase().trim());
+  }
+
+  const role =
+    user?.direct_role ??
+    user?.directRole ??
+    user?.role;
+
+  return role
+    ? [String(role).toLowerCase().trim()]
+    : [];
+}
+
+function validateIdentity(user) {
+  const userId = getUserId(user);
+  const tenantId = getTenantId(user);
+
+  if (!userId || !UUID_REGEX.test(String(userId))) {
+    throw createAuthError(
+      "Authentication configuration error: invalid user ID.",
+      500
+    );
+  }
+
+  if (!tenantId || !UUID_REGEX.test(String(tenantId))) {
+    throw createAuthError(
+      "Authentication configuration error: invalid tenant ID.",
+      500
+    );
+  }
+
+  const roles = getUserRoles(user);
+
+  if (roles.length === 0) {
+    throw createAuthError(
+      "Your account does not have an assigned role.",
+      403
+    );
+  }
+
+  return resolvePrimaryRole(roles);
+}
+
+function toPublicUser(user) {
+  const roles = getUserRoles(user);
   const primaryRole = resolvePrimaryRole(roles);
-  return ROLE_DASHBOARDS[primaryRole] || "/employee/dashboard";
+
+  return {
+    id: getUserId(user),
+    email: getUserEmail(user),
+    name: getFullName(user),
+    firstName: getField(user, "first_name", "firstName"),
+    lastName: getField(user, "last_name", "lastName"),
+    tenantId: getTenantId(user),
+    organizationName: getField(
+      user,
+      "organization_name",
+      "organizationName"
+    ),
+    role: primaryRole,
+    roleName: primaryRole,
+    roles,
+    status: getUserStatus(user),
+  };
 }
 
-function validatePasswordPolicy(password) {
-  if (typeof password !== "string" || password.length < 8) {
-    return "Password must be at least 8 characters long.";
+function ensureActiveUser(user) {
+  const status = String(getUserStatus(user) ?? "").toUpperCase();
+  const active = getIsActive(user);
+
+  if (
+    active === false ||
+    active === 0 ||
+    active === "false" ||
+    ["DISABLED", "SUSPENDED", "INACTIVE"].includes(status)
+  ) {
+    throw createAuthError(
+      AUTH_MESSAGES.ACCOUNT_DISABLED ??
+        "This account has been deactivated.",
+      403
+    );
   }
-  if (!/[A-Z]/.test(password)) {
-    return "Password must include at least one uppercase letter.";
+
+  if (status === "PENDING_VERIFICATION") {
+    throw createAuthError(
+      "Please verify your email address before signing in.",
+      403
+    );
   }
-  if (!/[a-z]/.test(password)) {
-    return "Password must include at least one lowercase letter.";
+
+  if (status === "PENDING_APPROVAL") {
+    throw createAuthError(
+      "Your account is awaiting administrator approval.",
+      403
+    );
   }
-  if (!/[0-9]/.test(password)) {
-    return "Password must include at least one number.";
-  }
-  return null;
 }
 
-// ----------------------------------------------------------------------
-// 1. REGISTRATION
-// ----------------------------------------------------------------------
+// --------------------------------------------------
+// JWT generation
+// --------------------------------------------------
+
+function generateAccessToken(user, role, permissions = []) {
+  if (!env.jwtSecret) {
+    throw new Error("JWT_SECRET is not configured.");
+  }
+
+  const userId = getUserId(user);
+  const tenantId = getTenantId(user);
+
+  const payload = {
+    sub: String(userId),
+    email: getUserEmail(user),
+    name: getFullName(user),
+    tenantId: String(tenantId),
+    tenant_id: String(tenantId),
+    role,
+    roles: getUserRoles(user),
+    permissions,
+  };
+
+  return jwt.sign(payload, env.jwtSecret, {
+    algorithm: "HS256",
+    expiresIn:
+      env.jwtExpiresIn ||
+      AUTH_CONSTANTS.DEFAULT_TOKEN_EXPIRES_IN ||
+      "8h",
+    issuer: env.jwtIssuer || "etdox-api",
+    audience: env.jwtAudience || "etdox-frontend",
+  });
+}
+
+// --------------------------------------------------
+// 1. Registration
+// --------------------------------------------------
 
 export async function register({
   firstName,
@@ -99,228 +367,272 @@ export async function register({
   requestedRole = "requester",
   termsAccepted,
 }) {
-  const fields = [];
+  const normalizedEmail = normalizeEmail(email);
 
-  const normalizedEmail = (email || "").trim().toLowerCase();
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!normalizedEmail || !emailRegex.test(normalizedEmail)) {
-    fields.push({ field: "email", message: "A valid email address is required." });
+  if (!firstName?.trim() || !lastName?.trim()) {
+    throw createAuthError(
+      "First name and last name are required.",
+      400
+    );
   }
 
-  if (!password || typeof password !== "string" || password.length < 8) {
-    fields.push({ field: "password", message: "Password must be at least 8 characters long." });
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    throw createAuthError("A valid email address is required.", 400);
   }
 
-  if (organizationMode === "create" && (!organizationName || !organizationName.trim())) {
-    fields.push({ field: "organizationName", message: "Organization name is required." });
+  if (termsAccepted !== true) {
+    throw createAuthError(
+      "You must accept the terms and conditions.",
+      400
+    );
   }
 
-  if (fields.length > 0) {
-    const validationError = createAuthError("Validation failed.", 400, "VALIDATION_ERROR");
-    validationError.fields = fields;
-    throw validationError;
-  }
-
-  if (confirmPassword !== undefined && password !== confirmPassword) {
-    throw createAuthError("Passwords do not match.", 400, "PASSWORD_MISMATCH");
+  if (password !== confirmPassword) {
+    throw createAuthError("Passwords do not match.", 400);
   }
 
   const passwordError = validatePasswordPolicy(password);
+
   if (passwordError) {
-    throw createAuthError(passwordError, 400, "WEAK_PASSWORD");
+    throw createAuthError(passwordError, 400);
   }
 
-  // Security Rule: Platform Admin can never be publicly registered
-  const cleanRequestedRole = String(requestedRole).toLowerCase().trim();
-  if (cleanRequestedRole === "platform_admin" || cleanRequestedRole === "superadmin") {
-    throw createAuthError("Platform administrator cannot be requested through public registration.", 403, "FORBIDDEN_ROLE");
+  if (!["create", "join"].includes(organizationMode)) {
+    throw createAuthError(
+      "Invalid organization registration mode.",
+      400
+    );
   }
 
-  // Check duplicate email
+  if (
+    organizationMode === "create" &&
+    !organizationName?.trim()
+  ) {
+    throw createAuthError(
+      "Organization name is required.",
+      400
+    );
+  }
+
+  const normalizedRole = String(requestedRole)
+    .toLowerCase()
+    .trim();
+
+  if (
+    ["platform_admin", "superadmin"].includes(normalizedRole)
+  ) {
+    throw createAuthError(
+      "Platform administrator cannot be registered publicly.",
+      403
+    );
+  }
+
   const existingUser = await authRepo.findUserByEmail(normalizedEmail);
+
   if (existingUser) {
-    throw createAuthError("An account with this email address already exists.", 409, "EMAIL_EXISTS");
+    throw createAuthError(
+      "An account with this email address already exists.",
+      409
+    );
   }
 
   let tenantId;
   let tenantName;
-  let status = "PENDING_VERIFICATION";
-  let assignedRoles = [];
+  let assignedRoles;
 
   if (organizationMode === "create") {
-    // Atomic First-Owner Flow
-    const orgName = (organizationName || `${firstName}'s Organization`).trim();
-    const newTenant = await authRepo.createTenant({ name: orgName });
-    tenantId = newTenant.id;
-    tenantName = newTenant.name;
-    // The creator is the first-owner (organization_admin), active only after email verification
+    const tenant = await authRepo.createTenant({
+      name: organizationName.trim(),
+    });
+
+    tenantId = tenant.id;
+    tenantName = tenant.name;
+
     assignedRoles = ["organization_admin", "admin"];
   } else {
-    // Join existing organization
-    const defaultTenant = await authRepo.findDefaultTenant();
-    tenantId = defaultTenant?.id || env.demoTenantId;
-    tenantName = defaultTenant?.name || "ETDOX Enterprise";
+    const tenant = await authRepo.findDefaultTenant();
 
-    // Secure Role Assignment Rules:
-    // Only 'requester' is automatically assigned upon email verification.
-    // Privileged roles require admin authorization (user enters PENDING_APPROVAL after verification).
-    if (cleanRequestedRole === "requester" || cleanRequestedRole === "employee") {
-      assignedRoles = ["requester", "employee"];
-    } else {
-      // Privileged role: not assigned until admin approves
-      assignedRoles = [];
+    if (!tenant?.id) {
+      throw createAuthError(
+        "No organization is available to join.",
+        400
+      );
     }
+
+    tenantId = tenant.id;
+    tenantName = tenant.name;
+
+    assignedRoles = ["requester", "employee"].includes(normalizedRole)
+      ? ["requester", "employee"]
+      : [];
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, 12);
 
-  const newUser = await authRepo.createUser({
+  const user = await authRepo.createUser({
     email: normalizedEmail,
     passwordHash,
     firstName: firstName.trim(),
     lastName: lastName.trim(),
     tenantId,
-    status,
-    requestedRole: cleanRequestedRole,
+    status: "PENDING_VERIFICATION",
+    requestedRole: normalizedRole,
     assignedRoles,
   });
 
-  // Generate Email Verification Token & 6-Digit OTP Code
   const rawToken = generateSecureToken();
-  const tokenHash = hashToken(rawToken);
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = new Date(Date.now() + env.emailVerificationTtlMinutes * 60 * 1000);
+  const otp = generateOtp();
+
+  const expiresAt = new Date(
+    Date.now() +
+      Number(env.emailVerificationTtlMinutes || 30) * 60 * 1000
+  );
 
   await authRepo.createEmailVerificationToken({
-    userId: newUser.id,
-    tokenHash,
+    userId: user.id,
+    tokenHash: hashToken(rawToken),
     otp,
     expiresAt,
   });
 
-  // Send verification email with OTP via SMTP
   await emailService.sendVerificationEmail({
     to: normalizedEmail,
-    name: `${firstName} ${lastName}`.trim(),
+    name: `${firstName.trim()} ${lastName.trim()}`,
     token: rawToken,
     otp,
     expiresAt,
   });
 
-  const requiresAdminApproval = organizationMode === "join" && cleanRequestedRole !== "requester" && cleanRequestedRole !== "employee";
-
   return {
     success: true,
-    message: `Verification email with your 6-digit code has been sent to ${normalizedEmail}.`,
+    message: "Verification email sent successfully.",
     user: {
-      id: newUser.id,
-      email: newUser.email,
-      name: newUser.fullName,
+      id: user.id,
+      email: user.email,
       organizationName: tenantName,
-      status: newUser.status,
-      requestedRole: cleanRequestedRole,
-      requiresAdminApproval,
+      status: "PENDING_VERIFICATION",
+      requestedRole: normalizedRole,
+      requiresAdminApproval:
+        organizationMode === "join" &&
+        !["requester", "employee"].includes(normalizedRole),
     },
   };
 }
 
-// ----------------------------------------------------------------------
-// 2. EMAIL VERIFICATION (Supports 6-digit OTP code or link token)
-// ----------------------------------------------------------------------
+// --------------------------------------------------
+// 2. Email verification
+// --------------------------------------------------
 
 export async function verifyEmail({ token, otp, email }) {
-  const codeToVerify = String(otp || token || "").trim();
+  const value = String(otp || token || "").trim();
 
-  if (!codeToVerify) {
-    throw createAuthError("Verification code or link is required.", 400, "MISSING_TOKEN");
+  if (!value) {
+    throw createAuthError(
+      "Verification code or token is required.",
+      400
+    );
   }
 
-  let tokenRecord = null;
+  let record = null;
 
-  // If 6-digit numerical OTP code was provided
-  if (/^\d{6}$/.test(codeToVerify)) {
-    if (email) {
-      tokenRecord = await authRepo.findAndConsumeVerificationByOtp(email.trim().toLowerCase(), codeToVerify);
-    }
-    if (!tokenRecord) {
-      tokenRecord = await authRepo.findAndConsumeVerificationToken(codeToVerify);
-    }
+  if (/^\d{6}$/.test(value) && email) {
+    record = await authRepo.findAndConsumeVerificationByOtp(
+      normalizeEmail(email),
+      value
+    );
   }
 
-  // Fallback to token hash comparison
-  if (!tokenRecord) {
-    const tokenHash = hashToken(codeToVerify);
-    tokenRecord = await authRepo.findAndConsumeVerificationToken(tokenHash);
+  if (!record) {
+    record = await authRepo.findAndConsumeVerificationToken(
+      hashToken(value)
+    );
   }
 
-  if (!tokenRecord) {
-    throw createAuthError("Verification code is invalid, expired, or has already been used.", 400, "INVALID_TOKEN");
+  if (!record) {
+    throw createAuthError(
+      "Verification code is invalid, expired, or already used.",
+      400
+    );
   }
 
-  const user = await authRepo.findUserById(tokenRecord.userId);
+  const user = await authRepo.findUserById(record.userId);
+
   if (!user) {
-    throw createAuthError("Associated user account was not found.", 404, "USER_NOT_FOUND");
+    throw createAuthError("User account not found.", 404);
   }
 
-  // Determine post-verification status
-  const requestedRole = user.requestedRole || "requester";
+  const requestedRole = String(
+    getField(user, "requested_role", "requestedRole") ?? "requester"
+  ).toLowerCase();
+
+  const roles = getUserRoles(user);
+
   const isPrivilegedJoin =
-    !user.roles.includes("organization_admin") &&
-    requestedRole !== "requester" &&
-    requestedRole !== "employee";
+    !roles.includes("organization_admin") &&
+    !["requester", "employee"].includes(requestedRole);
 
-  let newStatus = "ACTIVE";
-  if (isPrivilegedJoin) {
-    newStatus = "PENDING_APPROVAL";
-  }
+  const status = isPrivilegedJoin
+    ? "PENDING_APPROVAL"
+    : "ACTIVE";
 
-  await authRepo.updateUserStatus(user.id, newStatus, true);
+  await authRepo.updateUserStatus(user.id, status, true);
 
   return {
     success: true,
-    status: newStatus,
-    message:
-      newStatus === "ACTIVE"
-        ? "Your email has been verified successfully. You can now sign in to your ETDOX account."
-        : "Your email has been verified. Your requested role is pending administrator approval before activation.",
+    status,
     emailVerified: true,
+    message:
+      status === "ACTIVE"
+        ? "Email verified successfully. You can now sign in."
+        : "Email verified. Your account is awaiting administrator approval.",
   };
 }
 
-// ----------------------------------------------------------------------
-// 3. RESEND VERIFICATION
-// ----------------------------------------------------------------------
+// --------------------------------------------------
+// 3. Resend verification
+// --------------------------------------------------
 
 export async function resendVerification({ email }) {
-  if (!email || typeof email !== "string") {
-    throw createAuthError("Email address is required.", 400, "VALIDATION_ERROR");
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    throw createAuthError("A valid email address is required.", 400);
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
+  const remaining = checkRateLimit(
+    `resend:${normalizedEmail}`,
+    60
+  );
 
-  const remaining = checkRateLimit(`resend:${normalizedEmail}`, 60);
   if (remaining > 0) {
-    throw createAuthError(`Please wait ${remaining} seconds before requesting another verification email.`, 429, "RATE_LIMITED");
+    throw createAuthError(
+      `Please wait ${remaining} seconds before trying again.`,
+      429
+    );
   }
 
   const user = await authRepo.findUserByEmail(normalizedEmail);
-  if (user && user.status === "PENDING_VERIFICATION") {
-    const rawToken = generateSecureToken();
-    const tokenHash = hashToken(rawToken);
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + env.emailVerificationTtlMinutes * 60 * 1000);
+
+  if (user && getUserStatus(user) === "PENDING_VERIFICATION") {
+    const token = generateSecureToken();
+    const otp = generateOtp();
+
+    const expiresAt = new Date(
+      Date.now() +
+        Number(env.emailVerificationTtlMinutes || 30) * 60 * 1000
+    );
 
     await authRepo.createEmailVerificationToken({
-      userId: user.id,
-      tokenHash,
+      userId: getUserId(user),
+      tokenHash: hashToken(token),
       otp,
       expiresAt,
     });
 
     await emailService.sendVerificationEmail({
-      to: user.email,
-      name: user.fullName,
-      token: rawToken,
+      to: normalizedEmail,
+      name: getFullName(user),
+      token,
       otp,
       expiresAt,
     });
@@ -328,452 +640,112 @@ export async function resendVerification({ email }) {
 
   return {
     success: true,
-    message: "If an unverified account exists for this email, a new 6-digit verification code has been sent.",
+    message:
+      "If an unverified account exists, a new verification code has been sent.",
   };
 }
 
-// ----------------------------------------------------------------------
-// 4. LOGIN
-// ----------------------------------------------------------------------
+// --------------------------------------------------
+// 4. Login
+// --------------------------------------------------
 
-export async function login({ email, password, ipAddress, userAgent }) {
-  if (!email || !password || typeof email !== "string" || typeof password !== "string") {
-    throw createAuthError("Email and password are required.", 400, "VALIDATION_ERROR");
+export async function login({
+  email,
+  password,
+  ipAddress,
+  userAgent,
+}) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!EMAIL_REGEX.test(normalizedEmail) || typeof password !== "string" || !password) {
+    throw createAuthError(
+      AUTH_MESSAGES.INVALID_CREDENTIALS ||
+        "Invalid email or password.",
+      401
+    );
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
   const user = await authRepo.findUserByEmail(normalizedEmail);
 
   if (!user) {
-    throw createAuthError("Invalid email or password.", 401, "INVALID_CREDENTIALS");
-  }
-
-  const passwordMatches = await bcrypt.compare(password, user.passwordHash);
-  if (!passwordMatches) {
-    throw createAuthError("Invalid email or password.", 401, "INVALID_CREDENTIALS");
-  }
-
-  // Enforce account states
-  if (user.status === "PENDING_VERIFICATION") {
     throw createAuthError(
-      "Please verify your email address before signing in. Check your inbox for the verification link.",
-      403,
-      "EMAIL_NOT_VERIFIED"
+      AUTH_MESSAGES.INVALID_CREDENTIALS ||
+        "Invalid email or password.",
+      401
     );
   }
 
-  if (user.status === "PENDING_APPROVAL") {
+  const passwordHash = getPasswordHash(user);
+
+  if (
+    typeof passwordHash !== "string" ||
+    !passwordHash
+  ) {
     throw createAuthError(
-      "Your account registration is awaiting administrator approval. You will receive an email once approved.",
-      403,
-      "ACCOUNT_PENDING_APPROVAL"
+      "The account has no configured password credential.",
+      500
     );
   }
 
-  if (user.status === "SUSPENDED") {
-    throw createAuthError("Your account has been suspended. Please contact your administrator.", 403, "ACCOUNT_SUSPENDED");
+  const matches = await bcrypt.compare(password, passwordHash);
+
+  if (!matches) {
+    throw createAuthError(
+      AUTH_MESSAGES.INVALID_CREDENTIALS ||
+        "Invalid email or password.",
+      401
+    );
   }
 
-  if (user.status === "DISABLED" || !user.isActive) {
-    throw createAuthError("This account has been deactivated.", 403, "ACCOUNT_DISABLED");
+  ensureActiveUser(user);
+
+  const role = validateIdentity(user);
+  const tenantId = getTenantId(user);
+
+  let permissions = [];
+
+  if (typeof authRepo.getUserPermissions === "function") {
+    permissions = await authRepo.getUserPermissions(
+      tenantId,
+      getUserRoles(user)
+    );
   }
 
-  const primaryRole = resolvePrimaryRole(user.roles);
-  const redirectTo = resolveDashboardRoute(user.roles);
-  const permissions = await authRepo.getUserPermissions(user.tenantId, user.roles);
+  const accessToken = generateAccessToken(
+    user,
+    role,
+    permissions
+  );
 
-  // Generate JWT access token
-  const payload = {
-    sub: user.id,
-    email: user.email,
-    name: user.fullName,
-    tenant_id: user.tenantId,
-    tenantId: user.tenantId,
-    role: primaryRole,
-    roles: user.roles,
-    permissions,
-    iss: env.jwtIssuer,
-    aud: env.jwtAudience,
-  };
-
-  const accessToken = jwt.sign(payload, env.jwtSecret, {
-    algorithm: "HS256",
-    expiresIn: env.jwtExpiresIn || "8h",
-  });
-
-  // Track session
-  const tokenHash = hashToken(accessToken);
-  const expiresAt = new Date(Date.now() + 8 * 3600 * 1000);
-  await authRepo.createSession({
-    userId: user.id,
-    tenantId: user.tenantId,
-    tokenHash,
-    expiresAt,
-    ipAddress,
-    userAgent,
-  });
+  // Session tracking is optional only if the repository
+  // does not implement persistent sessions.
+  if (typeof authRepo.createSession === "function") {
+    await authRepo.createSession({
+      userId: getUserId(user),
+      tenantId,
+      tokenHash: hashToken(accessToken),
+      expiresAt: new Date(
+        Date.now() + 8 * 60 * 60 * 1000
+      ),
+      ipAddress,
+      userAgent,
+    });
+  }
 
   return {
     success: true,
-    message: "Login successful.",
+    message: AUTH_MESSAGES.LOGIN_SUCCESS || "Login successful.",
     accessToken,
     token: accessToken,
     tokenType: "Bearer",
-    expiresIn: env.jwtExpiresIn,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.fullName,
-      tenantId: user.tenantId,
-      organizationName: user.organizationName,
-      role: primaryRole,
-      roles: user.roles,
-      status: user.status,
-    },
-    redirectTo,
-  };
-}
-
-// ----------------------------------------------------------------------
-// 5. GET CURRENT USER (Session Restoration)
-// ----------------------------------------------------------------------
-
-export async function getCurrentUser(userId, tenantId) {
-  const user = await authRepo.findUserById(userId);
-
-  if (!user || user.status === "DISABLED" || user.status === "SUSPENDED") {
-    throw createAuthError("User session is invalid or account is inactive.", 401, "UNAUTHORIZED");
-  }
-
-  const primaryRole = resolvePrimaryRole(user.roles);
-  const permissions = await authRepo.getUserPermissions(user.tenantId, user.roles);
-=======
-function toPublicUser(user) {
-  const fullName =
-    user.full_name ||
-    [user.first_name, user.last_name]
-      .filter(Boolean)
-      .join(" ")
-      .trim() ||
-    user.email;
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
-
-  return {
-    id: user.id,
-    email: user.email,
-<<<<<<< HEAD
-    name: user.fullName,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    tenantId: user.tenantId,
-    organizationName: user.organizationName,
-    role: primaryRole,
-    roleName: primaryRole,
-    roles: user.roles,
-    status: user.status,
-    permissions,
-  };
-}
-
-// ----------------------------------------------------------------------
-// 6. FORGOT PASSWORD (OTP-First Flow)
-// ----------------------------------------------------------------------
-=======
-    name: fullName,
-    firstName: user.first_name ?? null,
-    lastName: user.last_name ?? null,
-    tenantId: user.tenant_id,
-    role: String(user.direct_role || user.role || "")
-      .trim()
-      .toLowerCase(),
+    expiresIn: env.jwtExpiresIn || "8h",
+    user: toPublicUser(user),
+    redirectTo: resolveDashboardRoute(getUserRoles(user)),
   };
 }
 
 // --------------------------------------------------
-// Validate identity before issuing or returning a
-// user's authenticated identity.
-// --------------------------------------------------
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
-
-function validateIdentity(user) {
-  if (!user?.id || !UUID_REGEX.test(String(user.id))) {
-    throw createAuthError(
-      "Authentication configuration error: the database user ID must be a UUID",
-      500
-    );
-  }
-
-  if (
-    !user.tenant_id ||
-    !UUID_REGEX.test(String(user.tenant_id))
-  ) {
-    throw createAuthError(
-      "Authentication configuration error: the user must have a valid tenant UUID",
-      500
-    );
-  }
-
-  const role = String(user.direct_role || user.role || "")
-    .trim()
-    .toLowerCase();
-
-  if (!role) {
-    throw createAuthError(
-      "Authentication configuration error: no role is assigned to this user",
-      403
-    );
-  }
-
-  return role;
-}
-
-// --------------------------------------------------
-// Generate access token
-// --------------------------------------------------
-
-function generateAccessToken(user, role) {
-  if (!env.jwtSecret) {
-    throw new Error("JWT_SECRET is not configured");
-  }
-
-  const payload = {
-    sub: String(user.id),
-    tenantId: String(user.tenant_id),
-    role,
-    roles: [role],
-    permissions: [],
-  };
-
-  return jwt.sign(payload, env.jwtSecret, {
-    algorithm: "HS256",
-    expiresIn:
-      env.jwtExpiresIn ||
-      AUTH_CONSTANTS.DEFAULT_TOKEN_EXPIRES_IN,
-    issuer: "etdox-api",
-    audience: "etdox-frontend",
-  });
-}
-
-// --------------------------------------------------
-// Authenticate user
-// --------------------------------------------------
-
-export async function login({ email, password }) {
-  if (
-    typeof email !== "string" ||
-    typeof password !== "string" ||
-    !email.trim() ||
-    !password
-  ) {
-    throw createAuthError(
-      AUTH_MESSAGES.INVALID_CREDENTIALS,
-      401
-    );
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-
-<<<<<<< HEAD
-  const remaining = checkRateLimit(`forgot:${normalizedEmail}`, 15);
-  if (remaining > 0) {
-    throw createAuthError(`Please wait ${remaining} seconds before requesting another verification code.`, 429, "RATE_LIMITED");
-  }
-=======
-  // Repository must retrieve the account using the
-  // existing secure authentication lookup.
-  const user = await findUserByEmail(normalizedEmail);
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
-
-  // Diagnostic logging: never log passwords, hashes,
-  // tokens, or authentication secrets.
-  console.log("[AUTH DEBUG] User lookup:", {
-    email: normalizedEmail,
-    userFound: Boolean(user),
-    active: user?.is_active,
-    hasPasswordHash:
-      typeof user?.password_hash === "string" &&
-      user.password_hash.length > 0,
-    roleFound: Boolean(user?.direct_role || user?.role),
-    tenantFound: Boolean(user?.tenant_id),
-  });
-
-<<<<<<< HEAD
-  if (user && user.isActive) {
-    const rawToken = generateSecureToken();
-    const tokenHash = hashToken(rawToken);
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + env.passwordResetTtlMinutes * 60 * 1000);
-
-    await authRepo.createPasswordResetToken({
-      userId: user.id,
-      tokenHash,
-      otp,
-      expiresAt,
-    });
-
-    await emailService.sendPasswordResetEmail({
-      to: user.email,
-      name: user.fullName,
-      token: rawToken,
-      otp,
-      expiresAt,
-    });
-  }
-
-  // Return success response to the user
-  return {
-    success: true,
-    message: "If an account with that email address exists, a 6-digit verification code has been dispatched to your email.",
-  };
-}
-
-// ----------------------------------------------------------------------
-// 6b. VERIFY RESET OTP
-// ----------------------------------------------------------------------
-
-export async function verifyResetOtp({ email, otp }) {
-  if (!email || !otp) {
-    throw createAuthError("Email address and 6-digit verification code are required.", 400, "VALIDATION_ERROR");
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  const cleanOtp = String(otp).trim();
-
-  const user = await authRepo.findUserByEmail(normalizedEmail);
-  if (!user || !user.isActive) {
-    throw createAuthError("Invalid or expired verification code.", 400, "INVALID_OTP");
-  }
-
-  const activeReset = await authRepo.findActivePasswordResetByOtp(normalizedEmail, cleanOtp);
-  if (!activeReset) {
-    throw createAuthError("Invalid or expired verification code.", 400, "INVALID_OTP");
-  }
-
-  return {
-    success: true,
-    message: "Verification code confirmed successfully. Please set your new password.",
-    verified: true,
-    email: normalizedEmail,
-  };
-}
-
-// ----------------------------------------------------------------------
-// 7. RESET PASSWORD (Supports both OTP & Direct Token)
-// ----------------------------------------------------------------------
-
-export async function resetPassword({ token, email, otp, newPassword, confirmPassword }) {
-  const hasOtp = Boolean(email && otp);
-  const hasToken = Boolean(token && typeof token === "string" && token.trim());
-
-  if (!hasOtp && !hasToken) {
-    throw createAuthError("Password reset verification code or token is required.", 400, "MISSING_TOKEN");
-  }
-
-  if (!newPassword || !confirmPassword) {
-    throw createAuthError("New password and confirmation are required.", 400, "VALIDATION_ERROR");
-  }
-
-  if (newPassword !== confirmPassword) {
-    throw createAuthError("Passwords do not match.", 400, "PASSWORD_MISMATCH");
-  }
-
-  const passwordError = validatePasswordPolicy(newPassword);
-  if (passwordError) {
-    throw createAuthError(passwordError, 400, "WEAK_PASSWORD");
-  }
-
-  let resetRecord = null;
-  if (hasOtp) {
-    resetRecord = await authRepo.findAndConsumePasswordResetByOtp(email.trim().toLowerCase(), String(otp).trim());
-  } else if (hasToken) {
-    const tokenHash = hashToken(token.trim());
-    resetRecord = await authRepo.findAndConsumePasswordResetToken(tokenHash);
-  }
-
-  if (!resetRecord) {
-    throw createAuthError("Verification code or reset link is invalid, expired, or has already been used.", 400, "INVALID_TOKEN");
-  }
-
-  const user = await authRepo.findUserById(resetRecord.userId);
-=======
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
-  if (!user) {
-    throw createAuthError(
-      AUTH_MESSAGES.INVALID_CREDENTIALS,
-      401
-    );
-  }
-
-  // Reject disabled accounts.
-  if (
-    user.is_active === false ||
-    user.is_active === 0 ||
-    user.is_active === "false"
-  ) {
-    throw createAuthError(
-      AUTH_MESSAGES.ACCOUNT_DISABLED,
-      403
-    );
-  }
-
-  if (
-    typeof user.password_hash !== "string" ||
-    !user.password_hash
-  ) {
-    console.error(
-      "[AUTH ERROR] User has no usable password credential:",
-      normalizedEmail
-    );
-
-    throw createAuthError(
-      "The account has no configured password credential",
-      500
-    );
-  }
-
-  // Compare password against the database bcrypt hash.
-  const passwordMatches = await bcrypt.compare(
-    password,
-    user.password_hash
-  );
-
-  if (!passwordMatches) {
-    throw createAuthError(
-      AUTH_MESSAGES.INVALID_CREDENTIALS,
-      401
-    );
-  }
-
-  // Validate user, tenant, and assigned role.
-  const role = validateIdentity(user);
-
-  // Generate signed access token.
-  const accessToken = generateAccessToken(user, role);
-
-  console.log("[AUTH DEBUG] Authentication successful:", {
-    email: normalizedEmail,
-    role,
-  });
-
-  return {
-    accessToken,
-    tokenType: AUTH_CONSTANTS.TOKEN_TYPE,
-    user: toPublicUser({
-      ...user,
-      direct_role: role,
-    }),
-  };
-}
-
-// --------------------------------------------------
-// Retrieve currently authenticated user
-//
-// IMPORTANT:
-// userId and tenantId must come from verified JWT
-// claims, not from frontend request parameters.
-//
-// The repository must apply the tenant context before
-// querying tables protected by row-level security.
+// 5. Current authenticated user
 // --------------------------------------------------
 
 export async function getCurrentUser(userId, tenantId) {
@@ -783,53 +755,231 @@ export async function getCurrentUser(userId, tenantId) {
     typeof tenantId !== "string" ||
     !UUID_REGEX.test(tenantId)
   ) {
-    throw createAuthError(
-      "Invalid authentication token",
-      401
-    );
+    throw createAuthError("Invalid authentication token.", 401);
   }
 
-  // The repository must verify BOTH identifiers and
-  // perform the lookup under the specified tenant.
-  const user = await findUserById(userId, tenantId);
+  const user = await authRepo.findUserById(userId, tenantId);
 
   if (!user) {
     throw createAuthError(
-      "User account was not found or is disabled",
+      "User account was not found or is disabled.",
       401
     );
   }
 
   if (
-    user.is_active === false ||
-    user.is_active === 0 ||
-    user.is_active === "false"
+    String(getUserId(user)).toLowerCase() !== userId.toLowerCase() ||
+    String(getTenantId(user)).toLowerCase() !== tenantId.toLowerCase()
   ) {
     throw createAuthError(
-      "User account was not found or is disabled",
-      401
-    );
-  }
-
-  // Ensure the retrieved account belongs to the same
-  // tenant that was authenticated by the JWT.
-  if (
-    String(user.id).toLowerCase() !==
-      userId.toLowerCase() ||
-    String(user.tenant_id).toLowerCase() !==
-      tenantId.toLowerCase()
-  ) {
-    throw createAuthError(
-      "Authenticated user does not belong to this tenant",
+      "Authenticated user does not belong to this tenant.",
       403
     );
   }
 
-  // Use the role retrieved from the database.
-  const role = validateIdentity(user);
+  ensureActiveUser(user);
+  validateIdentity(user);
 
-  return toPublicUser({
-    ...user,
-    direct_role: role,
-  });
+  return toPublicUser(user);
+}
+
+// --------------------------------------------------
+// 6. Forgot password
+// --------------------------------------------------
+
+export async function forgotPassword({ email }) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    throw createAuthError("A valid email address is required.", 400);
+  }
+
+  const remaining = checkRateLimit(
+    `forgot:${normalizedEmail}`,
+    60
+  );
+
+  if (remaining > 0) {
+    throw createAuthError(
+      `Please wait ${remaining} seconds before requesting another code.`,
+      429
+    );
+  }
+
+  const user = await authRepo.findUserByEmail(normalizedEmail);
+
+  if (user && getIsActive(user) !== false) {
+    const token = generateSecureToken();
+    const otp = generateOtp();
+
+    const expiresAt = new Date(
+      Date.now() +
+        Number(env.passwordResetTtlMinutes || 15) * 60 * 1000
+    );
+
+    await authRepo.createPasswordResetToken({
+      userId: getUserId(user),
+      tokenHash: hashToken(token),
+      otp,
+      expiresAt,
+    });
+
+    await emailService.sendPasswordResetEmail({
+      to: normalizedEmail,
+      name: getFullName(user),
+      token,
+      otp,
+      expiresAt,
+    });
+  }
+
+  return {
+    success: true,
+    message:
+      "If an account exists for this email, password-reset instructions have been sent.",
+  };
+}
+
+// --------------------------------------------------
+// 7. Verify password-reset OTP
+// --------------------------------------------------
+
+export async function verifyResetOtp({ email, otp }) {
+  const normalizedEmail = normalizeEmail(email);
+  const cleanOtp = String(otp ?? "").trim();
+
+  if (!EMAIL_REGEX.test(normalizedEmail) || !/^\d{6}$/.test(cleanOtp)) {
+    throw createAuthError(
+      "A valid email address and six-digit code are required.",
+      400
+    );
+  }
+
+  const user = await authRepo.findUserByEmail(normalizedEmail);
+
+  if (!user) {
+    throw createAuthError(
+      "Invalid or expired verification code.",
+      400
+    );
+  }
+
+  const record = await authRepo.findActivePasswordResetByOtp(
+    normalizedEmail,
+    cleanOtp
+  );
+
+  if (!record) {
+    throw createAuthError(
+      "Invalid or expired verification code.",
+      400
+    );
+  }
+
+  return {
+    success: true,
+    verified: true,
+    email: normalizedEmail,
+    message: "Verification code confirmed.",
+  };
+}
+
+// --------------------------------------------------
+// 8. Reset password
+// --------------------------------------------------
+
+export async function resetPassword({
+  token,
+  email,
+  otp,
+  newPassword,
+  confirmPassword,
+}) {
+  const hasOtp = Boolean(email && otp);
+  const hasToken =
+    typeof token === "string" && token.trim().length > 0;
+
+  if (!hasOtp && !hasToken) {
+    throw createAuthError(
+      "A password-reset verification code or token is required.",
+      400
+    );
+  }
+
+  if (
+    typeof newPassword !== "string" ||
+    typeof confirmPassword !== "string"
+  ) {
+    throw createAuthError(
+      "New password and confirmation are required.",
+      400
+    );
+  }
+
+  if (newPassword !== confirmPassword) {
+    throw createAuthError("Passwords do not match.", 400);
+  }
+
+  const passwordError = validatePasswordPolicy(newPassword);
+
+  if (passwordError) {
+    throw createAuthError(passwordError, 400);
+  }
+
+  let record;
+
+  if (hasOtp) {
+    record = await authRepo.findAndConsumePasswordResetByOtp(
+      normalizeEmail(email),
+      String(otp).trim()
+    );
+  } else {
+    record = await authRepo.findAndConsumePasswordResetToken(
+      hashToken(token.trim())
+    );
+  }
+
+  if (!record) {
+    throw createAuthError(
+      "The reset code or token is invalid, expired, or already used.",
+      400
+    );
+  }
+
+  const user = await authRepo.findUserById(record.userId);
+
+  if (!user) {
+    throw createAuthError("User account not found.", 404);
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+
+  await authRepo.updatePassword(
+    getUserId(user),
+    passwordHash
+  );
+
+  if (typeof authRepo.revokeUserSessions === "function") {
+    await authRepo.revokeUserSessions(getUserId(user));
+  }
+
+  return {
+    success: true,
+    message: "Your password has been reset successfully.",
+  };
+}
+
+// --------------------------------------------------
+// 9. SMTP connectivity test
+// --------------------------------------------------
+
+export async function testSmtpConnection(targetEmail) {
+  if (typeof emailService.testSmtpConnection !== "function") {
+    throw createAuthError(
+      "SMTP testing is not implemented in the email service.",
+      501
+    );
+  }
+
+  return emailService.testSmtpConnection(targetEmail);
 }

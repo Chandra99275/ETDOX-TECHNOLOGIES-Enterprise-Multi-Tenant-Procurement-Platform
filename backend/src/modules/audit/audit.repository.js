@@ -1,3 +1,4 @@
+
 import { pool } from "../../config/database.js";
 
 const AUDIT_TABLE_CANDIDATES = [
@@ -22,18 +23,29 @@ const COLUMN_CANDIDATES = {
   createdAt: ["created_at", "event_time", "timestamp", "logged_at"],
 };
 
+const JSON_FIELDS = new Set([
+  "oldValues",
+  "newValues",
+  "metadata",
+]);
+
 function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
 function firstColumn(availableColumns, candidates) {
-  return candidates.find((column) => availableColumns.has(column)) ?? null;
+  return (
+    candidates.find((column) => availableColumns.has(column)) ??
+    null
+  );
 }
 
 function toSafeInteger(value, fallback, minimum, maximum) {
   const parsed = Number.parseInt(value, 10);
 
-  if (!Number.isFinite(parsed)) return fallback;
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
 
   return Math.min(maximum, Math.max(minimum, parsed));
 }
@@ -62,42 +74,63 @@ function findAuditTable(schema) {
   for (const name of AUDIT_TABLE_CANDIDATES) {
     const columns = schema.get(name);
 
-    if (columns) {
-      const resolved = {};
-
-      for (const [field, candidates] of Object.entries(COLUMN_CANDIDATES)) {
-        resolved[field] = firstColumn(columns, candidates);
-      }
-
-      if (!resolved.tenantId || !resolved.action) {
-        throw new Error(
-          `The ${name} table exists, but it is missing a tenant or action column. ` +
-          "Update the audit repository to match the actual schema."
-        );
-      }
-
-      return { name, columns, resolved };
+    if (!columns) {
+      continue;
     }
+
+    const resolved = {};
+
+    for (const [field, candidates] of Object.entries(
+      COLUMN_CANDIDATES
+    )) {
+      resolved[field] = firstColumn(columns, candidates);
+    }
+
+    if (!resolved.tenantId || !resolved.action) {
+      throw new Error(
+        `The ${name} table is missing a supported tenant or action column.`
+      );
+    }
+
+    return {
+      name,
+      columns,
+      resolved,
+    };
   }
 
   throw new Error(
-    "No audit table was found. Expected audit_logs, audit_log, or audit_events. " +
-    "Inspect the existing database schema before adding or changing a table."
+    "No supported audit table was found. Expected audit_logs, audit_log, or audit_events."
   );
 }
 
-async function withTenantClient(tenantId, callback, readOnly = false) {
-  if (!tenantId) {
-    const error = new Error("A tenant ID is required for audit operations.");
+async function withTenantClient(
+  tenantId,
+  callback,
+  readOnly = false
+) {
+  if (
+    tenantId === undefined ||
+    tenantId === null ||
+    String(tenantId).trim() === ""
+  ) {
+    const error = new Error(
+      "A tenant ID is required for audit operations."
+    );
+
     error.statusCode = 403;
+
     throw error;
   }
 
   const client = await pool.connect();
 
   try {
-    await client.query(readOnly ? "BEGIN READ ONLY" : "BEGIN");
+    await client.query(
+      readOnly ? "BEGIN READ ONLY" : "BEGIN"
+    );
 
+    // This setting is transaction-local.
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true)",
       [String(tenantId)]
@@ -115,7 +148,7 @@ async function withTenantClient(tenantId, callback, readOnly = false) {
     try {
       await client.query("ROLLBACK");
     } catch {
-      // Preserve the original exception.
+      // Preserve the original error.
     }
 
     throw error;
@@ -130,34 +163,60 @@ function normalizeAuditRow(row, columns) {
     tenantId: row[columns.tenantId],
     actorId: columns.actorId ? row[columns.actorId] : null,
     action: row[columns.action],
-    entityType: columns.entityType ? row[columns.entityType] : null,
-    entityId: columns.entityId ? row[columns.entityId] : null,
-    description: columns.description ? row[columns.description] : null,
-    oldValues: columns.oldValues ? row[columns.oldValues] : null,
-    newValues: columns.newValues ? row[columns.newValues] : null,
-    metadata: columns.metadata ? row[columns.metadata] : null,
-    ipAddress: columns.ipAddress ? row[columns.ipAddress] : null,
-    userAgent: columns.userAgent ? row[columns.userAgent] : null,
-    createdAt: columns.createdAt ? row[columns.createdAt] : null,
+    entityType: columns.entityType
+      ? row[columns.entityType]
+      : null,
+    entityId: columns.entityId
+      ? row[columns.entityId]
+      : null,
+    description: columns.description
+      ? row[columns.description]
+      : null,
+    oldValues: columns.oldValues
+      ? row[columns.oldValues]
+      : null,
+    newValues: columns.newValues
+      ? row[columns.newValues]
+      : null,
+    metadata: columns.metadata
+      ? row[columns.metadata]
+      : null,
+    ipAddress: columns.ipAddress
+      ? row[columns.ipAddress]
+      : null,
+    userAgent: columns.userAgent
+      ? row[columns.userAgent]
+      : null,
+    createdAt: columns.createdAt
+      ? row[columns.createdAt]
+      : null,
   };
 }
 
 function addInsertField(fields, columns, fieldName, value) {
   const column = columns[fieldName];
 
-  if (!column || value === undefined) return;
+  if (!column || value === undefined) {
+    return;
+  }
 
-  fields.push({ column, value, fieldName });
+  fields.push({
+    column,
+    value,
+    fieldName,
+  });
 }
 
 function buildInsertQuery(tableName, fields) {
-  const columnNames = fields.map((field) => quoteIdentifier(field.column));
+  const columnNames = fields.map((field) =>
+    quoteIdentifier(field.column)
+  );
 
   const placeholders = fields.map((field, index) => {
     const placeholder = `$${index + 1}`;
 
     if (
-      ["oldValues", "newValues", "metadata"].includes(field.fieldName) &&
+      JSON_FIELDS.has(field.fieldName) &&
       field.value !== null
     ) {
       return `${placeholder}::jsonb`;
@@ -166,71 +225,170 @@ function buildInsertQuery(tableName, fields) {
     return placeholder;
   });
 
+  const values = fields.map((field) => {
+    if (
+      JSON_FIELDS.has(field.fieldName) &&
+      field.value !== null &&
+      typeof field.value !== "string"
+    ) {
+      return JSON.stringify(field.value);
+    }
+
+    return field.value;
+  });
+
   return {
     sql: `INSERT INTO ${quoteIdentifier(tableName)}
       (${columnNames.join(", ")})
       VALUES (${placeholders.join(", ")})
       RETURNING *`,
-    values: fields.map((field) => {
-      if (
-        ["oldValues", "newValues", "metadata"].includes(field.fieldName) &&
-        field.value !== null &&
-        typeof field.value !== "string"
-      ) {
-        return JSON.stringify(field.value);
-      }
-
-      return field.value;
-    }),
+    values,
   };
 }
 
 /**
- * Record an audit event.
- *
- * Expected event fields:
- * tenantId, actorId, action, entityType, entityId, description,
- * oldValues, newValues, metadata, ipAddress, userAgent.
+ * Create an audit event.
  */
 export async function createAuditEvent(event) {
-  return withTenantClient(event.tenantId, async (client, table) => {
-    const columns = table.resolved;
-    const fields = [];
+  if (!event || typeof event !== "object") {
+    throw new TypeError("An audit event object is required.");
+  }
 
-    addInsertField(fields, columns, "tenantId", event.tenantId);
-    addInsertField(fields, columns, "actorId", event.actorId ?? null);
-    addInsertField(fields, columns, "action", event.action);
-    addInsertField(fields, columns, "entityType", event.entityType ?? null);
-    addInsertField(fields, columns, "entityId", event.entityId ?? null);
-    addInsertField(fields, columns, "description", event.description ?? null);
-    addInsertField(fields, columns, "oldValues", event.oldValues ?? null);
-    addInsertField(fields, columns, "newValues", event.newValues ?? null);
-    addInsertField(fields, columns, "metadata", event.metadata ?? null);
-    addInsertField(fields, columns, "ipAddress", event.ipAddress ?? null);
-    addInsertField(fields, columns, "userAgent", event.userAgent ?? null);
+  if (
+    typeof event.action !== "string" ||
+    !event.action.trim()
+  ) {
+    throw new TypeError("An audit action is required.");
+  }
 
-    if (!fields.some((field) => field.fieldName === "tenantId")) {
-      throw new Error("The audit table has no supported tenant column.");
+  return withTenantClient(
+    event.tenantId,
+    async (client, table) => {
+      const columns = table.resolved;
+      const fields = [];
+
+      addInsertField(
+        fields,
+        columns,
+        "tenantId",
+        event.tenantId
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "actorId",
+        event.actorId ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "action",
+        event.action
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "entityType",
+        event.entityType ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "entityId",
+        event.entityId ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "description",
+        event.description ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "oldValues",
+        event.oldValues ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "newValues",
+        event.newValues ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "metadata",
+        event.metadata ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "ipAddress",
+        event.ipAddress ?? null
+      );
+
+      addInsertField(
+        fields,
+        columns,
+        "userAgent",
+        event.userAgent ?? null
+      );
+
+      if (
+        !fields.some(
+          (field) => field.fieldName === "tenantId"
+        )
+      ) {
+        throw new Error(
+          "The audit table has no supported tenant column."
+        );
+      }
+
+      if (
+        !fields.some(
+          (field) => field.fieldName === "action"
+        )
+      ) {
+        throw new Error(
+          "The audit table has no supported action column."
+        );
+      }
+
+      const { sql, values } = buildInsertQuery(
+        table.name,
+        fields
+      );
+
+      const result = await client.query(sql, values);
+
+      return normalizeAuditRow(
+        result.rows[0],
+        columns
+      );
     }
-
-    if (!fields.some((field) => field.fieldName === "action")) {
-      throw new Error("The audit table has no supported action column.");
-    }
-
-    const { sql, values } = buildInsertQuery(table.name, fields);
-    const result = await client.query(sql, values);
-
-    return normalizeAuditRow(result.rows[0], columns);
-  });
+  );
 }
 
 /**
- * List audit events for the current tenant.
+ * List audit events belonging to one tenant.
  *
- * Filters:
+ * Supported filters:
  * action, entityType, entityId, actorId, from, to, page, limit.
  */
-export async function listAuditEvents(tenantId, filters = {}) {
+export async function listAuditEvents(
+  tenantId,
+  filters = {}
+) {
   return withTenantClient(
     tenantId,
     async (client, table) => {
@@ -240,7 +398,10 @@ export async function listAuditEvents(tenantId, filters = {}) {
 
       function addCondition(sql, value) {
         values.push(value);
-        conditions.push(sql.replace("?", `$${values.length}`));
+
+        conditions.push(
+          sql.replace("?", `$${values.length}`)
+        );
       }
 
       if (filters.action && columns.action) {
@@ -257,14 +418,22 @@ export async function listAuditEvents(tenantId, filters = {}) {
         );
       }
 
-      if (filters.entityId && columns.entityId) {
+      if (
+        filters.entityId !== undefined &&
+        filters.entityId !== "" &&
+        columns.entityId
+      ) {
         addCondition(
           `${quoteIdentifier(columns.entityId)}::text = ?`,
           String(filters.entityId)
         );
       }
 
-      if (filters.actorId && columns.actorId) {
+      if (
+        filters.actorId !== undefined &&
+        filters.actorId !== "" &&
+        columns.actorId
+      ) {
         addCondition(
           `${quoteIdentifier(columns.actorId)}::text = ?`,
           String(filters.actorId)
@@ -289,8 +458,20 @@ export async function listAuditEvents(tenantId, filters = {}) {
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
 
-      const page = toSafeInteger(filters.page, 1, 1, 1000000);
-      const limit = toSafeInteger(filters.limit, 25, 1, 100);
+      const page = toSafeInteger(
+        filters.page,
+        1,
+        1,
+        1000000
+      );
+
+      const limit = toSafeInteger(
+        filters.limit,
+        25,
+        1,
+        100
+      );
+
       const offset = (page - 1) * limit;
 
       const countResult = await client.query(
@@ -300,13 +481,21 @@ export async function listAuditEvents(tenantId, filters = {}) {
         values
       );
 
-      const orderBy = columns.createdAt
-        ? `ORDER BY ${quoteIdentifier(columns.createdAt)} DESC NULLS LAST`
-        : columns.id
-          ? `ORDER BY ${quoteIdentifier(columns.id)} DESC`
-          : "";
+      let orderBy = "";
 
-      const dataValues = [...values, limit, offset];
+      if (columns.createdAt) {
+        orderBy =
+          `ORDER BY ${quoteIdentifier(columns.createdAt)} DESC NULLS LAST`;
+      } else if (columns.id) {
+        orderBy =
+          `ORDER BY ${quoteIdentifier(columns.id)} DESC`;
+      }
+
+      const dataValues = [
+        ...values,
+        limit,
+        offset,
+      ];
 
       const dataResult = await client.query(
         `SELECT *
@@ -318,17 +507,20 @@ export async function listAuditEvents(tenantId, filters = {}) {
         dataValues
       );
 
+      const total = Number(
+        countResult.rows[0]?.total ?? 0
+      );
+
       return {
         items: dataResult.rows.map((row) =>
           normalizeAuditRow(row, columns)
         ),
+
         pagination: {
           page,
           limit,
-          total: Number(countResult.rows[0]?.total ?? 0),
-          totalPages: Math.ceil(
-            Number(countResult.rows[0]?.total ?? 0) / limit
-          ),
+          total,
+          totalPages: Math.ceil(total / limit),
         },
       };
     },
@@ -337,9 +529,22 @@ export async function listAuditEvents(tenantId, filters = {}) {
 }
 
 /**
- * Retrieve one audit event by ID within the authenticated tenant.
+ * Compatibility export used by audit.controller.js.
  */
-export async function getAuditEventById(tenantId, auditId) {
+export async function searchAuditEvents(
+  tenantId,
+  options = {}
+) {
+  return listAuditEvents(tenantId, options);
+}
+
+/**
+ * Get a single audit event by ID within the current tenant.
+ */
+export async function getAuditEventById(
+  tenantId,
+  auditId
+) {
   return withTenantClient(
     tenantId,
     async (client, table) => {
@@ -347,7 +552,7 @@ export async function getAuditEventById(tenantId, auditId) {
 
       if (!columns.id) {
         throw new Error(
-          "The audit table has no supported ID column; individual lookup is unavailable."
+          "The audit table has no supported ID column."
         );
       }
 
@@ -359,9 +564,14 @@ export async function getAuditEventById(tenantId, auditId) {
         [String(auditId)]
       );
 
-      if (!result.rows[0]) return null;
+      if (!result.rows[0]) {
+        return null;
+      }
 
-      return normalizeAuditRow(result.rows[0], columns);
+      return normalizeAuditRow(
+        result.rows[0],
+        columns
+      );
     },
     true
   );

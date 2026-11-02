@@ -1,17 +1,16 @@
 import { Router } from "express";
 
 import {
+  register,
+  verifyEmail,
+  resendVerification,
   login,
   me,
   logout,
-<<<<<<< HEAD
-  getMe,
   forgotPassword,
   verifyResetOtp,
   resetPassword,
   testSmtp,
-=======
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 } from "./auth.controller.js";
 
 import { validateLogin } from "./auth.validation.js";
@@ -19,35 +18,43 @@ import { authenticate } from "../../middleware/authenticate.js";
 
 const router = Router();
 
-<<<<<<< HEAD
-// Public Authentication Flow
-router.post("/register", register);
-router.post("/verify-email", verifyEmail);
-router.post("/resend-verification", resendVerification);
-router.post("/login", login);
-router.post("/forgot-password", forgotPassword);
-router.post("/verify-reset-otp", verifyResetOtp);
-router.post("/reset-password", resetPassword);
-=======
-/**
- * Public route:
- * Authenticate an existing database user.
- */
-router.post("/login", validateLogin, login);
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+// --------------------------------------------------
+// Public authentication routes
+// --------------------------------------------------
 
-/**
- * Protected route:
- * Return the currently authenticated user's information.
- */
+// Register a new account and organization.
+router.post("/register", register);
+
+// Verify the user's email address.
+router.post("/verify-email", verifyEmail);
+
+// Resend email verification instructions.
+router.post("/resend-verification", resendVerification);
+
+// Authenticate an existing database user.
+router.post("/login", validateLogin, login);
+
+// Request password-reset instructions.
+router.post("/forgot-password", forgotPassword);
+
+// Verify the password-reset OTP.
+router.post("/verify-reset-otp", verifyResetOtp);
+
+// Set a new password after successful verification.
+router.post("/reset-password", resetPassword);
+
+// SMTP diagnostic endpoint.
+// Protect this endpoint so it cannot be used publicly.
+router.post("/test-smtp", authenticate, testSmtp);
+
+// --------------------------------------------------
+// Protected authentication routes
+// --------------------------------------------------
+
+// Return the authenticated user's information.
 router.get("/me", authenticate, me);
 
-/**
- * Protected route:
- * Notify the client that logout was successful.
- *
- * Since JWTs are stateless, the client must delete its token.
- */
+// Notify the client that logout was successful.
 router.post("/logout", authenticate, logout);
 
 export default router;

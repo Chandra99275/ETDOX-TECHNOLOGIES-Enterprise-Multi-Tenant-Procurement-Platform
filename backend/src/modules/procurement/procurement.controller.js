@@ -139,7 +139,7 @@ export async function managerDecision(req, res, next) {
       request,
     });
   } catch (error) {
-<<<<<<< HEAD
+
     next(error);
   }
 }
@@ -161,8 +161,8 @@ export async function financeDecision(req, res, next) {
     });
   } catch (error) {
     next(error);
-=======
+
     return next(error);
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+
   }
 }

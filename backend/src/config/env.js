@@ -1,37 +1,61 @@
-<<<<<<< HEAD
+
+import "dotenv/config";
+
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import { z } from "zod";
+
+// --------------------------------------------------
+// Environment file loading
+// --------------------------------------------------
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
-dotenv.config();
-=======
-import "dotenv/config";
-import { z } from "zod";
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+
+// Load backend/.env, then load the default .env if present.
+// Existing process environment variables take precedence.
+dotenv.config({
+  path: path.resolve(__dirname, "../../.env"),
+});
+
+// --------------------------------------------------
+// Environment validation
+// --------------------------------------------------
 
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
 
-  PORT: z.coerce.number().int().min(1).max(65535).default(5000),
+  PORT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65535)
+    .default(5000),
 
-<<<<<<< HEAD
-const databaseUrl =
-  process.env.DATABASE_URL ||
-  "postgresql://etdox_user:postgre99@localhost:5432/etdox_dev";
-=======
   HOST: z.string().default("0.0.0.0"),
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
-  FRONTEND_URL: z.string().url().default("http://localhost:5173"),
+  FRONTEND_URL: z
+    .string()
+    .url()
+    .default("http://localhost:5173"),
 
-  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  CORS_ORIGIN: z
+    .string()
+    .default("http://localhost:5173,http://127.0.0.1:5173"),
 
-  DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  DATABASE_URL: z
+    .string()
+    .min(1, "DATABASE_URL is required"),
+
+  DB_POOL_MAX: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(10),
 
   DB_SSL: z
     .enum(["true", "false"])
@@ -51,6 +75,10 @@ const databaseUrl =
 
   JWT_EXPIRES_IN: z.string().default("1h"),
 
+  JWT_ISSUER: z.string().default("etdox-procurement-api"),
+
+  JWT_AUDIENCE: z.string().default("etdox-client"),
+
   ETDOX_DEMO_TENANT_ID: z
     .string()
     .uuid()
@@ -61,97 +89,191 @@ const databaseUrl =
     .default("false")
     .transform((value) => value === "true"),
 
-<<<<<<< HEAD
-const corsOrigin = corsOrigins[0];
+  REDIS_URL: z.string().default(""),
 
-const demoLoginEnabled = false;
+  LOG_LEVEL: z
+    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+    .default("info"),
 
-const demoTenantId =
-  process.env.ETDOX_DEMO_TENANT_ID ||
-  "b4383f9e-8e4a-42d7-9d34-ba59e5ea9a9e";
+  HTTP_LOGGING: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
 
-const redisUrl = process.env.REDIS_URL || "";
-const redisEnabled = Boolean(redisUrl && redisUrl.startsWith("redis://"));
+  TRUST_PROXY: z
+    .enum(["0", "1"])
+    .default("0"),
+
+  AUTH_RATE_LIMIT_MAX: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(100),
+
+  // SMTP configuration
+  SMTP_HOST: z.string().default(""),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  SMTP_SECURE: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) =>
+      value === undefined ? undefined : value === "true"
+    ),
+  SMTP_USER: z.string().default(""),
+  SMTP_PASS: z.string().default(""),
+  SMTP_FROM_EMAIL: z.string().default(""),
+  SMTP_FROM_NAME: z.string().default("ETDOX"),
+
+  // Backward-compatible email environment variables
+  EMAIL: z.string().default(""),
+  SECRET: z.string().default(""),
+
+  EMAIL_VERIFICATION_TTL_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(1440),
+
+  PASSWORD_RESET_TTL_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(30),
+
+  // Webhook encryption key must be a 64-character hex string.
+  WEBHOOK_ENCRYPTION_KEY: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/, {
+      message: "WEBHOOK_ENCRYPTION_KEY must contain exactly 64 hexadecimal characters",
+    })
+    .optional(),
+
+  DEFAULT_CURRENCY: z.string().default("INR"),
+
+  API_BASE_URL: z
+    .string()
+    .url()
+    .default("http://localhost:5000"),
+});
 
 // --------------------------------------------------
-// SMTP Email Configuration
+// Parse environment
 // --------------------------------------------------
 
-const rawEmail = (process.env.SMTP_USER || process.env.EMAIL || "").trim().replace(/["']/g, "");
-const rawSecret = (process.env.SMTP_PASS || process.env.SECRET || "").trim();
-const cleanSecret = rawSecret.replace(/["'\s]/g, "");
+const parsed = envSchema.safeParse(process.env);
 
-const isGmail = rawEmail.toLowerCase().endsWith("@gmail.com");
+if (!parsed.success) {
+  console.error("Invalid backend environment configuration:");
 
-const smtpHost =
-  process.env.SMTP_HOST ||
-  (isGmail ? "smtp.gmail.com" : "");
+  for (const issue of parsed.error.issues) {
+    console.error(`- ${issue.path.join(".")}: ${issue.message}`);
+  }
 
-const smtpPort = Number.parseInt(
-  process.env.SMTP_PORT || (isGmail ? "465" : "587"),
-  10
-);
-
-const smtpSecure =
-  process.env.SMTP_SECURE === "true" ||
-  (process.env.SMTP_SECURE === undefined && (smtpPort === 465 || isGmail));
-
-const smtpUser = rawEmail;
-const smtpPass = cleanSecret;
-
-const smtpFromEmail =
-  (process.env.SMTP_FROM_EMAIL || smtpUser || "etdox3300@gmail.com").trim().replace(/["']/g, "");
-
-const smtpFromName =
-  (process.env.SMTP_FROM_NAME || "ETDOX").trim().replace(/["']/g, "");
-
-const emailVerificationTtlMinutes = Number.parseInt(
-  process.env.EMAIL_VERIFICATION_TTL_MINUTES || "1440",
-  10
-);
-
-const passwordResetTtlMinutes = Number.parseInt(
-  process.env.PASSWORD_RESET_TTL_MINUTES || "30",
-  10
-);
-
-let webhookEncryptionKey;
-try {
-  webhookEncryptionKey = Buffer.from(
-    webhookEncryptionKeyHex.padEnd(64, "0").slice(0, 64),
-    "hex"
-  );
-} catch {
-  webhookEncryptionKey = Buffer.alloc(32);
+  throw new Error("Backend environment validation failed.");
 }
 
-const env = Object.freeze({
-  nodeEnv,
-  isProduction,
-  isDevelopment,
-  host,
-  port,
+const config = parsed.data;
 
-  databaseUrl,
+// --------------------------------------------------
+// Derived configuration
+// --------------------------------------------------
+
+const corsOrigins = config.CORS_ORIGIN
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
+const corsOrigin = corsOrigins[0] || config.FRONTEND_URL;
+
+const redisUrl = config.REDIS_URL.trim();
+const redisEnabled = /^rediss?:\/\//i.test(redisUrl);
+
+const rawEmail = (
+  config.SMTP_USER ||
+  config.EMAIL
+).trim().replace(/["']/g, "");
+
+const rawSecret = config.SMTP_PASS || config.SECRET;
+
+const smtpUser = rawEmail;
+const smtpPass = rawSecret.trim().replace(/["'\s]/g, "");
+
+const isGmail = smtpUser.toLowerCase().endsWith("@gmail.com");
+
+const smtpHost =
+  config.SMTP_HOST.trim() ||
+  (isGmail ? "smtp.gmail.com" : "");
+
+const smtpPort =
+  config.SMTP_PORT ||
+  (isGmail ? 465 : 587);
+
+const smtpSecure =
+  config.SMTP_SECURE ??
+  (smtpPort === 465);
+
+const smtpFromEmail = (
+  config.SMTP_FROM_EMAIL ||
+  smtpUser
+).trim().replace(/["']/g, "");
+
+const smtpFromName = config.SMTP_FROM_NAME
+  .trim()
+  .replace(/["']/g, "");
+
+const webhookEncryptionKey = config.WEBHOOK_ENCRYPTION_KEY
+  ? Buffer.from(config.WEBHOOK_ENCRYPTION_KEY, "hex")
+  : null;
+
+// Demo authentication is disabled by default.
+// Enable it only through explicit configuration and only in development.
+const demoLoginEnabled =
+  config.NODE_ENV === "development" &&
+  config.ETDOX_DEMO_AUTH === true;
+
+// --------------------------------------------------
+// Export normalized configuration
+// --------------------------------------------------
+
+export const env = Object.freeze({
+  nodeEnv: config.NODE_ENV,
+  isDevelopment: config.NODE_ENV === "development",
+  isProduction: config.NODE_ENV === "production",
+  isTest: config.NODE_ENV === "test",
+
+  host: config.HOST,
+  port: config.PORT,
+
+  frontendUrl: config.FRONTEND_URL,
+  apiBaseUrl: config.API_BASE_URL,
+
+  corsOrigin,
+  corsOrigins: Object.freeze(corsOrigins),
+
+  databaseUrl: config.DATABASE_URL,
+  dbPoolMax: config.DB_POOL_MAX,
+  dbSsl: config.DB_SSL,
+
+  jwtSecret: config.JWT_SECRET,
+  jwtExpiresIn: config.JWT_EXPIRES_IN,
+  jwtIssuer: config.JWT_ISSUER,
+  jwtAudience: config.JWT_AUDIENCE,
+
+  demoLoginEnabled,
+  demoAuthEnabled: demoLoginEnabled,
+  demoTenantId: config.ETDOX_DEMO_TENANT_ID,
 
   redisUrl,
   redisEnabled,
 
-  jwtSecret,
-  jwtExpiresIn,
-  jwtIssuer,
-  jwtAudience,
-
-  demoLoginEnabled,
-  demoTenantId,
+  logLevel: config.LOG_LEVEL,
+  httpLogging: config.HTTP_LOGGING,
+  trustProxy: config.TRUST_PROXY === "1",
+  authRateLimitMax: config.AUTH_RATE_LIMIT_MAX,
 
   webhookEncryptionKey,
 
-  defaultCurrency,
-  frontendUrl,
-  apiBaseUrl,
-  corsOrigin,
-  corsOrigins,
+  defaultCurrency: config.DEFAULT_CURRENCY,
 
   smtp: Object.freeze({
     host: smtpHost,
@@ -164,51 +286,11 @@ const env = Object.freeze({
     isConfigured: Boolean(smtpHost && smtpUser && smtpPass),
   }),
 
-  emailVerificationTtlMinutes,
-  passwordResetTtlMinutes,
-=======
-  LOG_LEVEL: z
-    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
-    .default("info"),
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+  emailVerificationTtlMinutes:
+    config.EMAIL_VERIFICATION_TTL_MINUTES,
+
+  passwordResetTtlMinutes:
+    config.PASSWORD_RESET_TTL_MINUTES,
 });
 
-const parsed = envSchema.safeParse(process.env);
-
-if (!parsed.success) {
-  console.error("❌ Invalid backend environment configuration:");
-
-  for (const issue of parsed.error.issues) {
-    console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
-  }
-
-  throw new Error("Backend environment validation failed.");
-}
-
-<<<<<<< HEAD
-export { env };
 export default env;
-=======
-export const env = Object.freeze({
-  nodeEnv: parsed.data.NODE_ENV,
-  isDevelopment: parsed.data.NODE_ENV === "development",
-  isProduction: parsed.data.NODE_ENV === "production",
-  isTest: parsed.data.NODE_ENV === "test",
-
-  port: parsed.data.PORT,
-  host: parsed.data.HOST,
-  frontendUrl: parsed.data.FRONTEND_URL,
-
-  databaseUrl: parsed.data.DATABASE_URL,
-  dbPoolMax: parsed.data.DB_POOL_MAX,
-  dbSsl: parsed.data.DB_SSL,
-
-  jwtSecret: parsed.data.JWT_SECRET,
-  jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
-
-  demoTenantId: parsed.data.ETDOX_DEMO_TENANT_ID,
-  demoAuthEnabled: parsed.data.ETDOX_DEMO_AUTH,
-
-  logLevel: parsed.data.LOG_LEVEL,
-});
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
