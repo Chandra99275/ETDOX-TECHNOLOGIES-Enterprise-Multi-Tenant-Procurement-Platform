@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 
 import express from "express";
@@ -6,6 +7,28 @@ import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
+
+import path from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+
+// --------------------------------------------------
+// Application configuration
+// --------------------------------------------------
+
+const app = express();
+const API_PREFIX = "/api/v1";
+
+const currentFile = fileURLToPath(import.meta.url);
+const currentDirectory = path.dirname(currentFile);
+
+app.disable("x-powered-by");
+
+// Only enable this when the deployment topology is known.
+if (process.env.TRUST_PROXY === "1") {
+  app.set("trust proxy", 1);
+}
 
 // --------------------------------------------------
 // Route imports
@@ -24,21 +47,7 @@ import notificationsRoutes from "./modules/notifications/notifications.routes.js
 import analyticsRoutes from "./modules/analytics/analytics.routes.js";
 
 // --------------------------------------------------
-// Application
-// --------------------------------------------------
-
-const app = express();
-
-app.disable("x-powered-by");
-
-// Configure trust proxy explicitly when deploying behind a known proxy.
-// Example: set TRUST_PROXY=1 when there is exactly one trusted proxy.
-if (process.env.TRUST_PROXY === "1") {
-  app.set("trust proxy", 1);
-}
-
-// --------------------------------------------------
-// CORS
+// CORS configuration
 // --------------------------------------------------
 
 const configuredOrigins = (
@@ -51,7 +60,7 @@ const configuredOrigins = (
 
 const corsOptions = {
   origin(origin, callback) {
-    // Requests without an Origin header can include server-to-server calls.
+    // Allow requests without an Origin header, such as server-to-server calls.
     if (!origin) {
       return callback(null, true);
     }
@@ -91,7 +100,7 @@ const corsOptions = {
 };
 
 // --------------------------------------------------
-// Security and request middleware
+// Security middleware
 // --------------------------------------------------
 
 app.use(
@@ -103,6 +112,10 @@ app.use(
 );
 
 app.use(cors(corsOptions));
+
+// --------------------------------------------------
+// Request body parsing
+// --------------------------------------------------
 
 app.use(
   express.json({
@@ -118,9 +131,13 @@ app.use(
   })
 );
 
+// Parse cookies before authentication routes.
 app.use(cookieParser());
 
-// Morgan logging can be disabled with HTTP_LOGGING=false.
+// --------------------------------------------------
+// HTTP request logging
+// --------------------------------------------------
+
 if (process.env.HTTP_LOGGING !== "false") {
   app.use(
     morgan(
@@ -132,51 +149,57 @@ if (process.env.HTTP_LOGGING !== "false") {
 }
 
 // --------------------------------------------------
-// Request ID
+// Request ID middleware
 // --------------------------------------------------
 
 app.use((req, res, next) => {
-  const suppliedId = req.get("x-request-id");
+  const suppliedId = req.get("X-Request-ID");
 
-  // Do not blindly trust an arbitrarily long client-supplied value.
   const requestId =
-    suppliedId && /^[a-zA-Z0-9._-]{1,100}$/.test(suppliedId)
+    suppliedId &&
+    /^[a-zA-Z0-9._-]{1,100}$/.test(suppliedId)
       ? suppliedId
-      : cryptoRandomId();
+      : randomUUID();
 
   req.requestId = requestId;
+
   res.setHeader("X-Request-ID", requestId);
 
   next();
 });
 
-function cryptoRandomId() {
-  return globalThis.crypto.randomUUID();
-}
+// --------------------------------------------------
+// Authentication rate limiting
+// --------------------------------------------------
 
-// --------------------------------------------------
-// Rate limiting
-// --------------------------------------------------
+const configuredAuthLimit = Number.parseInt(
+  process.env.AUTH_RATE_LIMIT_MAX || "100",
+  10
+);
 
 const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: Number.parseInt(
-    process.env.AUTH_RATE_LIMIT_MAX || "100",
-    10
-  ),
+
+  limit:
+    Number.isFinite(configuredAuthLimit) &&
+    configuredAuthLimit > 0
+      ? configuredAuthLimit
+      : 100,
+
   standardHeaders: "draft-8",
   legacyHeaders: false,
 
   message: {
     success: false,
-    message: "Too many authentication requests. Please try again later.",
+    message:
+      "Too many authentication requests. Please try again later.",
   },
 
-  // Avoid returning rate-limit internals in responses.
   handler(req, res) {
     res.status(429).json({
       success: false,
-      message: "Too many authentication requests. Please try again later.",
+      message:
+        "Too many authentication requests. Please try again later.",
       requestId: req.requestId,
     });
   },
@@ -186,29 +209,24 @@ const authRateLimiter = rateLimit({
 // Health endpoints
 // --------------------------------------------------
 
-app.get("/health", (req, res) => {
+function healthHandler(req, res) {
   res.status(200).json({
     success: true,
     status: "ok",
     service: "etdox-procurement-api",
     timestamp: new Date().toISOString(),
+    requestId: req.requestId,
   });
-});
+}
 
-app.get("/api/health", (req, res) => {
-  res.status(200).json({
-    success: true,
-    status: "ok",
-    service: "etdox-procurement-api",
-    timestamp: new Date().toISOString(),
-  });
-});
+app.get("/health", healthHandler);
+app.get("/api/health", healthHandler);
 
 // --------------------------------------------------
-// API routes
+// API ROUTES
+//
+// Each primary API endpoint is mounted exactly once.
 // --------------------------------------------------
-
-const API_PREFIX = "/api/v1";
 
 // Authentication
 app.use(
@@ -217,39 +235,43 @@ app.use(
   authRoutes
 );
 
-// Procurement and approvals
+// Procurement
 app.use(
   `${API_PREFIX}/procurement`,
   procurementRoutes
 );
 
+// Approvals
 app.use(
   `${API_PREFIX}/approvals`,
   approvalsRoutes
 );
 
-// Suppliers and purchasing
+// Suppliers
 app.use(
   `${API_PREFIX}/suppliers`,
   suppliersRoutes
 );
 
+// Purchase orders
 app.use(
   `${API_PREFIX}/purchase-orders`,
   purchaseOrdersRoutes
 );
 
+// Goods receipts
 app.use(
   `${API_PREFIX}/receipts`,
   receiptsRoutes
 );
 
-// Finance
+// Budgets
 app.use(
   `${API_PREFIX}/budgets`,
   budgetsRoutes
 );
 
+// Invoices
 app.use(
   `${API_PREFIX}/invoices`,
   invoicesRoutes
@@ -261,236 +283,235 @@ app.use(
   employeesRoutes
 );
 
-// Compatibility alias for clients using /users.
-// Both paths use the same employee router and its existing authorization.
+// Compatibility alias for clients using /api/v1/users.
+// This intentionally reuses the existing employee router.
 app.use(
   `${API_PREFIX}/users`,
   employeesRoutes
 );
 
-// Notifications and analytics
+// Notifications
 app.use(
   `${API_PREFIX}/notifications`,
   notificationsRoutes
 );
 
+// Analytics
 app.use(
   `${API_PREFIX}/analytics`,
   analyticsRoutes
 );
 
 // --------------------------------------------------
-<<<<<<< HEAD
-// OPTIONAL ROUTE LOADING
+// OPTIONAL MODULE LOADER
+//
+// Optional modules are mounted only if their files exist.
+// Do not register the primary routes above a second time.
 // --------------------------------------------------
 
-async function loadFirstRouter(relativePaths) {
-  for (const relativePath of relativePaths) {
-    const absolutePath = path.resolve(__dirname, relativePath);
+function resolveRouter(moduleExports, relativePath) {
+  const possibleRouters = [
+    moduleExports.default,
+    moduleExports.router,
+    moduleExports.routes,
+    moduleExports.authRoutes,
+    moduleExports.usersRoutes,
+    moduleExports.procurementRoutes,
+    moduleExports.approvalsRoutes,
+    moduleExports.financeRoutes,
+    moduleExports.transactionsRoutes,
+    moduleExports.auditRoutes,
+    moduleExports.webhooksRoutes,
+    moduleExports.tenantsRoutes,
+    moduleExports.attachmentsRoutes,
+    moduleExports.contractsRoutes,
+    moduleExports.billingRoutes,
+    moduleExports.workflowsRoutes,
+    moduleExports.purchaseRequestsRoutes,
+    moduleExports.clientsRoutes,
+    moduleExports.issuesRoutes,
+  ];
 
-    if (!existsSync(absolutePath)) {
-      continue;
-    }
+  const router = possibleRouters.find(
+    (candidate) => typeof candidate === "function"
+  );
 
-    const imported = await import(
+  if (!router) {
+    throw new TypeError(
+      `Route file "${relativePath}" does not export an Express router.`
+    );
+  }
+
+  return router;
+}
+
+async function loadOptionalRouter(relativePath) {
+  const absolutePath = path.resolve(
+    currentDirectory,
+    relativePath
+  );
+
+  if (!existsSync(absolutePath)) {
+    console.info(
+      `[Routes] Optional module not found; skipping: ${relativePath}`
+    );
+
+    return null;
+  }
+
+  try {
+    const importedModule = await import(
       pathToFileURL(absolutePath).href
     );
 
-    const router =
-      imported.default ??
-      imported.router ??
-      imported.routes ??
-      imported.authRoutes ??
-      imported.usersRoutes ??
-      imported.procurementRoutes ??
-      imported.approvalsRoutes;
-
-    if (typeof router !== 'function') {
-      throw new TypeError(
-        `Route file "${relativePath}" must export an Express router as its default export or a supported named export.`
-      );
-    }
-
-    console.info(`[Routes] Loaded ${relativePath}`);
-
-    return router;
-  }
-
-  return null;
-}
-
-async function mountOptional(paths, candidates) {
-  const router = await loadFirstRouter(candidates);
-
-  if (!router) {
-    console.warn(
-      `[Routes] Not mounted; no matching route file found: ${paths.join(', ')}`
+    const router = resolveRouter(
+      importedModule,
+      relativePath
     );
 
-    return;
-  }
+    console.info(
+      `[Routes] Optional module loaded: ${relativePath}`
+    );
 
-  for (const routePath of paths) {
-    app.use(routePath, router);
-    console.info(`[Routes] Mounted ${routePath}`);
+    return router;
+  } catch (error) {
+    console.error(
+      `[Routes] Failed to load ${relativePath}:`,
+      error.message
+    );
+
+    throw error;
+  }
+}
+
+async function mountOptionalRoutes(routeGroups) {
+  for (const group of routeGroups) {
+    const router = await loadOptionalRouter(
+      group.module
+    );
+
+    if (!router) {
+      continue;
+    }
+
+    for (const routePath of group.paths) {
+      app.use(routePath, router);
+
+      console.info(
+        `[Routes] Mounted ${routePath}`
+      );
+    }
   }
 }
 
 // --------------------------------------------------
-// ROUTE DEFINITIONS
+// OPTIONAL API MODULES
+//
+// These modules are not mounted above.
+// Add a module here only when the corresponding
+// route file exists and is required by your project.
 // --------------------------------------------------
 
-const routeGroups = [
+const optionalRouteGroups = [
   {
-    paths: ['/api/auth', '/api/v1/auth'],
-    candidates: [
-      'modules/auth/auth.routes.js',
+    paths: [
+      `${API_PREFIX}/finance`,
+      "/api/finance",
     ],
+    module: "modules/finance/finance.routes.js",
   },
+
   {
-    paths: ['/api/users', '/api/v1/users', '/api/v1/employees'],
-    candidates: [
-      'modules/users/users.routes.js',
+    paths: [
+      `${API_PREFIX}/purchase-requests`,
     ],
+    module:
+      "modules/purchase-requests/purchase-requests.routes.js",
   },
+
   {
-    paths: ['/api/procurement', '/api/v1/procurement'],
-    candidates: [
-      'modules/procurement/procurement.routes.js',
+    paths: [
+      `${API_PREFIX}/clients`,
     ],
+    module: "modules/clients/clients.routes.js",
   },
+
   {
-    paths: ['/api/approvals', '/api/v1/approvals'],
-    candidates: [
-      'modules/approvals/approvals.routes.js',
+    paths: [
+      `${API_PREFIX}/issues`,
     ],
+    module: "modules/issues/issues.routes.js",
   },
+
   {
-    paths: ['/api/finance', '/api/v1/finance'],
-    candidates: [
-      'modules/finance/finance.routes.js',
+    paths: [
+      `${API_PREFIX}/transactions`,
     ],
+    module:
+      "modules/transactions/transactions.routes.js",
   },
+
   {
-    paths: ['/api/v1/purchase-requests'],
-    candidates: [
-      'modules/purchase-requests/purchase-requests.routes.js',
+    paths: [
+      `${API_PREFIX}/audit-events`,
+      `${API_PREFIX}/audit`,
     ],
+    module: "modules/audit/audit.routes.js",
   },
+
   {
-    paths: ['/api/v1/suppliers'],
-    candidates: [
-      'modules/suppliers/suppliers.routes.js',
+    paths: [
+      `${API_PREFIX}/webhooks`,
     ],
+    module: "modules/webhooks/webhooks.routes.js",
   },
+
   {
-    paths: ['/api/v1/clients'],
-    candidates: [
-      'modules/clients/clients.routes.js',
+    paths: [
+      `${API_PREFIX}/tenants`,
     ],
+    module: "modules/tenants/tenants.routes.js",
   },
+
   {
-    paths: ['/api/v1/issues'],
-    candidates: [
-      'modules/issues/issues.routes.js',
+    paths: [
+      `${API_PREFIX}/attachments`,
     ],
+    module: "modules/attachments/attachments.routes.js",
   },
+
   {
-    paths: ['/api/v1/purchase-orders'],
-    candidates: [
-      'modules/purchase-orders/purchase-orders.routes.js',
+    paths: [
+      `${API_PREFIX}/contracts`,
     ],
+    module: "modules/contracts/contracts.routes.js",
   },
+
   {
-    paths: ['/api/v1/receipts'],
-    candidates: [
-      'modules/receipts/receipts.routes.js',
+    paths: [
+      `${API_PREFIX}/billing`,
     ],
+    module: "modules/billing/billing.routes.js",
   },
+
   {
-    paths: ['/api/v1/invoices'],
-    candidates: [
-      'modules/invoices/invoices.routes.js',
+    paths: [
+      `${API_PREFIX}/workflows`,
     ],
-  },
-  {
-    paths: ['/api/v1/budgets', '/api/budgets', '/api/procurement/budgets', '/api/v1/procurement/budgets'],
-    candidates: [
-      'modules/budgets/budgets.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/transactions'],
-    candidates: [
-      'modules/transactions/transactions.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/analytics', '/api/analytics'],
-    candidates: [
-      'modules/analytics/analytics.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/audit-events', '/api/v1/audit'],
-    candidates: [
-      'modules/audit/audit.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/webhooks'],
-    candidates: [
-      'modules/webhooks/webhooks.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/tenants', '/api/v1'],
-    candidates: [
-      'modules/tenants/tenants.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/attachments'],
-    candidates: [
-      'modules/attachments/attachments.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/contracts'],
-    candidates: [
-      'modules/contracts/contracts.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/billing'],
-    candidates: [
-      'modules/billing/billing.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/notifications'],
-    candidates: [
-      'modules/notifications/notifications.routes.js',
-    ],
-  },
-  {
-    paths: ['/api/v1/workflows'],
-    candidates: [
-      'modules/workflows/workflows.routes.js',
-    ],
+    module: "modules/workflows/workflows.routes.js",
   },
 ];
 
-for (const group of routeGroups) {
-  await mountOptional(group.paths, group.candidates);
-}
+// --------------------------------------------------
+// Register optional routes before the 404 handler.
+// --------------------------------------------------
+
+await mountOptionalRoutes(optionalRouteGroups);
 
 // --------------------------------------------------
 // 404 HANDLER
-=======
-// 404 handler
-// Must be after all route registrations.
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+//
+// Must come after every API route.
 // --------------------------------------------------
 
 app.use((req, res) => {
@@ -503,8 +524,9 @@ app.use((req, res) => {
 });
 
 // --------------------------------------------------
-// Global error handler
-// Must be the last middleware.
+// GLOBAL ERROR HANDLER
+//
+// Must be the final middleware.
 // --------------------------------------------------
 
 app.use((error, req, res, next) => {
@@ -512,7 +534,16 @@ app.use((error, req, res, next) => {
     return next(error);
   }
 
-  const statusCode = Number(error.statusCode || error.status) || 500;
+  const requestedStatus = Number(
+    error.statusCode || error.status
+  );
+
+  const statusCode =
+    Number.isInteger(requestedStatus) &&
+    requestedStatus >= 400 &&
+    requestedStatus <= 599
+      ? requestedStatus
+      : 500;
 
   if (statusCode >= 500) {
     console.error("[API Error]", {
@@ -522,7 +553,7 @@ app.use((error, req, res, next) => {
       message: error.message,
       code: error.code,
     });
-  } else if (statusCode >= 400) {
+  } else {
     console.warn("[API Client Error]", {
       requestId: req.requestId,
       method: req.method,
@@ -532,21 +563,21 @@ app.use((error, req, res, next) => {
     });
   }
 
-  const safeStatusCode =
-    statusCode >= 400 && statusCode <= 599
-      ? statusCode
-      : 500;
-
-  res.status(safeStatusCode).json({
+  res.status(statusCode).json({
     success: false,
 
     message:
-      safeStatusCode >= 500
+      statusCode >= 500
         ? "An internal server error occurred."
-        : error.message || "The request could not be processed.",
+        : error.message ||
+          "The request could not be processed.",
 
     requestId: req.requestId,
   });
 });
+
+// --------------------------------------------------
+// EXPORT APPLICATION
+// --------------------------------------------------
 
 export default app;

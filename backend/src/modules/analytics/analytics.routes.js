@@ -1,15 +1,9 @@
-<<<<<<< HEAD
-import { Router } from 'express';
-import { authenticate } from '../../middleware/auth.js';
-import { requirePermission } from '../../middleware/rbac.js';
-import { validate } from '../../middleware/validate.js';
-import { summary } from './analytics.controller.js';
-import { analyticsSummarySchema } from './analytics.schema.js';
-
-export const router = Router();
-=======
 import { Router } from "express";
+
 import { authenticate } from "../../middleware/authenticate.js";
+import { requirePermission } from "../../middleware/rbac.js";
+import { validate } from "../../middleware/validate.js";
+
 import {
   getDashboardAnalyticsController,
   getPurchaseRequestAnalyticsController,
@@ -18,37 +12,61 @@ import {
   getAnalyticsTrendsController,
 } from "./analytics.controller.js";
 
-const router = Router();
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+import { analyticsSummarySchema } from "./analytics.schema.js";
 
-// Every analytics endpoint requires an authenticated user.
+const router = Router();
+
+// Require authentication for all analytics endpoints.
 router.use(authenticate);
 
-<<<<<<< HEAD
+// General analytics summary.
 router.get(
-  '/',
-  requirePermission('analytics:read'),
-  summary
+  "/",
+  requirePermission("analytics:read"),
+  getDashboardAnalyticsController
 );
 
+// Validated analytics summary.
 router.get(
-  '/summary',
-  requirePermission('analytics:read'),
-  validate(analyticsSummarySchema, 'query'),
-  summary
+  "/summary",
+  requirePermission("analytics:read"),
+  validate(analyticsSummarySchema, "query"),
+  getDashboardAnalyticsController
+);
+
+// Full dashboard analytics.
+router.get(
+  "/dashboard",
+  requirePermission("analytics:read"),
+  getDashboardAnalyticsController
+);
+
+// Purchase request analytics.
+router.get(
+  "/purchase-requests",
+  requirePermission("analytics:read"),
+  getPurchaseRequestAnalyticsController
+);
+
+// Invoice analytics.
+router.get(
+  "/invoices",
+  requirePermission("analytics:read"),
+  getInvoiceAnalyticsController
+);
+
+// Budget analytics.
+router.get(
+  "/budgets",
+  requirePermission("analytics:read"),
+  getBudgetAnalyticsController
+);
+
+// Analytics trends.
+router.get(
+  "/trends",
+  requirePermission("analytics:read"),
+  getAnalyticsTrendsController
 );
 
 export default router;
-=======
-// Full dashboard analytics
-router.get("/", getDashboardAnalyticsController);
-router.get("/dashboard", getDashboardAnalyticsController);
-
-// Individual dashboard sections
-router.get("/purchase-requests", getPurchaseRequestAnalyticsController);
-router.get("/invoices", getInvoiceAnalyticsController);
-router.get("/budgets", getBudgetAnalyticsController);
-router.get("/trends", getAnalyticsTrendsController);
-
-export default router;
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)

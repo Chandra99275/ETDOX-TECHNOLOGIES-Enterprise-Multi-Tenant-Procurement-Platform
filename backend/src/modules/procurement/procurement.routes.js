@@ -1,3 +1,4 @@
+
 import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
@@ -15,32 +16,33 @@ import {
   createRequest,
   updateRequest,
   submitRequest,
-<<<<<<< HEAD
   financeDecision,
   managerDecision,
-} from './procurement.controller.js';
-
-import { authenticate } from '../../middleware/authenticate.js';
-=======
 } from "./procurement.controller.js";
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
 const router = Router();
 
+// Require authentication for all procurement routes.
 router.use(authenticate);
 
-// List requests belonging to the authenticated tenant.
+// List procurement requests belonging to the authenticated tenant.
 router.get(
   "/",
   validateListProcurement,
   listRequests
 );
 
-<<<<<<< HEAD
-// Endpoints used by Manager and Finance dashboards
-router.patch('/requests/:id/manager-decision', managerDecision);
-router.patch('/requests/:id/finance-decision', financeDecision);
-=======
+// Manager and Finance dashboard decision endpoints.
+router.patch(
+  "/requests/:id/manager-decision",
+  managerDecision
+);
+
+router.patch(
+  "/requests/:id/finance-decision",
+  financeDecision
+);
+
 // Create a procurement request.
 router.post(
   "/",
@@ -55,20 +57,19 @@ router.post(
   submitRequest
 );
 
-// Retrieve one procurement request.
+// Retrieve a single procurement request.
 router.get(
   "/:id",
   validateProcurementId,
   getRequest
 );
 
-// Update an editable request.
+// Update an editable procurement request.
 router.patch(
   "/:id",
   validateProcurementId,
   validateUpdateProcurement,
   updateRequest
 );
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
 
 export default router;
