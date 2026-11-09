@@ -45,8 +45,7 @@ import "./AdminPage.css";
  * Optional frontend .env:
  * VITE_API_URL=http://localhost:5000
  *
- * This component expects the backend routes listed below.
- * Change these paths if your Express router uses different URLs.
+ * Paths below match the routes mounted by backend/src/app.js.
  */
 
 const API_ROOT = (
@@ -56,7 +55,7 @@ const API_ROOT = (
 const API = {
   clients: `${API_ROOT}/api/v1/clients`,
   employees: `${API_ROOT}/api/v1/employees`,
-  requests: `${API_ROOT}/api/procurement/requests`,
+  requests: `${API_ROOT}/api/v1/procurement`,
   issues: `${API_ROOT}/api/v1/issues`,
   invoices: `${API_ROOT}/api/v1/invoices`,
   transactions: `${API_ROOT}/api/v1/transactions`,
@@ -275,7 +274,10 @@ function normalizeIssue(item, index) {
 function normalizeInvoice(item, index) {
   const client = item.client || item.company || {};
   const amount = Number(item.amount ?? item.totalAmount ?? item.total ?? 0);
-  const paid = Number(item.paidAmount ?? item.amountPaid ?? item.paid ?? 0);
+  const paidValue = item.paidAmount ?? item.amountPaid ?? item.paid;
+  const paid = paidValue == null
+    ? (String(item.status || "").toLowerCase() === "paid" ? amount : 0)
+    : Number(paidValue);
 
   let status = item.status || "";
   if (!status) {
@@ -359,6 +361,7 @@ function AdminPage() {
   });
 
   const [newInvoice, setNewInvoice] = useState({
+    invoiceNumber: "",
     client: "",
     amount: "",
     due: "",
@@ -375,6 +378,7 @@ function AdminPage() {
     client: "",
     title: "",
     type: "New engagement",
+    amount: "",
     description: "",
   });
 
@@ -562,13 +566,8 @@ function AdminPage() {
 
     if (!ok) return;
 
-    /*
-     * Expected backend route:
-     * PATCH /api/procurement/requests/:id/finance-decision
-     * Body: { decision: "APPROVE" } or { decision: "REJECT" }
-     */
     await mutate(
-      `${API.requests}/${encodeURIComponent(id)}/finance-decision`,
+      `${API.requests}/requests/${encodeURIComponent(id)}/finance-decision`,
       "PATCH",
       { decision },
       `Request ${decision === "APPROVE" ? "approved" : "rejected"}.`
@@ -584,7 +583,7 @@ function AdminPage() {
     }
 
     await mutate(
-      `${API.issues}/${encodeURIComponent(id)}/status`,
+      `${API.issues}/${encodeURIComponent(id)}`,
       "PATCH",
       { status },
       `Issue status updated to ${status}.`
@@ -624,16 +623,17 @@ function AdminPage() {
 
     const amount = Number(newInvoice.amount);
 
-    if (!newInvoice.client || !Number.isFinite(amount) || amount <= 0 || !newInvoice.due) {
-      notify("Enter a client, a valid invoice amount, and a due date.");
+    if (
+      !newInvoice.invoiceNumber.trim() ||
+      !newInvoice.client ||
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
+      !newInvoice.due
+    ) {
+      notify("Enter an invoice number, client, valid amount, and due date.");
       return;
     }
 
-    /*
-     * Expected endpoint:
-     * POST /api/v1/invoices
-     * Your backend may require clientId rather than clientName.
-     */
     const client = clients.find(
       (item) => item.id === newInvoice.client || item.name === newInvoice.client
     );
@@ -642,18 +642,18 @@ function AdminPage() {
       API.invoices,
       "POST",
       {
-        clientId: client?._id || client?.id || newInvoice.client,
-        clientName: client?.name || newInvoice.client,
+        invoiceNumber: newInvoice.invoiceNumber.trim(),
+        supplierName: client?.name || newInvoice.client,
         amount,
-        totalAmount: amount,
+        currency: "INR",
         dueDate: newInvoice.due,
-        status: "UNPAID",
+        status: "unpaid",
       },
       "Invoice created successfully."
     );
 
     if (ok) {
-      setNewInvoice({ client: "", amount: "", due: "" });
+      setNewInvoice({ invoiceNumber: "", client: "", amount: "", due: "" });
       setShowInvoiceForm(false);
     }
   };
@@ -676,8 +676,10 @@ function AdminPage() {
       return;
     }
 
-    if (amount > remaining) {
-      notify("Payment cannot exceed the outstanding balance.");
+    if (amount !== remaining) {
+      notify(
+        "The current invoice API only supports marking an invoice fully paid; it cannot record partial payment amounts."
+      );
       return;
     }
 
@@ -688,18 +690,11 @@ function AdminPage() {
       return;
     }
 
-    /*
-     * Expected backend route:
-     * PATCH /api/procurement/invoices/:id/payment
-     * Body: { amount }
-     *
-     * Change this URL if your backend uses another payment route.
-     */
     await mutate(
-      `${API_ROOT}/api/procurement/invoices/${encodeURIComponent(id)}/payment`,
+      `${API.invoices}/${encodeURIComponent(id)}`,
       "PATCH",
-      { amount },
-      "Payment recorded successfully."
+      { status: "paid" },
+      "Invoice marked as paid."
     );
   };
 
@@ -720,8 +715,7 @@ function AdminPage() {
       "POST",
       {
         title: newIssue.title.trim(),
-        clientId: client?._id || client?.id || newIssue.client,
-        clientName: client?.name || newIssue.client,
+        client: client?.name || newIssue.client,
         priority: newIssue.priority,
         description: newIssue.description.trim(),
         status: "OPEN",
@@ -738,8 +732,14 @@ function AdminPage() {
   const addRequest = async (event) => {
     event.preventDefault();
 
-    if (!newRequest.client || !newRequest.title.trim()) {
-      notify("Select a client and enter an engagement title.");
+    const amount = Number(newRequest.amount);
+    if (
+      !newRequest.client ||
+      !newRequest.title.trim() ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
+      notify("Select a client, enter an engagement title, and provide a valid amount.");
       return;
     }
 
@@ -747,23 +747,44 @@ function AdminPage() {
       (item) => item.id === newRequest.client || item.name === newRequest.client
     );
 
-    const ok = await mutate(
-      API.requests,
-      "POST",
-      {
-        clientId: client?._id || client?.id || newRequest.client,
-        clientName: client?.name || newRequest.client,
-        title: newRequest.title.trim(),
-        type: newRequest.type,
-        description: newRequest.description.trim(),
-        status: "PENDING_FINANCE",
-      },
-      "Engagement request submitted successfully."
-    );
+    setSaving(true);
+    try {
+      const payload = await apiRequest(API.requests, {
+        method: "POST",
+        body: JSON.stringify({
+          title: newRequest.title.trim(),
+          description: newRequest.description.trim(),
+          amount,
+          currency: "INR",
+          category: newRequest.type,
+          supplierName: client?.name || newRequest.client,
+        }),
+      });
+      const request = payload.data || payload.request;
+      const id = getId(request);
 
-    if (ok) {
-      setNewRequest({ client: "", title: "", type: "New engagement", description: "" });
+      if (!id) {
+        throw new Error("The backend created the request but did not return its ID.");
+      }
+
+      await apiRequest(`${API.requests}/${encodeURIComponent(id)}/submit`, {
+        method: "POST",
+      });
+
+      notify("Engagement request submitted successfully.");
+      await loadFinanceData();
+      setNewRequest({
+        client: "",
+        title: "",
+        type: "New engagement",
+        amount: "",
+        description: "",
+      });
       setShowRequestForm(false);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1233,6 +1254,7 @@ function AdminPage() {
       {showInvoiceForm && (
         <Modal title="Create invoice" subtitle="Create an invoice in the connected backend" onClose={() => setShowInvoiceForm(false)}>
           <form className="admin-form" onSubmit={addInvoice}>
+            <FormField label="Invoice number"><input value={newInvoice.invoiceNumber} onChange={(e) => setNewInvoice({ ...newInvoice, invoiceNumber: e.target.value })} placeholder="INV-2026-001" required /></FormField>
             <FormField label="Client"><select value={newInvoice.client} onChange={(e) => setNewInvoice({ ...newInvoice, client: e.target.value })} required><option value="">Select a client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></FormField>
             <FormField label="Invoice amount (₹)"><input type="number" min="1" value={newInvoice.amount} onChange={(e) => setNewInvoice({ ...newInvoice, amount: e.target.value })} placeholder="50000" required /></FormField>
             <FormField label="Due date"><input type="date" value={newInvoice.due} onChange={(e) => setNewInvoice({ ...newInvoice, due: e.target.value })} required /></FormField>
@@ -1259,6 +1281,7 @@ function AdminPage() {
             <FormField label="Client"><select value={newRequest.client} onChange={(e) => setNewRequest({ ...newRequest, client: e.target.value })} required><option value="">Select a client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></FormField>
             <FormField label="Engagement title"><input value={newRequest.title} onChange={(e) => setNewRequest({ ...newRequest, title: e.target.value })} placeholder="e.g. Website development" required /></FormField>
             <FormField label="Request type"><select value={newRequest.type} onChange={(e) => setNewRequest({ ...newRequest, type: e.target.value })}><option>New engagement</option><option>Additional scope</option><option>Change request</option><option>Support request</option></select></FormField>
+            <FormField label="Estimated amount (₹)"><input type="number" min="0.01" step="0.01" value={newRequest.amount} onChange={(e) => setNewRequest({ ...newRequest, amount: e.target.value })} placeholder="50000" required /></FormField>
             <FormField label="Requirements"><textarea rows="4" value={newRequest.description} onChange={(e) => setNewRequest({ ...newRequest, description: e.target.value })} placeholder="Describe the client's requirements" /></FormField>
             <ModalActions onCancel={() => setShowRequestForm(false)} submitLabel={saving ? "Submitting…" : "Submit request"} disabled={saving} />
           </form>
