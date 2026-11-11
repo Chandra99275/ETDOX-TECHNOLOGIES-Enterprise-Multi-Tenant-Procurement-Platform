@@ -16,55 +16,129 @@ import {
   createRequest,
   updateRequest,
   submitRequest,
+  recoverSubmittedRequest,
   financeDecision,
   managerDecision,
 } from "./procurement.controller.js";
 
+import {
+  listBudgets,
+} from "../budgets/budgets.controller.js";
+
 const router = Router();
 
-// Require authentication for all procurement routes.
+// ==================================================
+// AUTHENTICATION
+// All procurement routes require authentication.
+// ==================================================
+
 router.use(authenticate);
 
-// List procurement requests belonging to the authenticated tenant.
+// ==================================================
+// BUDGETS
+// GET /api/v1/procurement/budgets
+// Register before /:id routes.
+// ==================================================
+
+router.get(
+  "/budgets",
+  listBudgets
+);
+
+// ==================================================
+// LIST PROCUREMENT REQUESTS
+// GET /api/v1/procurement/requests
+// GET /api/v1/procurement
+// ==================================================
+
+router.get(
+  "/requests",
+  validateListProcurement,
+  listRequests
+);
+
 router.get(
   "/",
   validateListProcurement,
   listRequests
 );
 
-// Manager and Finance dashboard decision endpoints.
+// ==================================================
+// MANAGER APPROVAL / REJECTION
+// PATCH /api/v1/procurement/requests/:id/manager-decision
+// ==================================================
+
 router.patch(
   "/requests/:id/manager-decision",
+  validateProcurementId,
   managerDecision
 );
 
+// ==================================================
+// FINANCE APPROVAL / REJECTION
+// PATCH /api/v1/procurement/requests/:id/finance-decision
+// ==================================================
+
 router.patch(
   "/requests/:id/finance-decision",
+  validateProcurementId,
   financeDecision
 );
 
-// Create a procurement request.
+// ==================================================
+// RECOVER SUBMITTED REQUEST
+// POST /api/v1/procurement/requests/:id/recover
+//
+// Starts the approval workflow for a SUBMITTED request
+// that does not have a workflow_run_id.
+//
+// The service enforces admin authorization.
+// ==================================================
+
+router.post(
+  "/requests/:id/recover",
+  validateProcurementId,
+  recoverSubmittedRequest
+);
+
+// ==================================================
+// CREATE PROCUREMENT REQUEST
+// POST /api/v1/procurement
+// ==================================================
+
 router.post(
   "/",
   validateCreateProcurement,
   createRequest
 );
 
-// Submit a request for approval.
+// ==================================================
+// SUBMIT PROCUREMENT REQUEST
+// POST /api/v1/procurement/:id/submit
+// ==================================================
+
 router.post(
   "/:id/submit",
   validateProcurementId,
   submitRequest
 );
 
-// Retrieve a single procurement request.
+// ==================================================
+// GET SINGLE PROCUREMENT REQUEST
+// GET /api/v1/procurement/:id
+// ==================================================
+
 router.get(
   "/:id",
   validateProcurementId,
   getRequest
 );
 
-// Update an editable procurement request.
+// ==================================================
+// UPDATE PROCUREMENT REQUEST
+// PATCH /api/v1/procurement/:id
+// ==================================================
+
 router.patch(
   "/:id",
   validateProcurementId,

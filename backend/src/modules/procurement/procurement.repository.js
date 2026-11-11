@@ -1,919 +1,924 @@
 
 import { randomUUID } from "node:crypto";
-import { pool, withTenantTransaction } from "../../config/database.js";
-import { env } from "../../config/env.js";
+import { withTenantTransaction } from "../../config/database.js";
+import {
+  startWorkflowRun,
+  actOnTask,
+} from "../workflows/workflows.repository.js";
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+const TABLE = "public.purchase_requests";
+const APPROVAL_TABLE = "public.approval_tasks";
+const DEFAULT_CURRENCY = "USD";
+const MAX_PAGE_SIZE = 100;
 
 // ============================================================
 // GENERAL HELPERS
 // ============================================================
 
-function normalizeEmail(email) {
-  return typeof email === "string"
-    ? email.trim().toLowerCase()
-    : "";
-}
-
-function parseRoles(roles) {
-  if (typeof roles === "string") {
-    try {
-      roles = JSON.parse(roles);
-    } catch {
-      roles = [];
-    }
+function required(value, field) {
+  if (
+    value === undefined ||
+    value === null ||
+    String(value).trim() === ""
+  ) {
+    throw new Error(`${field} is required.`);
   }
 
-  return Array.isArray(roles)
-    ? roles.filter(Boolean)
-    : [];
+  return value;
 }
 
-function mapUserRow(row) {
+function isUuid(value) {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  );
+}
+
+function normalizeDecision(decision) {
+  const value = String(decision || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    ["approve", "approved", "accept", "accepted"].includes(value)
+  ) {
+    return "approve";
+  }
+
+  if (
+    ["reject", "rejected", "decline", "declined"].includes(value)
+  ) {
+    return "reject";
+  }
+
+  throw new Error("Decision must be approve or reject.");
+}
+
+function normalizeRequest(row) {
   if (!row) return null;
 
-  const roles = parseRoles(row.roles);
-  const primaryRole =
-    row.direct_role ||
-    row.role ||
-    roles[0] ||
-    row.requested_role ||
-    "requester";
-
-  const isActive =
-    row.is_active !== false &&
-    row.status !== "DISABLED" &&
-    row.status !== "SUSPENDED";
+  const justification = row.justification || "";
+  const titleMatch = justification.match(/^Title:\s*(.+)$/m);
 
   return {
     id: row.id,
-    email: row.email,
-    firstName: row.first_name,
-    lastName: row.last_name,
-    fullName:
-      row.full_name ||
-      [row.first_name, row.last_name]
-        .filter(Boolean)
-        .join(" ")
-        .trim() ||
-      row.email,
-    passwordHash: row.password_hash,
     tenantId: row.tenant_id,
-    organizationName:
-      row.organization_name || "ETDOX Global Technologies",
-    status:
-      row.status || (isActive ? "ACTIVE" : "DISABLED"),
-    isActive,
-    emailVerifiedAt: row.email_verified_at,
-    requestedRole: row.requested_role,
-    role: primaryRole,
-    roleName: primaryRole,
-    roles: roles.length > 0 ? roles : [primaryRole],
+    requestNumber: row.request_number,
+    requesterId: row.requester_id,
+    departmentId: row.department_id,
+    department: row.department_id,
+    costCenterId: row.cost_center_id,
+    preferredSupplierId: row.preferred_supplier_id,
+    supplier: row.preferred_supplier_id,
+    workflowRunId: row.workflow_run_id,
+    requiredByDate: row.required_by_date,
+    title: titleMatch?.[1]?.trim() || row.request_number,
+    description: justification,
+    justification,
+    amount: Number(row.total_amount || 0),
+    subtotal: Number(row.subtotal || 0),
+    taxTotal: Number(row.tax_total || 0),
+    totalAmount: Number(row.total_amount || 0),
+    currency: String(row.currency || DEFAULT_CURRENCY).trim(),
+    status: row.status,
+    submittedAt: row.submitted_at,
+    approvedAt: row.approved_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-function mapVerificationRow(row) {
-  if (!row) return null;
+function buildJustification(title, description) {
+  const cleanTitle = String(title || "").trim();
+  const cleanDescription = String(description || "").trim();
 
-  return {
-    id: row.id,
-    userId: row.user_id,
-    tokenHash: row.token_hash,
-    otp: row.otp,
-    expiresAt: row.expires_at,
-    consumedAt: row.consumed_at,
-  };
+  if (!cleanTitle && !cleanDescription) return null;
+  if (!cleanTitle) return cleanDescription;
+
+  return `Title: ${cleanTitle}\n\n${cleanDescription}`;
 }
 
-function mapPasswordResetRow(row) {
-  if (!row) return null;
+function parseAmount(value, field = "Amount") {
+  const amount = Number(value);
 
-  return {
-    id: row.id,
-    userId: row.user_id,
-    tokenHash: row.token_hash,
-    otp: row.otp,
-    expiresAt: row.expires_at,
-    consumedAt: row.consumed_at,
-  };
-}
-
-// ============================================================
-// DATABASE HEALTH
-// ============================================================
-
-export async function isPostgresConnected() {
-  try {
-    const result = await pool.query("SELECT 1 AS healthy");
-    return result.rows[0]?.healthy === 1;
-  } catch {
-    return false;
-  }
-}
-
-export async function checkAuthRepository() {
-  const result = await pool.query("SELECT 1 AS healthy");
-  return result.rows[0]?.healthy === 1;
-}
-
-// ============================================================
-// USER LOOKUP
-// ============================================================
-
-/**
- * Find a user by email before tenant context is established.
- *
- * The database function must be secured appropriately and should
- * return only the user fields needed for authentication.
- */
-export async function findUserByEmail(email) {
-  const normalizedEmail = normalizeEmail(email);
-
-  if (!normalizedEmail) {
-    return null;
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(
+      `${field} must be a valid non-negative number.`
+    );
   }
 
-  const result = await pool.query(
-    `
-      SELECT
-        id,
-        email,
-        password_hash,
-        tenant_id,
-        first_name,
-        last_name,
-        full_name,
-        is_active,
-        direct_role
-      FROM public.etdox_auth_user_by_email($1)
-    `,
-    [normalizedEmail]
+  return amount;
+}
+
+function getPage(value, fallback) {
+  const number = Number.parseInt(value, 10);
+
+  return Number.isInteger(number) && number > 0
+    ? number
+    : fallback;
+}
+
+function getLimit(value) {
+  const number = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(number) || number <= 0) return 20;
+
+  return Math.min(number, MAX_PAGE_SIZE);
+}
+
+function assertTenantAndRequest(tenantId, requestId) {
+  required(tenantId, "Tenant ID");
+  required(requestId, "Request ID");
+}
+
+// ============================================================
+// WORKFLOW VALIDATION
+// ============================================================
+
+function validateApprovalWorkflow(graph) {
+  const approvalNodes = Array.isArray(graph?.nodes)
+    ? graph.nodes.filter((node) => node.type === "approval")
+    : [];
+
+  if (!approvalNodes.length) {
+    throw new Error(
+      "The active workflow does not contain any approval nodes."
+    );
+  }
+
+  const missingAssignees = approvalNodes.filter(
+    (node) => !isUuid(node.assigneeId)
   );
 
-  if (result.rows.length === 0) {
-    return null;
+  if (missingAssignees.length) {
+    throw new Error(
+      `Every approval node must have a valid assigned user. Missing assignment for: ${missingAssignees
+        .map((node) => node.id)
+        .join(", ")}.`
+    );
   }
+}
 
-  const row = result.rows[0];
+// ============================================================
+// START APPROVAL WORKFLOW
+// Must be called inside an existing tenant transaction.
+// ============================================================
 
-  // Resolve the role only after establishing the tenant context.
-  if (!row.direct_role && row.tenant_id) {
-    row.direct_role = await findAssignedRole(
-      row.id,
-      row.tenant_id
+async function startApprovalWorkflow(
+  client,
+  tenantId,
+  userId,
+  request
+) {
+  const definitionResult = await client.query(
+    `
+      SELECT id, graph, name
+      FROM public.workflow_definitions
+      WHERE tenant_id = $1
+        AND resource_type = 'purchase_request'
+        AND is_active = true
+      ORDER BY version DESC, created_at DESC
+      LIMIT 1
+      FOR SHARE
+    `,
+    [tenantId]
+  );
+
+  const definition = definitionResult.rows[0];
+
+  if (!definition) {
+    throw new Error(
+      "No active purchase-request approval workflow exists for this tenant. Create and activate a workflow before submitting requests."
     );
   }
 
-  return {
-    ...row,
-    role: row.direct_role,
-  };
-}
+  validateApprovalWorkflow(definition.graph);
 
-/**
- * Find an assigned role inside the user's tenant.
- */
-async function findAssignedRole(userId, tenantId) {
-  if (!userId || !tenantId) {
-    return null;
+  const workflowRun = await startWorkflowRun(
+    client,
+    { tenantId, userId },
+    definition.id,
+    "purchase_request",
+    request.id,
+    definition.graph
+  );
+
+  const updated = await client.query(
+    `
+      UPDATE ${TABLE}
+      SET
+        workflow_run_id = $1,
+        status = 'IN_APPROVAL',
+        submitted_at = COALESCE(submitted_at, NOW()),
+        updated_at = NOW()
+      WHERE id = $2
+        AND tenant_id = $3
+      RETURNING *
+    `,
+    [workflowRun.id, request.id, tenantId]
+  );
+
+  if (!updated.rowCount) {
+    throw new Error(
+      "Workflow started, but the purchase request could not be updated."
+    );
   }
 
+  return updated.rows[0];
+}
+
+// ============================================================
+// LIST PROCUREMENT REQUESTS
+// ============================================================
+
+export async function listRequests({
+  tenantId,
+  userId,
+  page = 1,
+  limit = 20,
+  status,
+  search,
+  canViewAll = false,
+} = {}) {
+  required(tenantId, "Tenant ID");
+
+  if (!canViewAll) {
+    required(userId, "User ID");
+  }
+
+  const currentPage = getPage(page, 1);
+  const pageSize = getLimit(limit);
+  const offset = (currentPage - 1) * pageSize;
+
   return withTenantTransaction(tenantId, async (client) => {
-    const result = await client.query(
+    const conditions = ["pr.tenant_id = $1"];
+    const values = [tenantId];
+
+    if (!canViewAll) {
+      values.push(userId);
+      conditions.push(`pr.requester_id = $${values.length}`);
+    }
+
+    if (status) {
+      values.push(String(status).trim().toUpperCase());
+      conditions.push(`UPPER(pr.status) = $${values.length}`);
+    }
+
+    if (search) {
+      values.push(`%${String(search).trim()}%`);
+      conditions.push(
+        `(pr.request_number ILIKE $${values.length}
+          OR COALESCE(pr.justification, '') ILIKE $${values.length})`
+      );
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    const countResult = await client.query(
       `
-        SELECT r.name AS role
-        FROM public.user_roles AS ur
-        INNER JOIN public.roles AS r
-          ON r.id = ur.role_id
-        WHERE ur.tenant_id::text = $1::text
-          AND ur.user_id::text = $2::text
-        ORDER BY r.name
-        LIMIT 1
+        SELECT COUNT(*)::integer AS total
+        FROM ${TABLE} AS pr
+        WHERE ${whereClause}
       `,
-      [tenantId, userId]
+      values
     );
 
-    return result.rows[0]?.role ?? null;
-  });
-}
+    const total = countResult.rows[0]?.total || 0;
 
-/**
- * Find a user by ID within a tenant.
- *
- * Never look up the user by ID alone when authenticating a
- * tenant-scoped request.
- */
-export async function findUserById(userId, tenantId) {
-  if (
-    typeof userId !== "string" ||
-    !userId.trim() ||
-    typeof tenantId !== "string" ||
-    !tenantId.trim()
-  ) {
-    return null;
-  }
-
-  return withTenantTransaction(tenantId, async (client) => {
     const result = await client.query(
       `
         SELECT
-          u.id,
-          u.email,
-          u.password_hash,
-          u.tenant_id,
-          u.first_name,
-          u.last_name,
-          concat_ws(' ', u.first_name, u.last_name) AS full_name,
-          u.is_active,
-          u.status,
-          u.requested_role,
-          u.email_verified_at,
-          u.created_at,
-          u.updated_at,
-          t.name AS organization_name
-        FROM public.users AS u
-        LEFT JOIN public.tenants AS t
-          ON t.id = u.tenant_id
-        WHERE u.id::text = $1::text
-          AND u.tenant_id::text = $2::text
-        LIMIT 1
+          pr.id,
+          pr.tenant_id,
+          pr.request_number,
+          pr.requester_id,
+          pr.department_id,
+          pr.cost_center_id,
+          pr.preferred_supplier_id,
+          pr.workflow_run_id,
+          pr.required_by_date,
+          pr.justification,
+          pr.currency,
+          pr.subtotal,
+          pr.tax_total,
+          pr.total_amount,
+          pr.status,
+          pr.submitted_at,
+          pr.approved_at,
+          pr.created_at,
+          pr.updated_at
+        FROM ${TABLE} AS pr
+        WHERE ${whereClause}
+        ORDER BY pr.created_at DESC
+        LIMIT $${values.length + 1}
+        OFFSET $${values.length + 2}
       `,
-      [userId, tenantId]
+      [...values, pageSize, offset]
     );
 
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    const user = result.rows[0];
-
-    const roleResult = await client.query(
-      `
-        SELECT r.name AS role
-        FROM public.user_roles AS ur
-        INNER JOIN public.roles AS r
-          ON r.id = ur.role_id
-        WHERE ur.tenant_id::text = $1::text
-          AND ur.user_id::text = $2::text
-        ORDER BY r.name
-      `,
-      [tenantId, user.id]
-    );
-
-    user.roles = roleResult.rows.map((row) => row.role);
-    user.direct_role = user.roles[0] || user.requested_role || null;
-
-    return mapUserRow(user);
+    return {
+      items: result.rows.map(normalizeRequest),
+      total,
+      page: currentPage,
+      limit: pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
   });
 }
 
 // ============================================================
-// TENANTS
+// FIND REQUEST BY ID
 // ============================================================
 
-export async function createTenant({ name, slug }) {
-  if (typeof name !== "string" || !name.trim()) {
-    throw new Error("Tenant name is required.");
-  }
+export async function findRequestById(tenantId, requestId) {
+  assertTenantAndRequest(tenantId, requestId);
 
-  const tenantId = randomUUID();
-
-  const baseSlug = (
-    slug ||
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-  )
-    .slice(0, 40)
-    .replace(/^-|-$/g, "") || "org";
-
-  const cleanSlug =
-    `${baseSlug}-${randomUUID().slice(0, 8)}`;
-
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    await client.query(
-      "SELECT set_config('app.tenant_id', $1, true)",
-      [tenantId]
-    );
-
+  return withTenantTransaction(tenantId, async (client) => {
     const result = await client.query(
       `
-        INSERT INTO public.tenants
-          (id, name, slug, status, base_currency)
-        VALUES
-          ($1, $2, $3, 'ACTIVE', 'USD')
-        RETURNING *
+        SELECT *
+        FROM ${TABLE}
+        WHERE id = $1
+          AND tenant_id = $2
+        LIMIT 1
       `,
-      [tenantId, name.trim(), cleanSlug]
+      [requestId, tenantId]
     );
 
-    // Preserve compatibility with installations that use
-    // both organizations and tenants.
-    await client.query(
-      `
-        INSERT INTO public.organizations (id, name, slug)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (id) DO NOTHING
-      `,
-      [tenantId, name.trim(), cleanSlug]
-    );
-
-    await client.query("COMMIT");
-
-    return result.rows[0];
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export async function findTenantById(id) {
-  if (!id) return null;
-
-  const result = await pool.query(
-    `
-      SELECT *
-      FROM public.tenants
-      WHERE id::text = $1::text
-      LIMIT 1
-    `,
-    [id]
-  );
-
-  return result.rows[0] || null;
-}
-
-export async function findDefaultTenant() {
-  const defaultId =
-    env.demoTenantId ||
-    "b4383f9e-8e4a-42d7-9d34-ba59e5ea9a9e";
-
-  const result = await pool.query(
-    `
-      SELECT *
-      FROM public.tenants
-      WHERE id::text = $1::text
-         OR status = 'ACTIVE'
-      ORDER BY
-        (id::text = $1::text) DESC,
-        created_at ASC
-      LIMIT 1
-    `,
-    [defaultId]
-  );
-
-  return result.rows[0] || null;
+    return normalizeRequest(result.rows[0]);
+  });
 }
 
 // ============================================================
-// USER CREATION
+// CREATE PROCUREMENT REQUEST
 // ============================================================
 
-export async function createUser({
-  email,
-  passwordHash,
-  firstName,
-  lastName,
+export async function createRequest({
   tenantId,
-  status = "PENDING_VERIFICATION",
-  requestedRole = "requester",
-  assignedRoles = [],
-}) {
-  const normalizedEmail = normalizeEmail(email);
+  requesterId,
+  title,
+  description,
+  amount,
+  currency = DEFAULT_CURRENCY,
+  quantity,
+  unitPrice,
+  department,
+  budgetId,
+  supplier,
+} = {}) {
+  required(tenantId, "Tenant ID");
+  required(requesterId, "Requester ID");
 
-  if (!normalizedEmail) {
-    throw new Error("A valid email address is required.");
-  }
+  const cleanCurrency = String(currency || DEFAULT_CURRENCY)
+    .trim()
+    .toUpperCase();
 
-  if (!passwordHash) {
-    throw new Error("Password hash is required.");
-  }
-
-  if (!tenantId) {
-    throw new Error("Tenant ID is required.");
-  }
-
-  const userId = randomUUID();
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    await client.query(
-      "SELECT set_config('app.tenant_id', $1, true)",
-      [tenantId]
+  if (!/^[A-Z]{3}$/.test(cleanCurrency)) {
+    throw new Error(
+      "Currency must be a valid three-letter code."
     );
+  }
 
-    await client.query(
+  let totalAmount;
+
+  if (amount !== undefined && amount !== null) {
+    totalAmount = parseAmount(amount);
+  } else if (
+    quantity !== undefined &&
+    unitPrice !== undefined
+  ) {
+    totalAmount =
+      parseAmount(quantity, "Quantity") *
+      parseAmount(unitPrice, "Unit price");
+  } else {
+    throw new Error(
+      "Amount or quantity and unit price are required."
+    );
+  }
+
+  const departmentId =
+    department && isUuid(department) ? department : null;
+
+  const costCenterId =
+    budgetId && isUuid(budgetId) ? budgetId : null;
+
+  const supplierId =
+    supplier && isUuid(supplier) ? supplier : null;
+
+  const justification = buildJustification(
+    title,
+    description
+  );
+
+  const requestId = randomUUID();
+
+  const requestNumber =
+    `PR-${new Date()
+      .toISOString()
+      .slice(0, 10)
+      .replace(/-/g, "")}-${randomUUID()
+      .slice(0, 8)
+      .toUpperCase()}`;
+
+  return withTenantTransaction(tenantId, async (client) => {
+    const result = await client.query(
       `
-        INSERT INTO public.users (
+        INSERT INTO ${TABLE} (
           id,
           tenant_id,
-          email,
-          password_hash,
-          first_name,
-          last_name,
+          request_number,
+          requester_id,
+          department_id,
+          cost_center_id,
+          preferred_supplier_id,
+          justification,
+          currency,
+          subtotal,
+          tax_total,
+          total_amount,
           status,
-          requested_role,
-          is_active,
           created_at,
           updated_at
         )
         VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW()
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, 0, $10, 'DRAFT', NOW(), NOW()
         )
+        RETURNING *
       `,
       [
-        userId,
+        requestId,
         tenantId,
-        normalizedEmail,
-        passwordHash,
-        firstName || null,
-        lastName || null,
-        status,
-        requestedRole,
-        status === "ACTIVE",
+        requestNumber,
+        requesterId,
+        departmentId,
+        costCenterId,
+        supplierId,
+        justification,
+        cleanCurrency,
+        totalAmount,
       ]
     );
 
-    for (const roleName of assignedRoles) {
-      await client.query(
-        `
-          INSERT INTO public.user_roles
-            (tenant_id, user_id, role_id)
-          SELECT $1, $2, r.id
-          FROM public.roles AS r
-          WHERE r.tenant_id = $1
-            AND LOWER(r.name) = LOWER($3)
-          ON CONFLICT (tenant_id, user_id, role_id)
-          DO NOTHING
-        `,
-        [tenantId, userId, roleName]
-      );
-    }
-
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-
-  return findUserById(userId, tenantId);
-}
-
-// ============================================================
-// USER STATUS AND ROLE MANAGEMENT
-// ============================================================
-
-export async function updateUserStatus(
-  userId,
-  status,
-  emailVerified = false
-) {
-  const result = await pool.query(
-    `
-      UPDATE public.users
-      SET
-        status = $1,
-        is_active = $2,
-        email_verified_at =
-          CASE
-            WHEN $3::boolean THEN NOW()
-            ELSE email_verified_at
-          END,
-        updated_at = NOW()
-      WHERE id = $4
-      RETURNING id
-    `,
-    [
-      status,
-      status === "ACTIVE",
-      emailVerified,
-      userId,
-    ]
-  );
-
-  return result.rowCount > 0;
-}
-
-export async function assignUserRole(
-  userId,
-  tenantId,
-  roleName
-) {
-  if (!userId || !tenantId || !roleName) {
-    throw new Error(
-      "User ID, tenant ID, and role name are required."
-    );
-  }
-
-  return withTenantTransaction(tenantId, async (client) => {
-    await client.query(
-      `
-        INSERT INTO public.user_roles
-          (tenant_id, user_id, role_id)
-        SELECT $1, $2, r.id
-        FROM public.roles AS r
-        WHERE r.tenant_id = $1
-          AND LOWER(r.name) = LOWER($3)
-        ON CONFLICT (tenant_id, user_id, role_id)
-        DO NOTHING
-      `,
-      [tenantId, userId, roleName]
-    );
-
-    return true;
+    return normalizeRequest(result.rows[0]);
   });
 }
 
 // ============================================================
-// PASSWORD MANAGEMENT
+// UPDATE PROCUREMENT REQUEST
 // ============================================================
 
-export async function updateUserPassword(
-  userId,
-  newPasswordHash
-) {
-  if (!userId || !newPasswordHash) {
-    throw new Error(
-      "User ID and password hash are required."
-    );
-  }
-
-  const result = await pool.query(
-    `
-      UPDATE public.users
-      SET password_hash = $1,
-          updated_at = NOW()
-      WHERE id = $2
-      RETURNING id
-    `,
-    [newPasswordHash, userId]
-  );
-
-  return result.rowCount > 0;
-}
-
-// ============================================================
-// EMAIL VERIFICATION TOKENS
-// ============================================================
-
-export async function createEmailVerificationToken({
-  userId,
-  tokenHash,
-  otp,
-  expiresAt,
-}) {
-  if (!userId || !tokenHash || !expiresAt) {
-    throw new Error(
-      "User ID, token hash, and expiry are required."
-    );
-  }
-
-  const id = randomUUID();
-
-  const result = await pool.query(
-    `
-      INSERT INTO public.email_verifications (
-        id,
-        user_id,
-        token_hash,
-        otp,
-        expires_at
-      )
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `,
-    [id, userId, tokenHash, otp || null, expiresAt]
-  );
-
-  return mapVerificationRow(result.rows[0]);
-}
-
-export async function findAndConsumeVerificationToken(
-  tokenHash
-) {
-  if (!tokenHash) return null;
-
-  const result = await pool.query(
-    `
-      UPDATE public.email_verifications
-      SET consumed_at = NOW()
-      WHERE token_hash = $1
-        AND consumed_at IS NULL
-        AND expires_at > NOW()
-      RETURNING *
-    `,
-    [tokenHash]
-  );
-
-  return mapVerificationRow(result.rows[0]);
-}
-
-export async function findAndConsumeVerificationByOtp(
-  email,
-  otp
-) {
-  const normalizedEmail = normalizeEmail(email);
-  const cleanOtp = String(otp || "").trim();
-
-  if (!normalizedEmail || !cleanOtp) {
-    return null;
-  }
-
-  const user = await findUserByEmail(normalizedEmail);
-
-  if (!user?.id) {
-    return null;
-  }
-
-  const result = await pool.query(
-    `
-      UPDATE public.email_verifications
-      SET consumed_at = NOW()
-      WHERE id = (
-        SELECT ev.id
-        FROM public.email_verifications AS ev
-        WHERE ev.user_id = $1
-          AND ev.otp = $2
-          AND ev.consumed_at IS NULL
-          AND ev.expires_at > NOW()
-        ORDER BY ev.expires_at DESC
-        LIMIT 1
-        FOR UPDATE
-      )
-      RETURNING *
-    `,
-    [user.id, cleanOtp]
-  );
-
-  return mapVerificationRow(result.rows[0]);
-}
-
-// ============================================================
-// PASSWORD RESET TOKENS
-// ============================================================
-
-export async function createPasswordResetToken({
-  userId,
-  tokenHash,
-  otp,
-  expiresAt,
-}) {
-  if (!userId || !tokenHash || !expiresAt) {
-    throw new Error(
-      "User ID, token hash, and expiry are required."
-    );
-  }
-
-  const id = randomUUID();
-
-  const result = await pool.query(
-    `
-      INSERT INTO public.password_resets (
-        id,
-        user_id,
-        token_hash,
-        otp,
-        expires_at
-      )
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `,
-    [id, userId, tokenHash, otp || null, expiresAt]
-  );
-
-  return mapPasswordResetRow(result.rows[0]);
-}
-
-export async function findActivePasswordResetByOtp(
-  email,
-  otp
-) {
-  const normalizedEmail = normalizeEmail(email);
-  const cleanOtp = String(otp || "").trim();
-
-  if (!normalizedEmail || !cleanOtp) {
-    return null;
-  }
-
-  const user = await findUserByEmail(normalizedEmail);
-
-  if (!user?.id) {
-    return null;
-  }
-
-  const result = await pool.query(
-    `
-      SELECT
-        id,
-        user_id,
-        token_hash,
-        otp,
-        expires_at,
-        consumed_at
-      FROM public.password_resets
-      WHERE user_id = $1
-        AND otp = $2
-        AND consumed_at IS NULL
-        AND expires_at > NOW()
-      ORDER BY created_at DESC
-      LIMIT 1
-    `,
-    [user.id, cleanOtp]
-  );
-
-  return mapPasswordResetRow(result.rows[0]);
-}
-
-export async function findAndConsumePasswordResetByOtp(
-  email,
-  otp
-) {
-  const normalizedEmail = normalizeEmail(email);
-  const cleanOtp = String(otp || "").trim();
-
-  if (!normalizedEmail || !cleanOtp) {
-    return null;
-  }
-
-  const user = await findUserByEmail(normalizedEmail);
-
-  if (!user?.id) {
-    return null;
-  }
-
-  const result = await pool.query(
-    `
-      UPDATE public.password_resets
-      SET consumed_at = NOW()
-      WHERE id = (
-        SELECT pr.id
-        FROM public.password_resets AS pr
-        WHERE pr.user_id = $1
-          AND pr.otp = $2
-          AND pr.consumed_at IS NULL
-          AND pr.expires_at > NOW()
-        ORDER BY pr.created_at DESC
-        LIMIT 1
-        FOR UPDATE
-      )
-      RETURNING *
-    `,
-    [user.id, cleanOtp]
-  );
-
-  return mapPasswordResetRow(result.rows[0]);
-}
-
-export async function findAndConsumePasswordResetToken(
-  tokenHash
-) {
-  if (!tokenHash) return null;
-
-  const result = await pool.query(
-    `
-      UPDATE public.password_resets
-      SET consumed_at = NOW()
-      WHERE token_hash = $1
-        AND consumed_at IS NULL
-        AND expires_at > NOW()
-      RETURNING *
-    `,
-    [tokenHash]
-  );
-
-  return mapPasswordResetRow(result.rows[0]);
-}
-
-// ============================================================
-// USER SESSIONS
-// ============================================================
-
-export async function createSession({
-  userId,
+export async function updateRequest(
   tenantId,
-  tokenHash,
-  expiresAt,
-  ipAddress,
-  userAgent,
-}) {
-  if (!userId || !tenantId || !tokenHash || !expiresAt) {
-    throw new Error(
-      "User ID, tenant ID, token hash, and expiry are required."
-    );
-  }
+  requestId,
+  userId,
+  admin = false,
+  changes = {}
+) {
+  assertTenantAndRequest(tenantId, requestId);
+  required(userId, "User ID");
 
-  const id = randomUUID();
-
-  try {
-    await pool.query(
+  return withTenantTransaction(tenantId, async (client) => {
+    const existingResult = await client.query(
       `
-        INSERT INTO public.user_sessions (
-          id,
-          user_id,
-          tenant_id,
-          refresh_token_hash,
-          token_hash,
-          expires_at,
-          ip_address,
-          user_agent,
-          created_at
-        )
-        VALUES ($1, $2, $3, $4, $4, $5, $6, $7, NOW())
+        SELECT *
+        FROM ${TABLE}
+        WHERE id = $1
+          AND tenant_id = $2
+        FOR UPDATE
       `,
-      [
-        id,
-        userId,
-        tenantId,
-        tokenHash,
-        expiresAt,
-        ipAddress || null,
-        userAgent || null,
-      ]
-    );
-  } catch (error) {
-    // Do not silently treat a failed session insert as a secure
-    // session. Log the failure for investigation.
-    console.error(
-      "[AuthRepository] Could not create session:",
-      error.message
+      [requestId, tenantId]
     );
 
-    throw error;
-  }
+    const existing = existingResult.rows[0];
 
-  return id;
+    if (!existing) {
+      throw new Error("Procurement request not found.");
+    }
+
+    if (!admin && existing.requester_id !== userId) {
+      throw new Error(
+        "You cannot update another user's request."
+      );
+    }
+
+    if (existing.status !== "DRAFT") {
+      throw new Error(
+        "Only draft procurement requests can be updated."
+      );
+    }
+
+    const updates = [];
+    const values = [];
+
+    function addUpdate(column, value) {
+      values.push(value);
+      updates.push(`${column} = $${values.length}`);
+    }
+
+    if (
+      changes.title !== undefined ||
+      changes.description !== undefined
+    ) {
+      const current = existing.justification || "";
+
+      const existingTitle =
+        current.match(/^Title:\s*(.+)$/m)?.[1]?.trim();
+
+      const nextTitle =
+        changes.title !== undefined
+          ? changes.title
+          : existingTitle;
+
+      const nextDescription =
+        changes.description !== undefined
+          ? changes.description
+          : current
+              .replace(/^Title:\s*.+\n*/m, "")
+              .trim();
+
+      addUpdate(
+        "justification",
+        buildJustification(nextTitle, nextDescription)
+      );
+    }
+
+    if (changes.amount !== undefined) {
+      const amount = parseAmount(changes.amount);
+
+      addUpdate("subtotal", amount);
+      addUpdate("total_amount", amount);
+    }
+
+    if (changes.currency !== undefined) {
+      const currency = String(changes.currency)
+        .trim()
+        .toUpperCase();
+
+      if (!/^[A-Z]{3}$/.test(currency)) {
+        throw new Error(
+          "Currency must be a valid three-letter code."
+        );
+      }
+
+      addUpdate("currency", currency);
+    }
+
+    if (changes.department !== undefined) {
+      if (
+        changes.department &&
+        !isUuid(changes.department)
+      ) {
+        throw new Error(
+          "Department must be a valid department UUID."
+        );
+      }
+
+      addUpdate(
+        "department_id",
+        changes.department || null
+      );
+    }
+
+    if (changes.budgetId !== undefined) {
+      if (
+        changes.budgetId &&
+        !isUuid(changes.budgetId)
+      ) {
+        throw new Error(
+          "Cost center must be a valid UUID."
+        );
+      }
+
+      addUpdate(
+        "cost_center_id",
+        changes.budgetId || null
+      );
+    }
+
+    if (changes.supplier !== undefined) {
+      if (
+        changes.supplier &&
+        !isUuid(changes.supplier)
+      ) {
+        throw new Error(
+          "Supplier must be a valid supplier UUID."
+        );
+      }
+
+      addUpdate(
+        "preferred_supplier_id",
+        changes.supplier || null
+      );
+    }
+
+    if (changes.requiredByDate !== undefined) {
+      addUpdate(
+        "required_by_date",
+        changes.requiredByDate || null
+      );
+    }
+
+    if (!updates.length) {
+      return normalizeRequest(existing);
+    }
+
+    values.push(requestId, tenantId);
+
+    const result = await client.query(
+      `
+        UPDATE ${TABLE}
+        SET ${updates.join(", ")},
+            updated_at = NOW()
+        WHERE id = $${values.length - 1}
+          AND tenant_id = $${values.length}
+        RETURNING *
+      `,
+      values
+    );
+
+    return normalizeRequest(result.rows[0]);
+  });
 }
 
-export async function revokeUserSessions(userId) {
-  if (!userId) return false;
+// ============================================================
+// SUBMIT PROCUREMENT REQUEST
+// ============================================================
 
-  const result = await pool.query(
-    `
-      UPDATE public.user_sessions
-      SET revoked_at = NOW()
-      WHERE user_id = $1
-        AND revoked_at IS NULL
-    `,
-    [userId]
+export async function submitRequest(
+  tenantId,
+  requestId,
+  userId,
+  isAdmin = false
+) {
+  assertTenantAndRequest(tenantId, requestId);
+  required(userId, "User ID");
+
+  return withTenantTransaction(tenantId, async (client) => {
+    const existingResult = await client.query(
+      `
+        SELECT *
+        FROM ${TABLE}
+        WHERE id = $1
+          AND tenant_id = $2
+        FOR UPDATE
+      `,
+      [requestId, tenantId]
+    );
+
+    const existing = existingResult.rows[0];
+
+    if (!existing) {
+      throw new Error("Procurement request not found.");
+    }
+
+    if (!isAdmin && existing.requester_id !== userId) {
+      throw new Error(
+        "You cannot submit another user's request."
+      );
+    }
+
+    if (existing.status !== "DRAFT") {
+      throw new Error(
+        "Only draft procurement requests can be submitted."
+      );
+    }
+
+    if (Number(existing.total_amount) <= 0) {
+      throw new Error(
+        "A procurement request must have an amount greater than zero."
+      );
+    }
+
+    const updated = await startApprovalWorkflow(
+      client,
+      tenantId,
+      userId,
+      existing
+    );
+
+    return normalizeRequest(updated);
+  });
+}
+
+// ============================================================
+// RECOVER EXISTING SUBMITTED REQUEST
+// ============================================================
+
+export async function recoverSubmittedRequest(
+  tenantId,
+  requestId,
+  userId,
+  isAdmin = false
+) {
+  assertTenantAndRequest(tenantId, requestId);
+  required(userId, "User ID");
+
+  return withTenantTransaction(tenantId, async (client) => {
+    const result = await client.query(
+      `
+        SELECT *
+        FROM ${TABLE}
+        WHERE id = $1
+          AND tenant_id = $2
+        FOR UPDATE
+      `,
+      [requestId, tenantId]
+    );
+
+    const request = result.rows[0];
+
+    if (!request) {
+      throw new Error("Procurement request not found.");
+    }
+
+    if (!isAdmin && request.requester_id !== userId) {
+      throw new Error(
+        "You cannot recover another user's request."
+      );
+    }
+
+    if (request.workflow_run_id) {
+      throw new Error(
+        "This request already has a workflow run."
+      );
+    }
+
+    if (request.status !== "SUBMITTED") {
+      throw new Error(
+        "Only submitted requests without a workflow run can be recovered."
+      );
+    }
+
+    const updated = await startApprovalWorkflow(
+      client,
+      tenantId,
+      userId,
+      request
+    );
+
+    return normalizeRequest(updated);
+  });
+}
+
+// ============================================================
+// INTERNAL APPROVAL DECISION
+// ============================================================
+
+async function recordApprovalDecision({
+  tenantId,
+  requestId,
+  actorId,
+  decision,
+  comment,
+}) {
+  assertTenantAndRequest(tenantId, requestId);
+  required(actorId, "Approver ID");
+
+  const action = normalizeDecision(decision);
+
+  // Fetch the request and pending task without holding locks
+  // while the workflow engine opens its own transaction.
+  const taskId = await withTenantTransaction(
+    tenantId,
+    async (client) => {
+      const requestResult = await client.query(
+        `
+          SELECT id, status, workflow_run_id
+          FROM ${TABLE}
+          WHERE id = $1
+            AND tenant_id = $2
+          LIMIT 1
+        `,
+        [requestId, tenantId]
+      );
+
+      const request = requestResult.rows[0];
+
+      if (!request) {
+        throw new Error(
+          "Procurement request not found."
+        );
+      }
+
+      if (!request.workflow_run_id) {
+        throw new Error(
+          "This request has no workflow run. Recover the submitted request after configuring an active workflow."
+        );
+      }
+
+      if (request.status !== "IN_APPROVAL") {
+        throw new Error(
+          `This request is not awaiting approval. Current status: ${request.status}.`
+        );
+      }
+
+      const taskResult = await client.query(
+        `
+          SELECT id
+          FROM ${APPROVAL_TABLE}
+          WHERE tenant_id = $1
+            AND workflow_run_id = $2
+            AND assignee_id = $3
+            AND status = 'PENDING'
+          ORDER BY created_at ASC
+        `,
+        [
+          tenantId,
+          request.workflow_run_id,
+          actorId,
+        ]
+      );
+
+      if (!taskResult.rowCount) {
+        throw new Error(
+          "No pending approval task assigned to this user was found for this request."
+        );
+      }
+
+      if (taskResult.rowCount > 1) {
+        throw new Error(
+          "Multiple pending approval tasks are assigned to this user for this request. The workflow must be clarified before recording a decision."
+        );
+      }
+
+      return taskResult.rows[0].id;
+    }
   );
 
-  return result.rowCount >= 0;
+  // The workflow engine owns approval task and request updates.
+  const workflowResult = await actOnTask(
+    { tenantId, userId: actorId },
+    taskId,
+    {
+      action,
+      comment: comment || undefined,
+    }
+  );
+
+  const updatedRequest = await findRequestById(
+    tenantId,
+    requestId
+  );
+
+  return {
+    request: updatedRequest,
+    approval: {
+      id: workflowResult.task.id,
+      workflowRunId: workflowResult.task.workflow_run_id,
+      nodeId: workflowResult.task.node_id,
+      assigneeId: workflowResult.task.assignee_id,
+      status: workflowResult.task.status,
+      action,
+      comment: comment || null,
+    },
+    workflowRunStatus: workflowResult.workflowRunStatus,
+    activeNodes: workflowResult.activeNodes,
+  };
 }
 
 // ============================================================
-// ROLE PERMISSIONS
+// MANAGER DECISION
 // ============================================================
 
-export async function getUserPermissions(
+export async function recordManagerDecision({
   tenantId,
-  roles = []
-) {
-  if (!tenantId || !Array.isArray(roles) || roles.length === 0) {
-    return [];
-  }
+  requestId,
+  actorId,
+  decision,
+  comment,
+}) {
+  return recordApprovalDecision({
+    tenantId,
+    requestId,
+    actorId,
+    decision,
+    comment,
+  });
+}
 
-  try {
-    return await withTenantTransaction(
-      tenantId,
-      async (client) => {
-        const result = await client.query(
-          `
-            SELECT DISTINCT
-              unnest(r.permissions) AS permission
-            FROM public.roles AS r
-            WHERE r.tenant_id = $1
-              AND LOWER(r.name) = ANY($2::text[])
-          `,
-          [
-            tenantId,
-            roles.map((role) =>
-              String(role).toLowerCase()
-            ),
-          ]
-        );
+// ============================================================
+// FINANCE DECISION
+// ============================================================
 
-        return result.rows
-          .map((row) => row.permission)
-          .filter(Boolean);
-      }
-    );
-  } catch (error) {
-    console.error(
-      "[AuthRepository] Could not load permissions:",
-      error.message
-    );
-
-    throw error;
-  }
+export async function recordFinanceDecision({
+  tenantId,
+  requestId,
+  actorId,
+  decision,
+  comment,
+}) {
+  return recordApprovalDecision({
+    tenantId,
+    requestId,
+    actorId,
+    decision,
+    comment,
+  });
 }

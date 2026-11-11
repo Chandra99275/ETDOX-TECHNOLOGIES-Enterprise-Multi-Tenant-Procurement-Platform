@@ -1,3 +1,4 @@
+
 import { getDashboardAnalytics } from "./analytics.repository.js";
 
 function getTenantId(user) {
@@ -9,22 +10,29 @@ function getTenantId(user) {
   );
 }
 
+function getUserId(user) {
+  return user?.id ?? user?.userId ?? user?.user_id ?? null;
+}
+
+function httpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 export async function getAnalyticsDashboard(user) {
-  if (!user) {
-    const error = new Error("Authentication is required.");
-    error.statusCode = 401;
-    throw error;
+  if (!user || !getUserId(user)) {
+    throw httpError("Authentication is required.", 401);
   }
 
   const tenantId = getTenantId(user);
 
   if (!tenantId) {
-    const error = new Error(
-      "Your authenticated account does not have a tenant assigned."
+    throw httpError(
+      "Your authenticated account does not have a tenant assigned.",
+      403,
     );
-    error.statusCode = 403;
-    throw error;
   }
 
-  return getDashboardAnalytics(tenantId);
+  return getDashboardAnalytics(String(tenantId));
 }

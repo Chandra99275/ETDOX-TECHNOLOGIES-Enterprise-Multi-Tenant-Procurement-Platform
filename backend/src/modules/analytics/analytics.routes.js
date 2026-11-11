@@ -1,3 +1,4 @@
+
 import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
@@ -16,57 +17,67 @@ import { analyticsSummarySchema } from "./analytics.schema.js";
 
 const router = Router();
 
-// Require authentication for all analytics endpoints.
+/**
+ * All analytics routes require authentication.
+ * Tenant isolation remains enforced by the analytics service/repository.
+ */
 router.use(authenticate);
+
+/**
+ * Analytics permission middleware.
+ * Admin and finance roles are allowed through the existing RBAC system
+ * when they have analytics:read permission.
+ */
+const analyticsRead = requirePermission("analytics:read");
 
 // General analytics summary.
 router.get(
   "/",
-  requirePermission("analytics:read"),
-  getDashboardAnalyticsController
+  analyticsRead,
+  getDashboardAnalyticsController,
 );
 
 // Validated analytics summary.
 router.get(
   "/summary",
-  requirePermission("analytics:read"),
+  analyticsRead,
   validate(analyticsSummarySchema, "query"),
-  getDashboardAnalyticsController
+  getDashboardAnalyticsController,
 );
 
 // Full dashboard analytics.
 router.get(
   "/dashboard",
-  requirePermission("analytics:read"),
-  getDashboardAnalyticsController
+  analyticsRead,
+  getDashboardAnalyticsController,
 );
 
 // Purchase request analytics.
 router.get(
   "/purchase-requests",
-  requirePermission("analytics:read"),
-  getPurchaseRequestAnalyticsController
+  analyticsRead,
+  getPurchaseRequestAnalyticsController,
 );
 
 // Invoice analytics.
 router.get(
   "/invoices",
-  requirePermission("analytics:read"),
-  getInvoiceAnalyticsController
+  analyticsRead,
+  getInvoiceAnalyticsController,
 );
 
 // Budget analytics.
 router.get(
   "/budgets",
-  requirePermission("analytics:read"),
-  getBudgetAnalyticsController
+  analyticsRead,
+  getBudgetAnalyticsController,
 );
 
 // Analytics trends.
 router.get(
   "/trends",
-  requirePermission("analytics:read"),
-  getAnalyticsTrendsController
+  analyticsRead,
+  getAnalyticsTrendsController,
 );
 
 export default router;

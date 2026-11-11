@@ -1,3 +1,4 @@
+
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 
@@ -46,16 +47,34 @@ export function authenticate(req, _res, next) {
       return next(unauthorized("Token does not contain a user role."));
     }
 
-    req.user = {
+    const roles = Array.isArray(payload.roles)
+      ? [...new Set([
+          role.toLowerCase(),
+          ...payload.roles.map((item) => String(item).toLowerCase()),
+        ])]
+      : [role.toLowerCase()];
+
+    const permissions = Array.isArray(payload.permissions)
+      ? payload.permissions
+      : [];
+
+    const user = {
       id: userId,
+      userId,
       tenantId,
       role: role.toLowerCase(),
-      roles: Array.isArray(payload.roles)
-        ? payload.roles.map((item) => String(item).toLowerCase())
-        : [role.toLowerCase()],
-      permissions: Array.isArray(payload.permissions)
-        ? payload.permissions
-        : [],
+      roles,
+      permissions,
+    };
+
+    // Preserve compatibility with existing controllers.
+    req.user = user;
+
+    // Required by getRequestContext().
+    req.context = {
+      ...user,
+      tenant_id: tenantId,
+      user_id: userId,
     };
 
     req.authTokenPayload = payload;
@@ -63,14 +82,18 @@ export function authenticate(req, _res, next) {
     return next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
-      return next(unauthorized("Your session has expired. Please log in again."));
+      return next(
+        unauthorized("Your session has expired. Please log in again.")
+      );
     }
 
     if (
       error.name === "JsonWebTokenError" ||
       error.name === "NotBeforeError"
     ) {
-      return next(unauthorized("Invalid or inactive authentication token."));
+      return next(
+        unauthorized("Invalid or inactive authentication token.")
+      );
     }
 
     return next(error);

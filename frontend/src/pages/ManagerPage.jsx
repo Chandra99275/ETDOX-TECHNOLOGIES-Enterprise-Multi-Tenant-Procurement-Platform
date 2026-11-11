@@ -1,2014 +1,1710 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   LayoutDashboard,
-  Users,
-  FolderKanban,
-  ClipboardCheck,
-  CalendarDays,
-  Settings,
-  LogOut,
-  Bell,
+  ClipboardList,
+  CheckCircle2,
+  XCircle,
+  Clock,
   Search,
+  Bell,
+  LogOut,
   Menu,
   X,
-  TrendingUp,
-  TrendingDown,
-  ArrowUpRight,
-  Clock3,
-  CheckCircle2,
-  CircleAlert,
-  Plus,
-  MoreHorizontal,
-  ChevronDown,
-  Target,
-  BriefcaseBusiness,
-  RefreshCw,
-  Package,
-  IndianRupee,
-  FileText,
   Eye,
-  Filter,
-  UserRound,
+  Check,
+  Ban,
+  RefreshCw,
+  User,
   Building2,
-  MessageSquare,
-  ShieldCheck,
-  XCircle,
+  AlertCircle,
+  ChevronDown,
 } from "lucide-react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  CartesianGrid,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from "recharts";
-import "./ManagerPage.css";
+import { useNavigate } from "react-router-dom";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+// Backend is mounted at /api/v1.
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:5000/api/v1"
+).replace(/\/+$/, "");
 
-// productivityData is dynamically derived from requests
+const getToken = () =>
+  localStorage.getItem("accessToken") ||
+  localStorage.getItem("authToken") ||
+  localStorage.getItem("token") ||
+  sessionStorage.getItem("accessToken") ||
+  sessionStorage.getItem("authToken") ||
+  sessionStorage.getItem("token") ||
+  "";
 
-const navItems = [
-  { label: "Overview", icon: LayoutDashboard },
-  { label: "Team", icon: Users },
-  { label: "Projects", icon: FolderKanban },
-  { label: "Tasks", icon: ClipboardCheck },
-  { label: "Approvals", icon: CheckCircle2 },
-  { label: "Calendar", icon: CalendarDays },
-  { label: "Settings", icon: Settings },
-];
+const getArray = (response, keys = []) => {
+  if (Array.isArray(response)) return response;
 
-const formatMoney = (amount, currency = "INR") => {
-  const value = Number(amount || 0);
-
-  try {
-    return new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency: currency || "INR",
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${currency || "INR"} ${value.toLocaleString("en-IN")}`;
+  for (const key of keys) {
+    if (Array.isArray(response?.[key])) return response[key];
+    if (Array.isArray(response?.data?.[key])) return response.data[key];
   }
+
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.data?.requests)) return response.data.requests;
+
+  return [];
 };
 
-const formatDate = (date) => {
-  if (!date) return "Not specified";
+const formatCurrency = (value) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
 
-  const parsed = new Date(date);
+const formatDate = (value) => {
+  if (!value) return "—";
 
-  if (Number.isNaN(parsed.getTime())) return String(date);
+  const date = new Date(value);
 
-  return parsed.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleDateString("en-IN");
 };
 
-const normalizeStatus = (status) =>
-  String(status || "PENDING_MANAGER")
+const getStatus = (request) =>
+  String(
+    request.status ||
+      request.requestStatus ||
+      request.request_status ||
+      "PENDING_MANAGER"
+  )
     .toUpperCase()
-    .replace(/[\s-]+/g, "_");
+    .replaceAll(" ", "_");
 
-const statusLabel = (status) => {
-  const labels = {
-    PENDING_MANAGER: "Pending manager approval",
-    PENDING_FINANCE: "Pending finance approval",
-    APPROVED: "Approved",
-    REJECTED_MANAGER: "Rejected by manager",
-    REJECTED_FINANCE: "Rejected by finance",
-    COMPLETED: "Completed",
-    PENDING: "Pending",
-    IN_PROGRESS: "In progress",
-    REVIEW: "Under review",
-  };
+const getEmployee = (request) => {
+  const employee = request.employee || request.requester || request.user || {};
 
-  const normalized = normalizeStatus(status);
+  const nestedName = [
+    employee.firstName || employee.first_name,
+    employee.lastName || employee.last_name,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    labels[normalized] ||
-    String(status || "Unknown").replace(/_/g, " ")
+    request.employeeName ||
+    request.employee_name ||
+    employee.name ||
+    employee.fullName ||
+    employee.full_name ||
+    nestedName ||
+    request.createdByName ||
+    request.created_by_name ||
+    "Employee"
   );
 };
 
-const getToken = () =>
-  localStorage.getItem("token") ||
-  localStorage.getItem("accessToken") ||
-  localStorage.getItem("authToken") ||
-  sessionStorage.getItem("token") ||
-  sessionStorage.getItem("accessToken") ||
-  sessionStorage.getItem("authToken") ||
-  "";
+const getProduct = (request) =>
+  request.productName ||
+  request.product_name ||
+  request.title ||
+  request.itemName ||
+  request.item_name ||
+  "Product request";
 
-const getSavedUser = () => {
-  try {
-    const raw = localStorage.getItem("user") || sessionStorage.getItem("user");
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+const getAmount = (request) => {
+  const amount =
+    request.totalAmount ??
+    request.total_amount ??
+    request.amount ??
+    Number(request.quantity || 0) *
+      Number(request.unitPrice || request.unit_price || 0);
+
+  return Number(amount || 0);
 };
 
 const getRequestId = (request) =>
-  request?.id ?? request?._id ?? request?.requestId;
+  request.id || request.requestId || request.request_id;
 
-const getRequesterName = (request) =>
-  request?.requesterName ||
-  request?.employeeName ||
-  request?.requestedBy?.name ||
-  request?.employee?.name ||
-  request?.user?.name ||
-  request?.requester?.name ||
-  "Employee";
-
-const getRequesterEmail = (request) =>
-  request?.requesterEmail ||
-  request?.employeeEmail ||
-  request?.requestedBy?.email ||
-  request?.employee?.email ||
-  request?.user?.email ||
-  request?.requester?.email ||
-  "";
-
-const getProductName = (request) =>
-  request?.productName || request?.itemName || request?.title || "Product request";
-
-const getRequestAmount = (request) =>
-  Number(
-    request?.totalAmount ??
-      request?.total ??
-      request?.estimatedTotal ??
-      Number(request?.quantity || 0) * Number(request?.unitPrice || 0)
-  );
+const getSupplier = (request) =>
+  request.supplier ||
+  request.supplierName ||
+  request.supplier_name ||
+  "—";
 
 const getDepartment = (request) =>
-  request?.department ||
-  request?.departmentName ||
-  request?.requestedBy?.department ||
-  "Not specified";
+  request.department ||
+  request.departmentName ||
+  request.department_name ||
+  request.department?.name ||
+  "—";
 
-const getBudgetId = (request) =>
-  request?.budgetId?._id ||
-  request?.budgetId?.id ||
-  request?.budgetId ||
-  "";
+const getRequestDate = (request) =>
+  request.createdAt ||
+  request.created_at ||
+  request.submittedAt ||
+  request.submitted_at;
 
-function StatusBadge({ status }) {
-  const normalized = normalizeStatus(status);
+const MANAGER_PENDING_STATUSES = [
+  "PENDING_MANAGER",
+  "SUBMITTED",
+  "MANAGER_PENDING",
+];
 
-  let className = "manager-status";
+const FINANCE_PENDING_STATUSES = [
+  "MANAGER_APPROVED",
+  "PENDING_FINANCE",
+];
 
-  if (normalized.includes("APPROVED") || normalized === "COMPLETED") {
-    className += " status-completed";
-  } else if (normalized.includes("REJECTED")) {
-    className += " status-rejected";
-  } else if (
-    normalized.includes("PENDING") ||
-    normalized === "REVIEW"
-  ) {
-    className += " status-pending";
-  } else {
-    className += " status-progress";
-  }
+const APPROVED_STATUSES = [
+  "MANAGER_APPROVED",
+  "FINANCE_APPROVED",
+  "APPROVED",
+  "COMPLETED",
+];
 
-  return (
-    <span className={className}>
-      {normalized.includes("REJECTED") ? (
-        <XCircle size={13} />
-      ) : normalized.includes("APPROVED") ||
-        normalized === "COMPLETED" ? (
-        <CheckCircle2 size={13} />
-      ) : (
-        <Clock3 size={13} />
-      )}
-      {statusLabel(status)}
-    </span>
-  );
-}
-
-function EmptyState({ title, message }) {
-  return (
-    <div className="manager-no-approvals">
-      <Package size={35} />
-      <h3>{title}</h3>
-      <p>{message}</p>
-    </div>
-  );
-}
+const REJECTED_STATUSES = [
+  "MANAGER_REJECTED",
+  "FINANCE_REJECTED",
+  "REJECTED",
+];
 
 export default function ManagerPage() {
-  const [activePage, setActivePage] = useState("Overview");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [requestFilter, setRequestFilter] = useState("ALL");
+  const navigate = useNavigate();
+
   const [requests, setRequests] = useState([]);
-  const [budgets, setBudgets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [processingId, setProcessingId] = useState(null);
+  const [activeTab, setActiveTab] = useState("Overview");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+
   const [selectedRequest, setSelectedRequest] = useState(null);
-  const [notice, setNotice] = useState("");
+  const [decision, setDecision] = useState("");
+  const [reason, setReason] = useState("");
+
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
   const [error, setError] = useState("");
-  const [currentUser, setCurrentUser] = useState(getSavedUser);
+  const [success, setSuccess] = useState("");
 
-  // Dynamic tasks, projects and productivity derived directly from PostgreSQL data
-  const tasks = useMemo(() => {
-    return requests.map((req, idx) => ({
-      id: req.id || idx,
-      title: `Review ${req.productName || req.requestNumber || 'Purchase Request'}`,
-      project: req.department || 'Procurement',
-      assignee: req.requesterName || 'Employee',
-      priority: Number(req.total || req.amount || 0) > 50000 ? 'High' : 'Medium',
-      due: req.createdAt ? new Date(req.createdAt).toLocaleDateString('en-IN') : 'Recent',
-      status: normalizeStatus(req.status) === 'APPROVED' ? 'Completed' : 'In Progress',
-    }));
-  }, [requests]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [managerName, setManagerName] = useState("Manager");
 
-  const projects = useMemo(() => {
-    if (!budgets || budgets.length === 0) return [];
-    const colors = ['violet', 'blue', 'orange', 'green'];
-    return budgets.map((b, idx) => {
-      const allocated = Number(b.allocated || b.amount || 0);
-      const spent = Number(b.spent || 0);
-      const progress = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 0;
-      return {
-        name: b.name || `${b.department || 'Department'} Budget`,
-        client: `${b.department || 'General'} Division`,
-        progress,
-        color: colors[idx % colors.length],
-        status: b.status || 'Active',
-        due: b.fiscalYear ? `FY ${b.fiscalYear}` : 'FY 2026',
-      };
-    });
-  }, [budgets]);
-
-  const productivityData = useMemo(() => {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const counts = {
-      Sun: { completed: 0, planned: 0 },
-      Mon: { completed: 0, planned: 0 },
-      Tue: { completed: 0, planned: 0 },
-      Wed: { completed: 0, planned: 0 },
-      Thu: { completed: 0, planned: 0 },
-      Fri: { completed: 0, planned: 0 },
-      Sat: { completed: 0, planned: 0 },
-    };
-
-    requests.forEach((req) => {
-      if (req.createdAt) {
-        const d = new Date(req.createdAt);
-        if (!isNaN(d.getTime())) {
-          const dayName = days[d.getDay()];
-          counts[dayName].planned += 1;
-          if (['APPROVED', 'COMPLETED'].includes(normalizeStatus(req.status))) {
-            counts[dayName].completed += 1;
-          }
-        }
-      }
-    });
-
-    return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => ({
-      day,
-      completed: counts[day].completed,
-      planned: counts[day].planned,
-    }));
-  }, [requests]);
-
-  const showNotice = useCallback((message) => {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 3500);
-  }, []);
-
-  const apiRequest = useCallback(async (path, options = {}) => {
+  // API helper.
+  // The token is retrieved for every request so updated login sessions are used.
+  const apiRequest = useCallback(async (endpoint, options = {}) => {
     const token = getToken();
 
-    const response = await fetch(`${API_BASE}${path}`, {
+    if (!token) {
+      throw new Error("Your session has expired. Please log in again.");
+    }
+
+    const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Authorization: `Bearer ${token}`,
         ...options.headers,
       },
     });
 
-    const contentType = response.headers.get("content-type") || "";
-    const data = contentType.includes("application/json")
-      ? await response.json()
-      : await response.text();
+    const data = await response.json().catch(() => ({}));
 
     if (response.status === 401) {
-      sessionStorage.removeItem("authToken");
-      sessionStorage.removeItem("token");
-      sessionStorage.removeItem("user");
-      window.location.href = "/login";
-      throw new Error("Your session has expired. Please log in again.");
+      throw new Error("Session expired. Please log in again.");
     }
 
     if (!response.ok) {
-      const message =
-        typeof data === "object"
-          ? data.message || data.error || `Request failed (${response.status})`
-          : data || `Request failed (${response.status})`;
-
-      throw new Error(message);
+      throw new Error(
+        data.message ||
+          data.error ||
+          data.details ||
+          `Request failed with status ${response.status}`
+      );
     }
 
     return data;
   }, []);
 
-  const loadDashboard = useCallback(async (isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-
+  // Load procurement requests and manager profile.
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
     setError("");
 
     try {
-      const results = await Promise.allSettled([
-        apiRequest("/api/procurement/requests"),
-        apiRequest("/api/procurement/budgets"),
-        apiRequest("/api/auth/me"),
+      const [requestResult, userResult] = await Promise.all([
+        apiRequest("/procurement/requests"),
+        apiRequest("/auth/me").catch(() => null),
       ]);
 
-      const requestResult = results[0];
-      const budgetResult = results[1];
-      const userResult = results[2];
+      // Controller returns:
+      // { success, message, data: requests, requests, pagination }
+      const requestList = getArray(requestResult, [
+        "requests",
+        "items",
+        "results",
+      ]);
 
-      if (requestResult.status === "fulfilled") {
-        const payload = requestResult.value;
-        const list = Array.isArray(payload)
-          ? payload
-          : payload.requests || payload.data || [];
+      setRequests(requestList);
 
-        setRequests(Array.isArray(list) ? list : []);
-      } else {
-        throw new Error(
-          `Could not load employee requests: ${requestResult.reason?.message || "Unknown error"}`
-        );
-      }
+      const user =
+        userResult?.user ||
+        userResult?.data?.user ||
+        userResult?.data ||
+        userResult;
 
-      if (budgetResult.status === "fulfilled") {
-        const payload = budgetResult.value;
-        const list = Array.isArray(payload)
-          ? payload
-          : payload.budgets || payload.data || [];
+      if (user && typeof user === "object") {
+        const fullName =
+          user.name ||
+          user.fullName ||
+          user.full_name ||
+          [user.firstName || user.first_name, user.lastName || user.last_name]
+            .filter(Boolean)
+            .join(" ");
 
-        setBudgets(Array.isArray(list) ? list : []);
-      } else {
-        setBudgets([]);
-        console.error("Budget API error:", budgetResult.reason);
-      }
-
-      if (userResult.status === "fulfilled") {
-        const payload = userResult.value;
-        const user = payload.user || payload.data || payload;
-
-        if (user && typeof user === "object") {
-          setCurrentUser(user);
-          sessionStorage.setItem("user", JSON.stringify(user));
+        if (fullName) {
+          setManagerName(fullName);
         }
-      } else {
-        console.error("Could not load user profile:", userResult.reason);
       }
     } catch (err) {
-      setError(
-        err.message ||
-          "Unable to load procurement data. Check your backend connection."
-      );
+      const message = err.message || "Unable to load manager dashboard.";
+
+      setError(message);
+
+      if (
+        message.toLowerCase().includes("session expired") ||
+        message.toLowerCase().includes("log in again")
+      ) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("authToken");
+        localStorage.removeItem("user");
+
+        sessionStorage.removeItem("token");
+        sessionStorage.removeItem("accessToken");
+        sessionStorage.removeItem("authToken");
+
+        navigate("/login");
+      }
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }, [apiRequest]);
+  }, [apiRequest, navigate]);
 
   useEffect(() => {
+    if (!getToken()) {
+      navigate("/login");
+      return;
+    }
+
     loadDashboard();
+  }, [loadDashboard, navigate]);
 
-    // Load current server data when the manager opens this page.
-  }, [loadDashboard]);
-
-  const allRequests = useMemo(() => requests, [requests]);
-
-  const pendingManagerRequests = useMemo(
+  // Requests awaiting manager approval.
+  const managerPending = useMemo(
     () =>
-      allRequests.filter(
-        (request) =>
-          normalizeStatus(request.status) === "PENDING_MANAGER"
+      requests.filter((request) =>
+        MANAGER_PENDING_STATUSES.includes(getStatus(request))
       ),
-    [allRequests]
+    [requests]
   );
 
-  const pendingFinanceRequests = useMemo(
+  // Requests approved by manager and awaiting finance.
+  const financePending = useMemo(
     () =>
-      allRequests.filter(
-        (request) =>
-          normalizeStatus(request.status) === "PENDING_FINANCE"
+      requests.filter((request) =>
+        FINANCE_PENDING_STATUSES.includes(getStatus(request))
       ),
-    [allRequests]
+    [requests]
   );
 
   const approvedRequests = useMemo(
     () =>
-      allRequests.filter(
-        (request) =>
-          normalizeStatus(request.status) === "APPROVED"
+      requests.filter((request) =>
+        APPROVED_STATUSES.includes(getStatus(request))
       ),
-    [allRequests]
+    [requests]
   );
 
   const rejectedRequests = useMemo(
     () =>
-      allRequests.filter((request) =>
-        normalizeStatus(request.status).includes("REJECTED")
+      requests.filter((request) =>
+        REJECTED_STATUSES.includes(getStatus(request))
       ),
-    [allRequests]
+    [requests]
   );
 
-  const totalRequestedValue = useMemo(
-    () =>
-      allRequests.reduce(
-        (sum, request) => sum + getRequestAmount(request),
-        0
-      ),
-    [allRequests]
-  );
-
-  const pendingApprovalValue = useMemo(
-    () =>
-      pendingManagerRequests.reduce(
-        (sum, request) => sum + getRequestAmount(request),
-        0
-      ),
-    [pendingManagerRequests]
-  );
-
+  // Search and status filters.
   const filteredRequests = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    let list = requests;
 
-    return allRequests.filter((request) => {
-      const searchable = [
-        getRequestId(request),
-        getRequesterName(request),
-        getRequesterEmail(request),
-        getProductName(request),
-        request.description,
-        request.supplier,
-        getDepartment(request),
-        request.justification,
-        request.status,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
+    if (activeTab === "Pending Requests") {
+      list = managerPending;
+    } else if (activeTab === "Approval History") {
+      list = requests.filter((request) =>
+        [
+          ...APPROVED_STATUSES,
+          ...REJECTED_STATUSES,
+        ].includes(getStatus(request))
+      );
+    }
 
-      const matchesSearch = !term || searchable.includes(term);
+    if (statusFilter !== "ALL") {
+      list = list.filter(
+        (request) => getStatus(request) === statusFilter
+      );
+    }
 
-      const status = normalizeStatus(request.status);
+    const query = search.toLowerCase().trim();
 
-      const matchesFilter =
-        requestFilter === "ALL" ||
-        (requestFilter === "PENDING_MANAGER" &&
-          status === "PENDING_MANAGER") ||
-        (requestFilter === "PENDING_FINANCE" &&
-          status === "PENDING_FINANCE") ||
-        (requestFilter === "APPROVED" && status === "APPROVED") ||
-        (requestFilter === "REJECTED" &&
-          status.includes("REJECTED"));
+    if (query) {
+      list = list.filter((request) => {
+        const searchableText = [
+          getEmployee(request),
+          getProduct(request),
+          getSupplier(request),
+          getDepartment(request),
+          getRequestId(request),
+          request.employeeEmail,
+          request.employee_email,
+          request.requester?.email,
+          request.description,
+          request.justification,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
 
-      return matchesSearch && matchesFilter;
-    });
-  }, [allRequests, searchTerm, requestFilter]);
+        return searchableText.includes(query);
+      });
+    }
 
-  const uniqueEmployees = useMemo(() => {
-    const employees = new Map();
+    return list;
+  }, [requests, activeTab, statusFilter, search, managerPending]);
 
-    allRequests.forEach((request) => {
-      const email = getRequesterEmail(request);
-      const name = getRequesterName(request);
-      const key = email || name;
+  // Open approval/rejection modal.
+  const openDecision = (request, action) => {
+    setSelectedRequest(request);
+    setDecision(action);
+    setReason("");
+    setError("");
+    setSuccess("");
+  };
 
-      if (!employees.has(key)) {
-        employees.set(key, {
-          key,
-          name,
-          email,
-          department: getDepartment(request),
-          requests: 0,
-          total: 0,
-        });
-      }
+  // Submit manager decision.
+  const submitDecision = async () => {
+    if (!selectedRequest || !decision || submitting) return;
 
-      const employee = employees.get(key);
-      employee.requests += 1;
-      employee.total += getRequestAmount(request);
-    });
+    if (decision === "reject" && !reason.trim()) {
+      setError("Please enter a rejection reason.");
+      return;
+    }
 
-    return Array.from(employees.values());
-  }, [allRequests]);
-
-  async function handleManagerDecision(request, decision) {
-    const id = getRequestId(request);
+    const id = getRequestId(selectedRequest);
 
     if (!id) {
-      showNotice("This request has no ID. Check your backend response.");
+      setError("Request ID is missing.");
       return;
     }
 
-    const approved = decision === "APPROVE";
-
-    const comment = window.prompt(
-      approved
-        ? "Optional approval comment:"
-        : "Please enter a reason for rejecting this request:",
-      approved ? "Approved by manager." : ""
-    );
-
-    if (comment === null) return;
-
-    if (!approved && !comment.trim()) {
-      showNotice("Please provide a rejection reason.");
-      return;
-    }
-
-    setProcessingId(id);
+    setSubmitting(true);
     setError("");
+    setSuccess("");
 
     try {
-      const result = await apiRequest(
-        `/api/procurement/requests/${encodeURIComponent(id)}/manager-decision`,
+      const approved = decision === "approve";
+
+      // IMPORTANT:
+      // Your procurement.controller.js reads only:
+      // req.body.decision
+      // req.body.comment
+      //
+      // Do not send status or reason as separate fields.
+      await apiRequest(
+        `/procurement/requests/${encodeURIComponent(
+          id
+        )}/manager-decision`,
         {
           method: "PATCH",
           body: JSON.stringify({
-            decision: approved ? "APPROVE" : "REJECT",
-            comment: comment.trim(),
+            decision: approved ? "approve" : "reject",
+            comment: reason.trim(),
           }),
         }
       );
 
-      if (result.request) {
-        setRequests((current) =>
-          current.map((item) =>
-            String(getRequestId(item)) === String(id)
-              ? { ...item, ...result.request }
-              : item
-          )
-        );
-      }
+      setSelectedRequest(null);
+      setDecision("");
+      setReason("");
 
-      await loadDashboard(true);
-
-      showNotice(
+      setSuccess(
         approved
-          ? "Request approved and sent for Finance review."
+          ? "Request approved and forwarded to Finance."
           : "Request rejected successfully."
       );
 
-      setSelectedRequest(null);
+      await loadDashboard();
     } catch (err) {
-      setError(err.message || "Could not process the manager decision.");
+      setError(err.message || "Unable to submit manager decision.");
     } finally {
-      setProcessingId(null);
+      setSubmitting(false);
     }
-  }
+  };
 
-  function exportRequests() {
-    const header = [
-      "Request ID",
-      "Employee",
-      "Email",
-      "Department",
-      "Product",
-      "Supplier",
-      "Quantity",
-      "Unit Price",
-      "Total Amount",
-      "Status",
-      "Date",
-    ];
+  const closeModal = () => {
+    if (submitting) return;
 
-    const rows = filteredRequests.map((request) => [
-      getRequestId(request),
-      getRequesterName(request),
-      getRequesterEmail(request),
-      getDepartment(request),
-      getProductName(request),
-      request.supplier || "",
-      request.quantity || 0,
-      request.unitPrice || 0,
-      getRequestAmount(request),
-      statusLabel(request.status),
-      request.createdAt || request.created_at || "",
-    ]);
+    setSelectedRequest(null);
+    setDecision("");
+    setReason("");
+  };
 
-    const csv = [header, ...rows]
-      .map((row) =>
-        row
-          .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
-          .join(",")
-      )
-      .join("\r\n");
+  const logout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("user");
 
-    const blob = new Blob(["\uFEFF", csv], {
-      type: "text/csv;charset=utf-8;",
-    });
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("accessToken");
+    sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("user");
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
+    navigate("/login");
+  };
 
-    link.href = url;
-    link.download = "etdox-employee-procurement-requests.csv";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+  const navItems = [
+    { name: "Overview", icon: LayoutDashboard },
+    { name: "Pending Requests", icon: ClipboardList },
+    { name: "Approval History", icon: CheckCircle2 },
+  ];
 
-    URL.revokeObjectURL(url);
-  }
+  const statusStyle = (status) => {
+    if (APPROVED_STATUSES.includes(status)) return "approved";
 
-  function renderRequestTable(compact = false) {
-    const visibleRequests = compact
-      ? filteredRequests.slice(0, 5)
-      : filteredRequests;
+    if (REJECTED_STATUSES.includes(status)) return "rejected";
 
-    return (
-      <div className="manager-table-wrap">
-        <table className="manager-table">
-          <thead>
-            <tr>
-              <th>Employee / Request</th>
-              <th>Product</th>
-              <th>Department</th>
-              <th>Amount</th>
-              <th>Status</th>
-              {!compact && <th>Action</th>}
-            </tr>
-          </thead>
+    if (FINANCE_PENDING_STATUSES.includes(status)) return "finance";
 
-          <tbody>
-            {visibleRequests.map((request) => {
-              const id = getRequestId(request);
-              const status = normalizeStatus(request.status);
-              const canReview = status === "PENDING_MANAGER";
+    return "pending";
+  };
 
-              return (
-                <tr key={id}>
-                  <td>
-                    <div className="manager-task-title">
-                      <strong>{getRequesterName(request)}</strong>
-                      <span>
-                        {id ? `Request #${String(id).slice(-8)}` : "Request"}
-                      </span>
-                      {getRequesterEmail(request) && (
-                        <span>{getRequesterEmail(request)}</span>
-                      )}
-                    </div>
-                  </td>
-
-                  <td>
-                    <div className="manager-task-title">
-                      <strong>{getProductName(request)}</strong>
-                      <span>
-                        Qty: {Number(request.quantity || 0)}
-                        {request.supplier
-                          ? ` · ${request.supplier}`
-                          : ""}
-                      </span>
-                    </div>
-                  </td>
-
-                  <td>{getDepartment(request)}</td>
-
-                  <td>
-                    <strong>
-                      {formatMoney(
-                        getRequestAmount(request),
-                        request.currency || "INR"
-                      )}
-                    </strong>
-                  </td>
-
-                  <td>
-                    <StatusBadge status={request.status} />
-                  </td>
-
-                  {!compact && (
-                    <td>
-                      <div className="manager-row-actions">
-                        <button
-                          className="manager-secondary-button"
-                          onClick={() => setSelectedRequest(request)}
-                          title="View request details"
-                        >
-                          <Eye size={14} /> Details
-                        </button>
-
-                        {canReview && (
-                          <>
-                            <button
-                              className="manager-approve-button"
-                              disabled={processingId === id}
-                              onClick={() =>
-                                handleManagerDecision(request, "APPROVE")
-                              }
-                            >
-                              {processingId === id ? (
-                                <RefreshCw size={14} />
-                              ) : (
-                                <CheckCircle2 size={14} />
-                              )}
-                              Approve
-                            </button>
-
-                            <button
-                              className="manager-reject-button"
-                              disabled={processingId === id}
-                              onClick={() =>
-                                handleManagerDecision(request, "REJECT")
-                              }
-                            >
-                              <XCircle size={14} /> Reject
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-
-            {visibleRequests.length === 0 && (
-              <tr>
-                <td colSpan={compact ? 5 : 6} className="manager-empty">
-                  No employee procurement requests match this filter.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  function renderTeam() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Employees and Procurement Activity</h2>
-            <p>
-              Employees who have submitted procurement requests through the
-              employee portal.
-            </p>
-          </div>
-          <span className="manager-count-pill">
-            {uniqueEmployees.length} employees
-          </span>
-        </div>
-
-        {uniqueEmployees.length === 0 ? (
-          <EmptyState
-            title="No employee requests yet"
-            message="Employees will appear here after they submit procurement requests."
-          />
-        ) : (
-          <div className="manager-team-grid">
-            {uniqueEmployees.map((employee, index) => (
-              <article className="manager-member-card" key={employee.key}>
-                <div className="manager-member-top">
-                  <div
-                    className={`manager-avatar avatar-${
-                      ["violet", "blue", "green", "pink", "orange"][
-                        index % 5
-                      ]
-                    }`}
-                  >
-                    {employee.name
-                      .split(" ")
-                      .map((part) => part[0])
-                      .join("")
-                      .slice(0, 2)
-                      .toUpperCase()}
-                  </div>
-                  <span className="manager-count-pill">
-                    {employee.requests} requests
-                  </span>
-                </div>
-
-                <h3>{employee.name}</h3>
-                <p>{employee.email || employee.department}</p>
-
-                <div className="manager-member-footer">
-                  <span>Requested value</span>
-                  <strong>{formatMoney(employee.total)}</strong>
-                </div>
-
-                <button
-                  className="manager-full-width-button"
-                  onClick={() => {
-                    setSearchTerm(employee.email || employee.name);
-                    setRequestFilter("ALL");
-                    setActivePage("Approvals");
-                  }}
-                >
-                  View requests <ArrowUpRight size={14} />
-                </button>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-    );
-  }
-
-  function renderProjects() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Project Portfolio</h2>
-            <p>
-              Sample project tracking. Connect a project API to persist these
-              records.
-            </p>
-          </div>
-        </div>
-
-        <div className="manager-project-list">
-          {projects.map((project) => (
-            <article className="manager-project-card" key={project.name}>
-              <div className={`manager-project-icon project-${project.color}`}>
-                <BriefcaseBusiness size={21} />
-              </div>
-
-              <div className="manager-project-main">
-                <div className="manager-project-heading">
-                  <div>
-                    <h3>{project.name}</h3>
-                    <p>{project.client}</p>
-                  </div>
-                  <span className="manager-project-status">
-                    {project.status}
-                  </span>
-                </div>
-
-                <div className="manager-project-progress-label">
-                  <span>Overall progress</span>
-                  <strong>{project.progress}%</strong>
-                </div>
-
-                <div
-                  className={`manager-progress-track progress-${project.color}`}
-                >
-                  <span style={{ width: `${project.progress}%` }} />
-                </div>
-
-                <div className="manager-project-footer">
-                  <span>
-                    <CalendarDays size={14} /> Due {project.due}
-                  </span>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-    );
-  }
-
-  function renderTasks() {
-    const filteredTasks = tasks.filter((task) =>
-      `${task.title} ${task.project} ${task.assignee}`
-        .toLowerCase()
-        .includes(searchTerm.toLowerCase())
-    );
-
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Team Tasks</h2>
-            <p>
-              Demonstration task data. Procurement requests are loaded from
-              your backend.
-            </p>
-          </div>
-        </div>
-
-        <div className="manager-table-wrap">
-          <table className="manager-table">
-            <thead>
-              <tr>
-                <th>Task</th>
-                <th>Assignee</th>
-                <th>Priority</th>
-                <th>Due date</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {filteredTasks.map((task) => (
-                <tr key={task.id}>
-                  <td>
-                    <div className="manager-task-title">
-                      <strong>{task.title}</strong>
-                      <span>{task.project}</span>
-                    </div>
-                  </td>
-                  <td>{task.assignee}</td>
-                  <td>{task.priority}</td>
-                  <td>{task.due}</td>
-                  <td>
-                    <StatusBadge status={task.status} />
-                  </td>
-                </tr>
-              ))}
-
-              {filteredTasks.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="manager-empty">
-                    No matching tasks.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    );
-  }
-
-  function renderApprovals() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Employee Procurement Requests</h2>
-            <p>
-              Review product orders submitted by employees. Approved requests
-              move to Finance for approval.
-            </p>
-          </div>
-
-          <button
-            className="manager-secondary-button"
-            onClick={() => loadDashboard(true)}
-            disabled={refreshing}
-          >
-            <RefreshCw size={15} /> Refresh
-          </button>
-        </div>
-
-        <div className="manager-request-summary">
-          <article>
-            <span>All requests</span>
-            <strong>{allRequests.length}</strong>
-          </article>
-          <article>
-            <span>Awaiting manager</span>
-            <strong>{pendingManagerRequests.length}</strong>
-          </article>
-          <article>
-            <span>Awaiting finance</span>
-            <strong>{pendingFinanceRequests.length}</strong>
-          </article>
-          <article>
-            <span>Approved</span>
-            <strong>{approvedRequests.length}</strong>
-          </article>
-        </div>
-
-        <div className="manager-table-toolbar">
-          <label className="manager-search">
-            <Search size={16} />
-            <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Search employee, product, supplier..."
-            />
-          </label>
-
-          <select
-            className="manager-filter-select"
-            value={requestFilter}
-            onChange={(event) => setRequestFilter(event.target.value)}
-            aria-label="Filter employee requests"
-          >
-            <option value="ALL">All requests</option>
-            <option value="PENDING_MANAGER">Awaiting manager</option>
-            <option value="PENDING_FINANCE">Awaiting finance</option>
-            <option value="APPROVED">Approved</option>
-            <option value="REJECTED">Rejected</option>
-          </select>
-
-          <button
-            className="manager-secondary-button"
-            onClick={exportRequests}
-          >
-            <FileText size={15} /> Export CSV
-          </button>
-        </div>
-
-        {loading ? (
-          <EmptyState
-            title="Loading employee requests"
-            message="Fetching the latest procurement requests from the server."
-          />
-        ) : (
-          renderRequestTable()
-        )}
-
-        <div className="manager-approval-guidance">
-          <ShieldCheck size={18} />
-          <div>
-            <strong>Approval workflow</strong>
-            <p>
-              Manager approval sends the request to Finance. Finance approval
-              is required before an invoice can be created. Rejected requests
-              cannot proceed through the workflow.
-            </p>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  function renderCalendar() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Team Calendar</h2>
-            <p>Sample upcoming milestones and activities.</p>
-          </div>
-          <CalendarDays size={22} />
-        </div>
-
-        {[
-          {
-            day: "21",
-            month: "OCT",
-            title: "Payment API delivery",
-            detail: "Finance Platform · Rahul Sharma",
-            type: "deadline",
-          },
-          {
-            day: "22",
-            month: "OCT",
-            title: "Dashboard UI review",
-            detail: "ETDOX Portal · Ananya Reddy",
-            type: "meeting",
-          },
-          {
-            day: "24",
-            month: "OCT",
-            title: "Regression testing",
-            detail: "ETDOX Portal · Arjun Rao",
-            type: "deadline",
-          },
-          {
-            day: "30",
-            month: "OCT",
-            title: "ETDOX Portal milestone",
-            detail: "Project milestone · All team",
-            type: "milestone",
-          },
-        ].map((event) => (
-          <div className="manager-event-row" key={event.title}>
-            <div className="manager-event-date">
-              <strong>{event.day}</strong>
-              <span>{event.month}</span>
-            </div>
-            <div className="manager-event-info">
-              <strong>{event.title}</strong>
-              <span>{event.detail}</span>
-            </div>
-            <span className={`manager-event-type event-${event.type}`}>
-              {event.type}
-            </span>
-          </div>
-        ))}
-      </section>
-    );
-  }
-
-  function renderSettings() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Manager Settings</h2>
-            <p>Your current session and procurement overview.</p>
-          </div>
-          <Settings size={22} />
-        </div>
-
-        {[
-          ["Signed-in user", currentUser.name || "Manager"],
-          ["Email", currentUser.email || "Not available"],
-          ["Role", currentUser.role || "manager"],
-          ["Backend API", API_BASE],
-          ["Requests loaded", String(allRequests.length)],
-          ["Data source", "ETDOX procurement API"],
-        ].map(([label, value]) => (
-          <div className="manager-setting-row" key={label}>
-            <div>
-              <strong>{label}</strong>
-              <p>{value}</p>
-            </div>
-            <span>Active</span>
-          </div>
-        ))}
-      </section>
-    );
-  }
-
-  function renderOverview() {
-    const completedTasks = tasks.filter(
-      (task) => task.status === "Completed"
-    ).length;
-
-    const openTasks = tasks.length - completedTasks;
-
-    return (
-      <>
-        <section className="manager-welcome">
-          <div className="manager-welcome-copy">
-            <span className="manager-eyebrow">MANAGEMENT WORKSPACE</span>
-            <h2>Great teams build great results.</h2>
-            <p>
-              Review employee procurement requests, track approvals, and
-              coordinate purchasing across ETDOX.
-            </p>
-            <button
-              className="manager-primary-button"
-              onClick={() => setActivePage("Approvals")}
-            >
-              Review employee requests <ArrowUpRight size={16} />
-            </button>
-          </div>
-
-          <div className="manager-welcome-art">
-            <div className="manager-art-orbit orbit-one" />
-            <div className="manager-art-orbit orbit-two" />
-            <div className="manager-art-icon">
-              <Users size={42} />
-            </div>
-            <div className="manager-art-chip">
-              <Package size={15} /> Procurement workflow
-            </div>
-          </div>
-        </section>
-
-        <section className="manager-stats-grid">
-          <article className="manager-stat-card">
-            <div className="manager-stat-heading">
-              <span>Total employee requests</span>
-              <div className="manager-stat-icon violet">
-                <Package size={20} />
-              </div>
-            </div>
-            <strong className="manager-stat-value">{allRequests.length}</strong>
-            <div className="manager-stat-foot">
-              <span>Loaded from backend</span>
-            </div>
-            <div className="manager-mini-track">
-              <span style={{ width: allRequests.length ? "100%" : "0%" }} />
-            </div>
-          </article>
-
-          <article className="manager-stat-card">
-            <div className="manager-stat-heading">
-              <span>Awaiting your approval</span>
-              <div className="manager-stat-icon orange">
-                <Clock3 size={20} />
-              </div>
-            </div>
-            <strong className="manager-stat-value">
-              {pendingManagerRequests.length}
-            </strong>
-            <div className="manager-stat-foot">
-              <span className="manager-warning">
-                <CircleAlert size={14} /> Needs review
-              </span>
-              <button onClick={() => setActivePage("Approvals")}>
-                Review <ArrowUpRight size={13} />
-              </button>
-            </div>
-            <div className="manager-mini-track mini-orange">
-              <span
-                style={{
-                  width: `${
-                    allRequests.length
-                      ? (pendingManagerRequests.length / allRequests.length) *
-                        100
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-          </article>
-
-          <article className="manager-stat-card">
-            <div className="manager-stat-heading">
-              <span>Waiting for Finance</span>
-              <div className="manager-stat-icon blue">
-                <IndianRupee size={20} />
-              </div>
-            </div>
-            <strong className="manager-stat-value">
-              {pendingFinanceRequests.length}
-            </strong>
-            <div className="manager-stat-foot">
-              <span>Manager-approved requests</span>
-            </div>
-            <div className="manager-mini-track mini-blue">
-              <span
-                style={{
-                  width: `${
-                    allRequests.length
-                      ? (pendingFinanceRequests.length / allRequests.length) *
-                        100
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-          </article>
-
-          <article className="manager-stat-card">
-            <div className="manager-stat-heading">
-              <span>Requested purchase value</span>
-              <div className="manager-stat-icon green">
-                <TrendingUp size={20} />
-              </div>
-            </div>
-            <strong className="manager-stat-value manager-stat-money">
-              {formatMoney(totalRequestedValue)}
-            </strong>
-            <div className="manager-stat-foot">
-              <span>All request statuses</span>
-            </div>
-            <div className="manager-mini-track mini-green">
-              <span style={{ width: totalRequestedValue ? "100%" : "0%" }} />
-            </div>
-          </article>
-        </section>
-
-        <section className="manager-charts-grid">
-          <div className="manager-panel">
-            <div className="manager-section-heading">
-              <div>
-                <h2>Team Productivity</h2>
-                <p>Sample daily tasks versus planned tasks.</p>
-              </div>
-              <span className="manager-chart-period">
-                This week <ChevronDown size={14} />
-              </span>
-            </div>
-
-            <div className="manager-chart-legend">
-              <span>
-                <i className="legend-completed" /> Completed
-              </span>
-              <span>
-                <i className="legend-planned" /> Planned
-              </span>
-            </div>
-
-            <div className="manager-chart">
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={productivityData}>
-                  <defs>
-                    <linearGradient
-                      id="managerCompletedFill"
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop
-                        offset="0%"
-                        stopColor="#685eea"
-                        stopOpacity={0.2}
-                      />
-                      <stop
-                        offset="100%"
-                        stopColor="#685eea"
-                        stopOpacity={0}
-                      />
-                    </linearGradient>
-                  </defs>
-
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    vertical={false}
-                    stroke="#edf0f6"
-                  />
-
-                  <XAxis
-                    dataKey="day"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#9298aa", fontSize: 11 }}
-                  />
-
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#9298aa", fontSize: 11 }}
-                  />
-
-                  <Tooltip
-                    contentStyle={{
-                      borderRadius: 10,
-                      border: "1px solid #e9ebf3",
-                      fontSize: 12,
-                    }}
-                  />
-
-                  <Area
-                    type="monotone"
-                    dataKey="planned"
-                    name="Planned"
-                    stroke="#b4b0f7"
-                    fill="transparent"
-                    strokeWidth={2}
-                    strokeDasharray="5 5"
-                  />
-
-                  <Area
-                    type="monotone"
-                    dataKey="completed"
-                    name="Completed"
-                    stroke="#685eea"
-                    fill="url(#managerCompletedFill)"
-                    strokeWidth={2.5}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="manager-panel manager-workload-panel">
-            <div className="manager-section-heading">
-              <div>
-                <h2>Procurement Summary</h2>
-                <p>Current request approval distribution.</p>
-              </div>
-              <button
-                className="manager-more-button"
-                onClick={() => loadDashboard(true)}
-                aria-label="Refresh procurement data"
-              >
-                <RefreshCw size={18} />
-              </button>
-            </div>
-
-            <div className="manager-workload-total">
-              <strong>{pendingManagerRequests.length}</strong>
-              <span>Awaiting manager review</span>
-            </div>
-
-            <div className="manager-workload-legend">
-              <div>
-                <i className="workload-pending-dot" />
-                <span>Manager review</span>
-                <strong>{pendingManagerRequests.length}</strong>
-              </div>
-              <div>
-                <i className="workload-progress-dot" />
-                <span>Finance review</span>
-                <strong>{pendingFinanceRequests.length}</strong>
-              </div>
-              <div>
-                <i className="workload-completed-dot" />
-                <span>Approved</span>
-                <strong>{approvedRequests.length}</strong>
-              </div>
-            </div>
-
-            <button
-              className="manager-full-width-button"
-              onClick={() => setActivePage("Approvals")}
-            >
-              Open procurement requests <ArrowUpRight size={15} />
-            </button>
-          </div>
-        </section>
-
-        <section className="manager-panel manager-task-panel">
-          <div className="manager-section-heading">
-            <div>
-              <h2>Latest Employee Requests</h2>
-              <p>Recent procurement requests from your employees.</p>
-            </div>
-            <button
-              className="manager-text-button"
-              onClick={() => setActivePage("Approvals")}
-            >
-              View all requests <ArrowUpRight size={15} />
-            </button>
-          </div>
-
-          <div className="manager-table-toolbar">
-            <label className="manager-search">
-              <Search size={16} />
-              <input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search employee or product..."
-              />
-            </label>
-
-            <button
-              className="manager-secondary-button"
-              onClick={exportRequests}
-            >
-              <FileText size={15} /> Export CSV
-            </button>
-          </div>
-
-          {loading ? (
-            <EmptyState
-              title="Loading requests"
-              message="Contacting the procurement API."
-            />
-          ) : (
-            renderRequestTable(true)
-          )}
-        </section>
-
-        <section className="manager-panel manager-approvals-panel">
-          <div className="manager-section-heading">
-            <div>
-              <h2>Requests Awaiting Your Decision</h2>
-              <p>
-                These requests are waiting for manager approval before Finance
-                review.
-              </p>
-            </div>
-            <span className="manager-count-pill">
-              {pendingManagerRequests.length} pending
-            </span>
-          </div>
-
-          {pendingManagerRequests.length === 0 ? (
-            <EmptyState
-              title="You're all caught up"
-              message="No employee requests currently need manager approval."
-            />
-          ) : (
-            pendingManagerRequests.slice(0, 4).map((request) => {
-              const id = getRequestId(request);
-
-              return (
-                <div className="manager-approval-row" key={id}>
-                  <div className="manager-avatar avatar-violet">
-                    {getRequesterName(request)
-                      .split(" ")
-                      .map((part) => part[0])
-                      .join("")
-                      .slice(0, 2)
-                      .toUpperCase()}
-                  </div>
-
-                  <div className="manager-approval-info">
-                    <strong>{getRequesterName(request)}</strong>
-                    <span>{getProductName(request)}</span>
-                    <small>
-                      {formatMoney(
-                        getRequestAmount(request),
-                        request.currency || "INR"
-                      )}{" "}
-                      · {getDepartment(request)}
-                    </small>
-                  </div>
-
-                  <div className="manager-approval-actions">
-                    <button
-                      className="manager-reject-button"
-                      disabled={processingId === id}
-                      onClick={() =>
-                        handleManagerDecision(request, "REJECT")
-                      }
-                    >
-                      Reject
-                    </button>
-                    <button
-                      className="manager-approve-button"
-                      disabled={processingId === id}
-                      onClick={() =>
-                        handleManagerDecision(request, "APPROVE")
-                      }
-                    >
-                      <CheckCircle2 size={15} /> Approve
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </section>
-      </>
-    );
-  }
-
-  function renderBudgetPage() {
-    return (
-      <section className="manager-panel">
-        <div className="manager-section-heading">
-          <div>
-            <h2>Department Budgets</h2>
-            <p>
-              Budget allocations and available balances returned by the
-              procurement API.
-            </p>
-          </div>
-
-          <button
-            className="manager-secondary-button"
-            onClick={() => loadDashboard(true)}
-          >
-            <RefreshCw size={15} /> Refresh
-          </button>
-        </div>
-
-        {budgets.length === 0 ? (
-          <EmptyState
-            title="No budget information available"
-            message="Check that GET /api/procurement/budgets returns a budgets array."
-          />
-        ) : (
-          <div className="manager-team-grid">
-            {budgets.map((budget, index) => {
-              const allocated = Number(budget.allocated || 0);
-              const spent = Number(budget.spent || 0);
-              const committed = Number(budget.committed || 0);
-              const available = Number(
-                budget.available ?? allocated - spent - committed
-              );
-
-              const usedPercent = allocated
-                ? Math.min(
-                    100,
-                    ((spent + committed) / allocated) * 100
-                  )
-                : 0;
-
-              return (
-                <article
-                  className="manager-member-card"
-                  key={budget.id || budget._id || budget.department || index}
-                >
-                  <div className="manager-member-top">
-                    <div className="manager-stat-icon blue">
-                      <Building2 size={20} />
-                    </div>
-                    <span className="manager-count-pill">
-                      {Math.round(usedPercent)}% used
-                    </span>
-                  </div>
-
-                  <h3>{budget.department || "Department"}</h3>
-                  <p>Department procurement budget</p>
-
-                  <div className="manager-project-progress-label">
-                    <span>Allocated</span>
-                    <strong>
-                      {formatMoney(allocated, budget.currency || "INR")}
-                    </strong>
-                  </div>
-
-                  <div className="manager-progress-track progress-blue">
-                    <span style={{ width: `${usedPercent}%` }} />
-                  </div>
-
-                  <div className="manager-member-footer">
-                    <span>Spent</span>
-                    <strong>
-                      {formatMoney(spent, budget.currency || "INR")}
-                    </strong>
-                  </div>
-
-                  <div className="manager-member-footer">
-                    <span>Committed</span>
-                    <strong>
-                      {formatMoney(committed, budget.currency || "INR")}
-                    </strong>
-                  </div>
-
-                  <div className="manager-member-footer">
-                    <span>Available</span>
-                    <strong>
-                      {formatMoney(available, budget.currency || "INR")}
-                    </strong>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
-    );
-  }
-
-  function renderContent() {
-    switch (activePage) {
-      case "Team":
-        return renderTeam();
-
-      case "Projects":
-        return renderProjects();
-
-      case "Tasks":
-        return renderTasks();
-
-      case "Approvals":
-        return renderApprovals();
-
-      case "Calendar":
-        return renderCalendar();
-
-      case "Settings":
-        return renderSettings();
-
-      case "Budgets":
-        return renderBudgetPage();
-
-      default:
-        return renderOverview();
-    }
-  }
-
-  function logout() {
-    ["token", "accessToken", "authToken", "user"].forEach((k) => {
-      localStorage.removeItem(k);
-      sessionStorage.removeItem(k);
-    });
-    window.location.href = "/login";
-  }
+  const isManagerPending = (request) =>
+    MANAGER_PENDING_STATUSES.includes(getStatus(request));
 
   return (
-    <div className="manager-dashboard">
-      {mobileMenuOpen && (
-        <button
-          className="manager-overlay"
-          aria-label="Close navigation"
-          onClick={() => setMobileMenuOpen(false)}
-        />
-      )}
+    <div className="manager-app">
+      <style>{`
+        * { box-sizing: border-box; }
 
-      <aside
-        className={`manager-sidebar ${
-          mobileMenuOpen ? "manager-sidebar-open" : ""
-        }`}
-      >
+        .manager-app {
+          min-height: 100vh;
+          display: flex;
+          background: #f5f7fb;
+          color: #172033;
+          font-family: Inter, Arial, sans-serif;
+        }
+
+        .manager-sidebar {
+          width: 250px;
+          background: #111c35;
+          color: white;
+          padding: 25px 16px;
+          display: flex;
+          flex-direction: column;
+          flex-shrink: 0;
+        }
+
+        .manager-brand {
+          display: flex;
+          align-items: center;
+          gap: 11px;
+          padding: 0 10px 30px;
+          font-size: 21px;
+          font-weight: 800;
+        }
+
+        .manager-brand-icon {
+          width: 38px;
+          height: 38px;
+          border-radius: 11px;
+          display: grid;
+          place-items: center;
+          background: #3675f5;
+        }
+
+        .manager-nav-label {
+          color: #8492ae;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 1.5px;
+          padding: 10px 12px;
+        }
+
+        .manager-nav {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+          border: 0;
+          border-radius: 9px;
+          padding: 13px 12px;
+          margin: 3px 0;
+          background: transparent;
+          color: #aebbd2;
+          font-size: 13px;
+          font-weight: 600;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .manager-nav.active,
+        .manager-nav:hover {
+          background: #263b65;
+          color: white;
+        }
+
+        .manager-sidebar-bottom {
+          margin-top: auto;
+          border-top: 1px solid #2b3955;
+          padding-top: 16px;
+        }
+
+        .manager-main {
+          min-width: 0;
+          flex: 1;
+          padding: 28px 34px;
+        }
+
+        .manager-topbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 15px;
+          margin-bottom: 28px;
+        }
+
+        .manager-heading h1 {
+          margin: 0 0 7px;
+          font-size: 25px;
+          color: #172033;
+        }
+
+        .manager-heading p {
+          margin: 0;
+          color: #8490a4;
+          font-size: 13px;
+        }
+
+        .manager-top-actions {
+          display: flex;
+          align-items: center;
+          gap: 13px;
+        }
+
+        .manager-icon-btn {
+          border: 1px solid #e5e9f1;
+          background: white;
+          border-radius: 10px;
+          width: 40px;
+          height: 40px;
+          display: grid;
+          place-items: center;
+          cursor: pointer;
+          color: #59677e;
+        }
+
+        .manager-icon-btn:disabled {
+          opacity: .5;
+          cursor: not-allowed;
+        }
+
+        .manager-profile {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          background: white;
+          border: 1px solid #e7ebf2;
+          padding: 7px 12px;
+          border-radius: 11px;
+        }
+
+        .manager-avatar {
+          width: 33px;
+          height: 33px;
+          display: grid;
+          place-items: center;
+          border-radius: 50%;
+          color: white;
+          background: #3675f5;
+          font-weight: 700;
+        }
+
+        .manager-profile strong {
+          display: block;
+          font-size: 12px;
+        }
+
+        .manager-profile small {
+          color: #8a96a8;
+          font-size: 10px;
+        }
+
+        .manager-stats {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 17px;
+          margin-bottom: 25px;
+        }
+
+        .manager-stat {
+          background: white;
+          border: 1px solid #e9edf4;
+          border-radius: 13px;
+          padding: 19px;
+        }
+
+        .manager-stat-top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          color: #7d899c;
+          font-size: 12px;
+          font-weight: 600;
+          gap: 8px;
+        }
+
+        .manager-stat-icon {
+          width: 37px;
+          height: 37px;
+          border-radius: 10px;
+          display: grid;
+          place-items: center;
+          background: #edf3ff;
+          color: #3675f5;
+          flex-shrink: 0;
+        }
+
+        .manager-stat h2 {
+          margin: 13px 0 5px;
+          font-size: 25px;
+        }
+
+        .manager-stat small {
+          color: #929daf;
+          font-size: 11px;
+        }
+
+        .manager-panel {
+          background: white;
+          border: 1px solid #e9edf4;
+          border-radius: 13px;
+          overflow: hidden;
+        }
+
+        .manager-panel-head {
+          padding: 19px 21px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 15px;
+          border-bottom: 1px solid #edf0f5;
+        }
+
+        .manager-panel-head h2 {
+          margin: 0 0 5px;
+          font-size: 16px;
+        }
+
+        .manager-panel-head p {
+          margin: 0;
+          color: #929daf;
+          font-size: 11px;
+        }
+
+        .manager-controls {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .manager-search {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid #e3e8f0;
+          border-radius: 8px;
+          padding: 0 10px;
+          background: white;
+        }
+
+        .manager-search input {
+          width: 180px;
+          border: 0;
+          outline: 0;
+          padding: 10px 0;
+          font-size: 12px;
+        }
+
+        .manager-select {
+          border: 1px solid #e3e8f0;
+          border-radius: 8px;
+          padding: 9px 11px;
+          background: white;
+          color: #526078;
+          font-size: 12px;
+          outline: 0;
+        }
+
+        .manager-table-wrap {
+          overflow-x: auto;
+        }
+
+        .manager-table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 850px;
+        }
+
+        .manager-table th {
+          padding: 13px 16px;
+          text-align: left;
+          color: #8b96a8;
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: .6px;
+          background: #fafbfd;
+          border-bottom: 1px solid #edf0f5;
+        }
+
+        .manager-table td {
+          padding: 15px 16px;
+          border-bottom: 1px solid #f0f2f6;
+          font-size: 12px;
+          color: #536078;
+        }
+
+        .manager-table tr:last-child td {
+          border-bottom: 0;
+        }
+
+        .manager-person {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+        }
+
+        .manager-person-avatar {
+          width: 31px;
+          height: 31px;
+          border-radius: 9px;
+          display: grid;
+          place-items: center;
+          background: #edf3ff;
+          color: #3675f5;
+          font-weight: 700;
+          flex-shrink: 0;
+        }
+
+        .manager-person strong,
+        .manager-product strong {
+          display: block;
+          color: #27344a;
+          font-size: 12px;
+          margin-bottom: 4px;
+        }
+
+        .manager-person small,
+        .manager-product small {
+          display: block;
+          color: #9aa4b4;
+          font-size: 10px;
+        }
+
+        .manager-status {
+          display: inline-block;
+          border-radius: 20px;
+          padding: 6px 9px;
+          font-size: 9px;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+
+        .manager-status.pending {
+          background: #fff5df;
+          color: #b77a13;
+        }
+
+        .manager-status.approved {
+          background: #e6f8ef;
+          color: #16844e;
+        }
+
+        .manager-status.rejected {
+          background: #ffe9e9;
+          color: #cf4444;
+        }
+
+        .manager-status.finance {
+          background: #e9efff;
+          color: #456bd3;
+        }
+
+        .manager-actions {
+          display: flex;
+          gap: 6px;
+        }
+
+        .manager-action {
+          border: 1px solid #e5e9f1;
+          background: white;
+          color: #64728a;
+          border-radius: 7px;
+          width: 30px;
+          height: 30px;
+          display: grid;
+          place-items: center;
+          cursor: pointer;
+        }
+
+        .manager-action.approve {
+          color: #16844e;
+        }
+
+        .manager-action.reject {
+          color: #cf4444;
+        }
+
+        .manager-action:hover {
+          background: #f5f7fb;
+        }
+
+        .manager-action:disabled {
+          opacity: .5;
+          cursor: not-allowed;
+        }
+
+        .manager-empty,
+        .manager-loading {
+          padding: 55px 20px;
+          text-align: center;
+          color: #8995a8;
+          font-size: 13px;
+        }
+
+        .manager-empty svg {
+          margin-bottom: 10px;
+        }
+
+        .manager-alert {
+          padding: 12px 15px;
+          border-radius: 9px;
+          margin-bottom: 17px;
+          font-size: 12px;
+          display: flex;
+          align-items: center;
+          gap: 9px;
+        }
+
+        .manager-alert.error {
+          color: #b52c35;
+          background: #fff0f0;
+        }
+
+        .manager-alert.success {
+          color: #13764a;
+          background: #e9f8f0;
+        }
+
+        .manager-btn {
+          border: 0;
+          border-radius: 8px;
+          padding: 10px 14px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          font-size: 11px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .manager-btn.primary {
+          background: #3675f5;
+          color: white;
+        }
+
+        .manager-btn.green {
+          background: #16844e;
+          color: white;
+        }
+
+        .manager-btn.red {
+          background: #d94a4a;
+          color: white;
+        }
+
+        .manager-btn.light {
+          background: #f0f3f8;
+          color: #59677e;
+        }
+
+        .manager-btn:disabled {
+          opacity: .55;
+          cursor: not-allowed;
+        }
+
+        .manager-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(13, 24, 44, .55);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 18px;
+          z-index: 100;
+        }
+
+        .manager-modal {
+          width: 100%;
+          max-width: 540px;
+          max-height: 90vh;
+          overflow-y: auto;
+          background: white;
+          border-radius: 15px;
+          padding: 24px;
+          box-shadow: 0 20px 60px rgba(0,0,0,.2);
+        }
+
+        .manager-modal-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 20px;
+        }
+
+        .manager-modal-head h2 {
+          margin: 0;
+          font-size: 18px;
+        }
+
+        .manager-close {
+          border: 0;
+          background: #f1f3f7;
+          width: 31px;
+          height: 31px;
+          border-radius: 8px;
+          cursor: pointer;
+        }
+
+        .manager-close:disabled {
+          opacity: .5;
+          cursor: not-allowed;
+        }
+
+        .manager-details {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 13px;
+        }
+
+        .manager-detail {
+          padding: 12px;
+          border: 1px solid #edf0f5;
+          border-radius: 9px;
+          min-width: 0;
+        }
+
+        .manager-detail small {
+          display: block;
+          color: #929daf;
+          font-size: 10px;
+          margin-bottom: 6px;
+        }
+
+        .manager-detail strong {
+          font-size: 12px;
+          color: #27344a;
+          overflow-wrap: anywhere;
+        }
+
+        .manager-reason {
+          width: 100%;
+          min-height: 90px;
+          resize: vertical;
+          border: 1px solid #e1e6ef;
+          border-radius: 9px;
+          padding: 12px;
+          font: inherit;
+          font-size: 12px;
+          outline: 0;
+        }
+
+        .manager-reason:focus {
+          border-color: #3675f5;
+        }
+
+        .manager-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 9px;
+          margin-top: 18px;
+          flex-wrap: wrap;
+        }
+
+        .manager-mobile-menu {
+          display: none;
+        }
+
+        @media(max-width: 1050px) {
+          .manager-stats {
+            grid-template-columns: repeat(2, 1fr);
+          }
+
+          .manager-main {
+            padding: 22px;
+          }
+        }
+
+        @media(max-width: 700px) {
+          .manager-sidebar {
+            position: fixed;
+            inset: 0 auto 0 0;
+            z-index: 80;
+            transform: translateX(-100%);
+            transition: transform .2s ease;
+          }
+
+          .manager-sidebar.open {
+            transform: translateX(0);
+          }
+
+          .manager-main {
+            padding: 18px 13px;
+          }
+
+          .manager-mobile-menu {
+            display: grid;
+          }
+
+          .manager-heading h1 {
+            font-size: 20px;
+          }
+
+          .manager-profile {
+            display: none;
+          }
+
+          .manager-stats {
+            gap: 9px;
+          }
+
+          .manager-stat {
+            padding: 13px;
+          }
+
+          .manager-stat h2 {
+            font-size: 21px;
+          }
+
+          .manager-panel-head {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+
+          .manager-search input {
+            width: 130px;
+          }
+
+          .manager-details {
+            grid-template-columns: 1fr;
+          }
+
+          .manager-topbar {
+            align-items: flex-start;
+          }
+
+          .manager-top-actions {
+            gap: 7px;
+          }
+        }
+      `}</style>
+
+      {/* Sidebar */}
+      <aside className={`manager-sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="manager-brand">
-          <div className="manager-brand-mark">E</div>
-          <div className="manager-brand-copy">
-            <strong>ETDOX</strong>
-            <span>MANAGEMENT WORKSPACE</span>
+          <div className="manager-brand-icon">
+            <Building2 size={21} />
           </div>
-          <button
-            className="manager-close-menu"
-            aria-label="Close menu"
-            onClick={() => setMobileMenuOpen(false)}
-          >
-            <X size={19} />
-          </button>
+          ETDOX
         </div>
 
-        <div className="manager-sidebar-label">WORKSPACE</div>
+        <div className="manager-nav-label">WORKSPACE</div>
 
-        <nav className="manager-nav">
-          {[
-            ...navItems,
-            { label: "Budgets", icon: IndianRupee },
-          ].map((item) => {
-            const Icon = item.icon;
+        {navItems.map((item) => {
+          const Icon = item.icon;
 
-            return (
-              <button
-                key={item.label}
-                className={`manager-nav-item ${
-                  activePage === item.label ? "active" : ""
-                }`}
-                onClick={() => {
-                  setActivePage(item.label);
-                  setMobileMenuOpen(false);
-                }}
-              >
-                <Icon size={19} />
-                <span>{item.label}</span>
+          return (
+            <button
+              key={item.name}
+              className={`manager-nav ${
+                activeTab === item.name ? "active" : ""
+              }`}
+              onClick={() => {
+                setActiveTab(item.name);
+                setStatusFilter("ALL");
+                setSidebarOpen(false);
+              }}
+            >
+              <Icon size={17} />
 
-                {item.label === "Approvals" &&
-                  pendingManagerRequests.length > 0 && (
-                    <span className="manager-nav-count">
-                      {pendingManagerRequests.length}
-                    </span>
-                  )}
-              </button>
-            );
-          })}
-        </nav>
+              {item.name}
+
+              {item.name === "Pending Requests" &&
+                managerPending.length > 0 && (
+                  <span style={{ marginLeft: "auto" }}>
+                    {managerPending.length}
+                  </span>
+                )}
+            </button>
+          );
+        })}
 
         <div className="manager-sidebar-bottom">
-          <div className="manager-help-card">
-            <div className="manager-help-icon">
-              <Target size={19} />
-            </div>
-            <strong>Keep purchasing on track</strong>
-            <p>
-              Review employee orders and help departments move through
-              approvals.
-            </p>
-            <button onClick={() => setActivePage("Approvals")}>
-              Review requests <ArrowUpRight size={13} />
-            </button>
-          </div>
-
-          <button className="manager-logout" onClick={logout}>
-            <LogOut size={18} /> Log out
+          <button className="manager-nav" onClick={logout}>
+            <LogOut size={17} />
+            Logout
           </button>
         </div>
       </aside>
 
+      {/* Main dashboard */}
       <main className="manager-main">
         <header className="manager-topbar">
-          <div className="manager-topbar-left">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
             <button
-              className="manager-menu-button"
-              aria-label="Open menu"
-              onClick={() => setMobileMenuOpen(true)}
+              className="manager-icon-btn manager-mobile-menu"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label="Toggle navigation"
             >
-              <Menu size={21} />
+              {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
             </button>
 
-            <div>
-              <div className="manager-breadcrumb">
-                Workspace <span>/</span> Manager <span>/</span> {activePage}
-              </div>
-              <h1>{activePage}</h1>
+            <div className="manager-heading">
+              <h1>
+                {activeTab === "Overview"
+                  ? "Manager Dashboard"
+                  : activeTab}
+              </h1>
+
+              <p>
+                Review employee procurement requests and make decisions.
+              </p>
             </div>
           </div>
 
-          <div className="manager-topbar-right">
-            <div className="manager-topbar-date">
-              <CalendarDays size={16} />
-              <span>
-                {new Date().toLocaleDateString("en-IN", {
-                  month: "long",
-                  year: "numeric",
-                })}
-              </span>
-            </div>
-
+          <div className="manager-top-actions">
             <button
-              className="manager-notification"
-              aria-label="Pending manager approvals"
-              onClick={() => setActivePage("Approvals")}
+              className="manager-icon-btn"
+              title="Refresh"
+              onClick={loadDashboard}
+              disabled={loading}
             >
-              <Bell size={19} />
-              {pendingManagerRequests.length > 0 && <span />}
+              <RefreshCw
+                size={16}
+                className={loading ? "manager-spin" : ""}
+              />
             </button>
 
-            <div className="manager-user-profile">
-              <div className="manager-user-avatar">
-                {(currentUser.name || "Manager")
-                  .split(" ")
-                  .map((part) => part[0])
-                  .join("")
-                  .slice(0, 2)
-                  .toUpperCase()}
+            <button
+              className="manager-icon-btn"
+              title="Notifications"
+              type="button"
+            >
+              <Bell size={17} />
+            </button>
+
+            <div className="manager-profile">
+              <div className="manager-avatar">
+                {managerName.charAt(0).toUpperCase()}
               </div>
+
               <div>
-                <strong>{currentUser.name || "Manager"}</strong>
-                <span>{currentUser.role || "manager"}</span>
+                <strong>{managerName}</strong>
+                <small>Manager</small>
               </div>
+
+              <ChevronDown size={14} color="#8490a4" />
             </div>
           </div>
         </header>
 
-        {notice && (
-          <div className="manager-toast" role="status">
-            <CheckCircle2 size={17} />
-            {notice}
+        {/* Error message */}
+        {error && (
+          <div className="manager-alert error">
+            <AlertCircle size={16} />
+
+            <span>{error}</span>
+
             <button
-              onClick={() => setNotice("")}
-              aria-label="Dismiss notification"
+              onClick={() => setError("")}
+              style={{
+                marginLeft: "auto",
+                border: 0,
+                background: "none",
+                cursor: "pointer",
+              }}
+              aria-label="Close error"
             >
               <X size={15} />
             </button>
           </div>
         )}
 
-        {error && (
-          <div className="manager-api-error" role="alert">
-            <CircleAlert size={19} />
-            <div>
-              <strong>Procurement API error</strong>
-              <p>{error}</p>
-              <small>
-                Verify that the backend is running on {API_BASE} and that the
-                required API routes are registered.
-              </small>
-            </div>
+        {/* Success message */}
+        {success && (
+          <div className="manager-alert success">
+            <CheckCircle2 size={16} />
+
+            <span>{success}</span>
+
             <button
-              className="manager-secondary-button"
-              onClick={() => loadDashboard(true)}
-              disabled={refreshing}
+              onClick={() => setSuccess("")}
+              style={{
+                marginLeft: "auto",
+                border: 0,
+                background: "none",
+                cursor: "pointer",
+              }}
+              aria-label="Close success message"
             >
-              <RefreshCw size={14} /> Retry
+              <X size={15} />
             </button>
           </div>
         )}
 
-        <div className="manager-page-content">
-          {renderContent()}
-        </div>
+        {/* Overview statistics */}
+        {activeTab === "Overview" && (
+          <section className="manager-stats">
+            <div className="manager-stat">
+              <div className="manager-stat-top">
+                Pending My Approval
 
-        <footer className="manager-footer">
-          <span>© 2026 ETDOX. All rights reserved.</span>
-          <span>Manager Workspace · Procurement API</span>
-        </footer>
-      </main>
-
-      {selectedRequest && (
-        <div
-          className="manager-modal-overlay"
-          onClick={() => setSelectedRequest(null)}
-          role="presentation"
-        >
-          <section
-            className="manager-request-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="manager-request-modal-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="manager-section-heading">
-              <div>
-                <h2 id="manager-request-modal-title">Procurement Request</h2>
-                <p>
-                  Request ID: {getRequestId(selectedRequest)}
-                </p>
+                <span className="manager-stat-icon">
+                  <Clock size={18} />
+                </span>
               </div>
 
-              <button
-                className="manager-more-button"
-                aria-label="Close details"
-                onClick={() => setSelectedRequest(null)}
+              <h2>{managerPending.length}</h2>
+
+              <small>Requests awaiting manager review</small>
+            </div>
+
+            <div className="manager-stat">
+              <div className="manager-stat-top">
+                Forwarded to Finance
+
+                <span className="manager-stat-icon">
+                  <CheckCircle2 size={18} />
+                </span>
+              </div>
+
+              <h2>{financePending.length}</h2>
+
+              <small>Approved by manager</small>
+            </div>
+
+            <div className="manager-stat">
+              <div className="manager-stat-top">
+                Approved Requests
+
+                <span className="manager-stat-icon">
+                  <ClipboardList size={18} />
+                </span>
+              </div>
+
+              <h2>{approvedRequests.length}</h2>
+
+              <small>Manager-approved or completed</small>
+            </div>
+
+            <div className="manager-stat">
+              <div className="manager-stat-top">
+                Rejected Requests
+
+                <span className="manager-stat-icon">
+                  <XCircle size={18} />
+                </span>
+              </div>
+
+              <h2>{rejectedRequests.length}</h2>
+
+              <small>Requests rejected</small>
+            </div>
+          </section>
+        )}
+
+        {/* Procurement request table */}
+        <section className="manager-panel">
+          <div className="manager-panel-head">
+            <div>
+              <h2>
+                {activeTab === "Overview"
+                  ? "Employee Procurement Requests"
+                  : activeTab}
+              </h2>
+
+              <p>
+                {activeTab === "Pending Requests"
+                  ? "Review requests that require your approval."
+                  : activeTab === "Approval History"
+                  ? "Previously reviewed procurement requests."
+                  : "Requests submitted by employees in your organization."}
+              </p>
+            </div>
+
+            <div className="manager-controls">
+              <div className="manager-search">
+                <Search size={15} color="#8d98aa" />
+
+                <input
+                  placeholder="Search requests..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
+
+              <select
+                className="manager-select"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
               >
-                <X size={19} />
+                <option value="ALL">All statuses</option>
+                <option value="PENDING_MANAGER">Pending Manager</option>
+                <option value="SUBMITTED">Submitted</option>
+                <option value="MANAGER_PENDING">Manager Pending</option>
+                <option value="MANAGER_APPROVED">Manager Approved</option>
+                <option value="MANAGER_REJECTED">Manager Rejected</option>
+                <option value="PENDING_FINANCE">Pending Finance</option>
+                <option value="FINANCE_APPROVED">Finance Approved</option>
+                <option value="FINANCE_REJECTED">Finance Rejected</option>
+                <option value="COMPLETED">Completed</option>
+              </select>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="manager-loading">
+              <RefreshCw size={22} />
+              <p>Loading procurement requests...</p>
+            </div>
+          ) : filteredRequests.length === 0 ? (
+            <div className="manager-empty">
+              <ClipboardList size={35} />
+
+              <p>No procurement requests found.</p>
+
+              <small>
+                Employee requests will appear here when they are successfully
+                submitted.
+              </small>
+            </div>
+          ) : (
+            <div className="manager-table-wrap">
+              <table className="manager-table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Product</th>
+                    <th>Supplier</th>
+                    <th>Department</th>
+                    <th>Amount</th>
+                    <th>Date</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredRequests.map((request, index) => {
+                    const status = getStatus(request);
+                    const isPending = isManagerPending(request);
+
+                    return (
+                      <tr key={getRequestId(request) || index}>
+                        <td>
+                          <div className="manager-person">
+                            <div className="manager-person-avatar">
+                              {getEmployee(request)
+                                .charAt(0)
+                                .toUpperCase()}
+                            </div>
+
+                            <div>
+                              <strong>{getEmployee(request)}</strong>
+
+                              <small>
+                                {request.employeeId ||
+                                  request.employee_id ||
+                                  request.employee?.employeeId ||
+                                  request.requester?.email ||
+                                  request.employeeEmail ||
+                                  request.employee_email ||
+                                  "Employee"}
+                              </small>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td>
+                          <div className="manager-product">
+                            <strong>{getProduct(request)}</strong>
+
+                            <small>
+                              Qty: {request.quantity ?? "—"}
+                            </small>
+                          </div>
+                        </td>
+
+                        <td>{getSupplier(request)}</td>
+
+                        <td>{getDepartment(request)}</td>
+
+                        <td>
+                          <strong style={{ color: "#27344a" }}>
+                            {formatCurrency(getAmount(request))}
+                          </strong>
+                        </td>
+
+                        <td>{formatDate(getRequestDate(request))}</td>
+
+                        <td>
+                          <span
+                            className={`manager-status ${statusStyle(
+                              status
+                            )}`}
+                          >
+                            {status.replaceAll("_", " ")}
+                          </span>
+                        </td>
+
+                        <td>
+                          <div className="manager-actions">
+                            <button
+                              className="manager-action"
+                              title="View details"
+                              onClick={() => {
+                                setSelectedRequest(request);
+                                setDecision("");
+                                setReason("");
+                                setError("");
+                              }}
+                            >
+                              <Eye size={15} />
+                            </button>
+
+                            {isPending && (
+                              <>
+                                <button
+                                  className="manager-action approve"
+                                  title="Approve request"
+                                  onClick={() =>
+                                    openDecision(request, "approve")
+                                  }
+                                >
+                                  <Check size={15} />
+                                </button>
+
+                                <button
+                                  className="manager-action reject"
+                                  title="Reject request"
+                                  onClick={() =>
+                                    openDecision(request, "reject")
+                                  }
+                                >
+                                  <Ban size={15} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* Request details and decision modal */}
+      {selectedRequest && (
+        <div
+          className="manager-modal-backdrop"
+          onClick={closeModal}
+        >
+          <div
+            className="manager-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="manager-modal-head">
+              <h2>
+                {decision
+                  ? decision === "approve"
+                    ? "Approve Request"
+                    : "Reject Request"
+                  : "Request Details"}
+              </h2>
+
+              <button
+                className="manager-close"
+                disabled={submitting}
+                onClick={closeModal}
+                aria-label="Close modal"
+              >
+                <X size={17} />
               </button>
             </div>
 
-            <div className="manager-request-detail-grid">
-              <div>
-                <span>Employee</span>
-                <strong>{getRequesterName(selectedRequest)}</strong>
+            <div className="manager-details">
+              <div className="manager-detail">
+                <small>Employee</small>
+                <strong>{getEmployee(selectedRequest)}</strong>
               </div>
 
-              <div>
-                <span>Email</span>
-                <strong>
-                  {getRequesterEmail(selectedRequest) || "Not provided"}
-                </strong>
+              <div className="manager-detail">
+                <small>Product</small>
+                <strong>{getProduct(selectedRequest)}</strong>
               </div>
 
-              <div>
-                <span>Department</span>
+              <div className="manager-detail">
+                <small>Supplier</small>
+                <strong>{getSupplier(selectedRequest)}</strong>
+              </div>
+
+              <div className="manager-detail">
+                <small>Department</small>
                 <strong>{getDepartment(selectedRequest)}</strong>
               </div>
 
-              <div>
-                <span>Product</span>
-                <strong>{getProductName(selectedRequest)}</strong>
+              <div className="manager-detail">
+                <small>Quantity</small>
+                <strong>{selectedRequest.quantity ?? "—"}</strong>
               </div>
 
-              <div>
-                <span>Supplier</span>
-                <strong>{selectedRequest.supplier || "Not specified"}</strong>
-              </div>
-
-              <div>
-                <span>Quantity</span>
-                <strong>{Number(selectedRequest.quantity || 0)}</strong>
-              </div>
-
-              <div>
-                <span>Unit price</span>
+              <div className="manager-detail">
+                <small>Unit Price</small>
                 <strong>
-                  {formatMoney(
-                    selectedRequest.unitPrice,
-                    selectedRequest.currency || "INR"
+                  {formatCurrency(
+                    selectedRequest.unitPrice ??
+                      selectedRequest.unit_price
                   )}
                 </strong>
               </div>
 
-              <div>
-                <span>Total requested</span>
+              <div className="manager-detail">
+                <small>Total Amount</small>
                 <strong>
-                  {formatMoney(
-                    getRequestAmount(selectedRequest),
-                    selectedRequest.currency || "INR"
-                  )}
+                  {formatCurrency(getAmount(selectedRequest))}
                 </strong>
               </div>
 
-              <div>
-                <span>Submitted</span>
+              <div className="manager-detail">
+                <small>Submitted Date</small>
                 <strong>
-                  {formatDate(
-                    selectedRequest.createdAt ||
-                      selectedRequest.created_at
-                  )}
+                  {formatDate(getRequestDate(selectedRequest))}
                 </strong>
-              </div>
-
-              <div>
-                <span>Budget ID</span>
-                <strong>{getBudgetId(selectedRequest) || "Not assigned"}</strong>
               </div>
             </div>
 
-            <div className="manager-request-detail-text">
-              <span>Description</span>
-              <p>
-                {selectedRequest.description || "No description provided."}
-              </p>
-            </div>
+            <div
+              className="manager-detail"
+              style={{ marginTop: 13 }}
+            >
+              <small>Justification / Description</small>
 
-            <div className="manager-request-detail-text">
-              <span>Business justification</span>
-              <p>
+              <strong>
                 {selectedRequest.justification ||
-                  "No justification provided."}
-              </p>
+                  selectedRequest.description ||
+                  selectedRequest.reason ||
+                  "No description provided."}
+              </strong>
             </div>
 
-            <div className="manager-request-detail-text">
-              <span>Current status</span>
-              <p>
-                <StatusBadge status={selectedRequest.status} />
-              </p>
-            </div>
-
-            {normalizeStatus(selectedRequest.status) ===
-              "PENDING_MANAGER" && (
-              <div className="manager-modal-actions">
-                <button
-                  className="manager-reject-button"
-                  disabled={
-                    processingId === getRequestId(selectedRequest)
-                  }
-                  onClick={() =>
-                    handleManagerDecision(selectedRequest, "REJECT")
-                  }
+            {decision && (
+              <div style={{ marginTop: 17 }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    marginBottom: 8,
+                  }}
                 >
-                  <XCircle size={15} /> Reject request
-                </button>
+                  {decision === "reject"
+                    ? "Rejection reason (required)"
+                    : "Approval note (optional)"}
+                </label>
 
-                <button
-                  className="manager-approve-button"
-                  disabled={
-                    processingId === getRequestId(selectedRequest)
+                <textarea
+                  className="manager-reason"
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder={
+                    decision === "reject"
+                      ? "Enter why this request is being rejected..."
+                      : "Add an optional note for Finance..."
                   }
-                  onClick={() =>
-                    handleManagerDecision(selectedRequest, "APPROVE")
-                  }
-                >
-                  <CheckCircle2 size={15} /> Approve request
-                </button>
+                  disabled={submitting}
+                />
               </div>
             )}
-          </section>
+
+            <div className="manager-modal-actions">
+              <button
+                className="manager-btn light"
+                disabled={submitting}
+                onClick={closeModal}
+              >
+                Close
+              </button>
+
+              {decision && (
+                <button
+                  className={`manager-btn ${
+                    decision === "approve" ? "green" : "red"
+                  }`}
+                  disabled={
+                    submitting ||
+                    (decision === "reject" && !reason.trim())
+                  }
+                  onClick={submitDecision}
+                >
+                  {submitting ? (
+                    <>
+                      <RefreshCw size={14} />
+                      Processing...
+                    </>
+                  ) : decision === "approve" ? (
+                    <>
+                      <Check size={14} />
+                      Approve & Forward to Finance
+                    </>
+                  ) : (
+                    <>
+                      <XCircle size={14} />
+                      Reject Request
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

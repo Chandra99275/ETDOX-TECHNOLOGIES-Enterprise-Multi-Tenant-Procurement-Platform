@@ -12,7 +12,7 @@ import {
   Mail,
   ShieldCheck,
 } from "lucide-react";
-import "./Login.css";
+import "./LoginPage.css";
 
 // --------------------------------------------------
 // API CONFIGURATION

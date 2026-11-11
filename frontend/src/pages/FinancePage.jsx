@@ -1,1387 +1,3657 @@
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState
+} from "react";
+
 import {
-  LayoutDashboard, Wallet, ReceiptText, ArrowLeftRight,
-  ChartNoAxesCombined, Settings, LogOut, Bell, Search, Menu, X,
-  TrendingUp, ArrowUpRight, ArrowDownRight, Download, Plus,
-  CreditCard, CircleDollarSign, Clock3, CheckCircle2,
-  MoreHorizontal, FileText, CalendarDays, RefreshCw,
-  PiggyBank, AlertCircle, ClipboardList
+  LayoutDashboard,
+  ClipboardList,
+  Wallet,
+  CheckCircle2,
+  XCircle,
+  Clock3,
+  Search,
+  RefreshCw,
+  LogOut,
+  Building2,
+  IndianRupee,
+  Menu,
+  X,
+  Eye,
+  Check,
+  AlertCircle,
+  ChevronRight,
+  LoaderCircle,
+  Package,
+  Plus,
+  Pencil,
+  FileText,
+  CalendarDays,
+  User,
+  Hash,
+  History,
+  ShieldCheck,
+  TrendingUp
 } from "lucide-react";
 
-import {
-  ResponsiveContainer, AreaChart, Area, CartesianGrid,
-  XAxis, YAxis, Tooltip, BarChart, Bar
-} from "recharts";
+import { useNavigate } from "react-router-dom";
 
-import "./FinancePage.css";
+// ============================================================
+// API CONFIGURATION
+// ============================================================
 
-// --------------------------------------------------
-// API configuration
-// --------------------------------------------------
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:5000/api/v1"
+).replace(/\/$/, "");
 
-const API_BASE_URL = (
-  import.meta.env.VITE_API_URL || "http://localhost:5000/api/v1"
-).replace(/\/+$/, "");
+// Actual procurement workflow statuses
+const FINANCE_REVIEW_STATUSES = ["PENDING_FINANCE"];
 
-// The procurement routes in server.js are under /api/procurement,
-// not /api/v1.
-const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1$/i, "");
-const PROCUREMENT_API_URL = `${API_ORIGIN}/api/procurement`;
-
-const navItems = [
-  { label: "Overview", icon: LayoutDashboard },
-  { label: "Invoices", icon: ReceiptText },
-  { label: "Employee Requests", icon: ClipboardList },
-  { label: "Transactions", icon: ArrowLeftRight },
-  { label: "Reports", icon: ChartNoAxesCombined },
-  { label: "Budgets", icon: PiggyBank },
-  { label: "Settings", icon: Settings },
+const WAITING_STATUSES = [
+  "SUBMITTED",
+  "PENDING",
+  "IN_REVIEW",
+  "PENDING_MANAGER"
 ];
 
-const currencyFormatter = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  maximumFractionDigits: 0,
-});
+const APPROVED_STATUSES = [
+  "APPROVED",
+  "FINANCE_APPROVED",
+  "COMPLETED"
+];
 
-const formatCurrency = (value) =>
-  currencyFormatter.format(Number(value) || 0);
+const REJECTED_STATUSES = [
+  "REJECTED",
+  "FINANCE_REJECTED",
+  "REJECTED_FINANCE"
+];
 
-const formatCompactCurrency = (value) => {
-  const amount = Number(value) || 0;
-  if (Math.abs(amount) >= 10000000) return `₹${(amount / 10000000).toFixed(1)}Cr`;
-  if (Math.abs(amount) >= 100000) return `₹${(amount / 100000).toFixed(1)}L`;
-  if (Math.abs(amount) >= 1000) return `₹${(amount / 1000).toFixed(1)}K`;
-  return formatCurrency(amount);
-};
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
 
-const unwrap = (response, keys = []) => {
-  // Accept common Express response shapes:
-  // [ ... ], { requests: [...] }, { data: [...] },
-  // { data: { requests: [...] } }, { success: true, data: { items: [...] } }.
-  const queue = [response];
-  const visited = new Set();
-  const arrayKeys = [...keys, "data", "items", "results", "records", "rows"];
-
-  while (queue.length) {
-    const current = queue.shift();
-    if (Array.isArray(current)) return current;
-    if (!current || typeof current !== "object" || visited.has(current)) continue;
-    visited.add(current);
-
-    for (const key of arrayKeys) {
-      if (Array.isArray(current[key])) return current[key];
-    }
-
-    // Search likely wrapper objects without traversing arbitrary object graphs.
-    for (const key of [...keys, "data", "result", "payload", "requests", "purchaseRequests"]) {
-      const child = current[key];
-      if (child && typeof child === "object") queue.push(child);
-    }
-  }
-
-  return [];
-};
-
-const getNumber = (...values) => {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== "") {
-      const number = Number(value);
-      if (Number.isFinite(number)) return number;
-    }
-  }
-  return 0;
-};
-
-const formatDate = (value) => {
-  if (!value) return "Not available";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-
-  return date.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-};
-
-// --------------------------------------------------
-// Normalizers for the actual server.js response shapes
-// --------------------------------------------------
-
-const normalizeInvoice = (item, index) => {
-  const amount = getNumber(item.amount, item.total, item.totalAmount);
-  const paidAmount = getNumber(item.paidAmount, item.paid_amount);
-
-  let status = String(
-    item.paymentStatus ?? item.payment_status ?? item.status ?? "UNPAID"
-  ).toUpperCase();
-
-  if (status === "UNPAID" && paidAmount > 0) status = "PARTIALLY_PAID";
-
-  let displayStatus = "Pending";
-  if (status === "PAID" || status === "COMPLETED") displayStatus = "Paid";
-  else if (status === "PARTIALLY_PAID") displayStatus = "Partially Paid";
-  else if (status === "OVERDUE") displayStatus = "Overdue";
-  else if (status === "CANCELLED" || status === "CANCELED") displayStatus = "Cancelled";
-
-  return {
-    id: String(item.id ?? item._id ?? item.invoiceNumber ?? `INV-${index + 1}`),
-    invoiceNumber: String(item.invoiceNumber ?? item.invoice_number ?? item.id ?? ""),
-    requestId: String(item.requestId ?? item.request_id ?? ""),
-    client: String(
-      item.requesterName ??
-      item.clientName ??
-      item.client_name ??
-      item.customerName ??
-      item.supplierName ??
-      item.productName ??
-      "Client not specified"
-    ),
-    productName: String(item.productName ?? ""),
-    date: item.createdAt ?? item.issueDate ?? item.invoiceDate ?? item.date ?? "",
-    dueDate: item.dueDate ?? item.due_date ?? "",
-    amount,
-    paidAmount,
-    outstanding: Math.max(0, amount - paidAmount),
-    status: displayStatus,
-    raw: item,
-  };
-};
-
-const normalizeTransaction = (item, index) => {
-  const type = String(item.type ?? item.transactionType ?? "").toLowerCase();
-  const isExpense =
-    type.includes("expense") ||
-    type.includes("debit") ||
-    type.includes("withdrawal") ||
-    type.includes("payment_out");
-
-  return {
-    id: String(item.id ?? item._id ?? item.transactionId ?? index),
-    title: String(
-      item.title ??
-      item.description ??
-      item.invoiceNumber ??
-      item.reference ??
-      item.type ??
-      "Financial transaction"
-    ),
-    subtitle: String(
-      item.recordedByName ??
-      item.counterparty ??
-      item.category ??
-      item.invoiceId ??
-      "Business transaction"
-    ),
-    date: item.paymentDate ?? item.date ?? item.createdAt ?? "",
-    amount: Math.abs(getNumber(item.amount, item.total, item.value)),
-    type: isExpense ? "expense" : "income",
-  };
-};
-
-const normalizeBudget = (item, index) => {
-  const allocated = getNumber(
-    item.allocated,
-    item.limit,
-    item.budgetLimit,
-    item.allocatedAmount,
-    item.amount
-  );
-  const committed = getNumber(item.committed);
-  const spent = getNumber(item.spent);
-
-  return {
-    id: String(item.id ?? item._id ?? item.budgetId ?? index),
-    name: String(item.name ?? item.department ?? item.category ?? "Budget"),
-    department: String(item.department ?? item.departmentName ?? "General"),
-    limit: allocated,
-    committed,
-    spent,
-    remaining: getNumber(
-      item.available,
-      item.remaining,
-      allocated - committed - spent
-    ),
-  };
-};
-
-const normalizeRequestStatus = (status) => {
-  // Normalize values from different backend naming conventions.
-  const value = String(status ?? "")
+const normalizeStatus = (value) =>
+  String(value || "UNKNOWN")
     .trim()
     .toUpperCase()
     .replace(/[\s-]+/g, "_");
 
-  // A manager-approved request is waiting for Finance to make its decision.
-  if ([
-    "PENDING_MANAGER", "AWAITING_MANAGER", "WAITING_FOR_MANAGER",
-    "PENDING_MANAGER_APPROVAL", "WAITING_FOR_MANAGER_APPROVAL"
-  ].includes(value)) return "Pending Manager";
+const getStatus = (request) =>
+  normalizeStatus(
+    request?.status ??
+    request?.request_status ??
+    request?.requestStatus ??
+    request?.approval_status
+  );
 
-  if ([
-    "PENDING_FINANCE", "AWAITING_FINANCE", "WAITING_FOR_FINANCE",
-    "MANAGER_APPROVED", "APPROVED_BY_MANAGER", "PENDING", "SUBMITTED",
-    "REQUESTED", "PENDING_APPROVAL", "AWAITING_APPROVAL", "UNDER_REVIEW"
-  ].includes(value)) return "Pending Finance";
+const getRequestId = (request) =>
+  request?.id ??
+  request?.request_id ??
+  request?.requestId ??
+  request?.purchase_request_id ??
+  request?.purchaseRequestId;
 
-  if (["APPROVED", "ACCEPTED", "FINANCE_APPROVED", "APPROVED_BY_FINANCE"].includes(value)) return "Approved";
-  if (value.startsWith("REJECTED") || ["DECLINED", "DENIED", "FINANCE_REJECTED"].includes(value)) return "Rejected";
-  if (["COMPLETED", "FULFILLED", "CLOSED"].includes(value)) return "Completed";
+const getRequestNumber = (request) =>
+  request?.requestNumber ??
+  request?.request_number ??
+  request?.reference_number ??
+  (getRequestId(request)
+    ? `REQ-${String(getRequestId(request)).slice(0, 8)}`
+    : "Request");
 
-  return value ? value.replace(/_/g, " ") : "Unknown";
+const getEmployeeName = (request) => {
+  const directName =
+    request?.employee_name ??
+    request?.employeeName ??
+    request?.requester_name ??
+    request?.requesterName ??
+    request?.requested_by_name ??
+    request?.created_by_name ??
+    request?.user?.name ??
+    request?.employee?.name;
+
+  if (directName) return directName;
+
+  const firstLast = [
+    request?.first_name ?? request?.firstName,
+    request?.last_name ?? request?.lastName
+  ].filter(Boolean).join(" ");
+
+  return (
+    firstLast ||
+    request?.requester?.name ||
+    request?.user?.full_name ||
+    request?.requester_email ||
+    request?.email ||
+    "Employee name unavailable"
+  );
 };
 
-const canFinanceDecide = (request) => {
-  // Keep Accept/Decline visible for any unresolved request status.
-  // Final decisions should not be actionable again.
-  return !["Approved", "Rejected", "Completed"].includes(request.status);
-};
+const getRequesterId = (request) =>
+  request?.requesterId ??
+  request?.requester_id ??
+  request?.requested_by ??
+  request?.created_by ??
+  request?.user_id ??
+  request?.employee_id ??
+  request?.requester?.id ??
+  null;
 
-const normalizeEmployeeRequest = (item, index) => ({
-  id: String(
-    item.id ??
-    item._id ??
-    item.requestId ??
-    item.request_id ??
-    item.purchaseRequestId ??
-    item.purchase_request_id ??
-    `REQ-${index + 1}`
-  ),
-  employeeName: String(
-    item.requesterName ??
-    item.requester_name ??
-    item.employeeName ??
-    item.employee_name ??
-    item.user?.name ??
-    item.requester?.name ??
-    "Employee"
-  ),
-  employeeEmail: String(
-    item.requesterEmail ??
-    item.requester_email ??
-    item.employeeEmail ??
-    item.employee_email ??
-    item.user?.email ??
-    item.requester?.email ??
-    "Not provided"
-  ),
-  title: String(
-    item.productName ??
-    item.product_name ??
-    item.title ??
-    item.subject ??
-    item.requestTitle ??
-    item.request_title ??
-    "Purchase request"
-  ),
-  type: String(item.type ?? item.category ?? "Purchase request"),
-  description: String(
-    item.justification ??
-    item.justificationText ??
-    item.justification_text ??
-    item.description ??
-    item.details ??
-    "No description provided"
-  ),
-  department: String(item.department ?? "Not specified"),
-  amount: getNumber(
-    item.total,
-    item.totalAmount,
-    item.total_amount,
-    item.amount,
-    item.requestedAmount,
-    item.requested_amount
-  ),
-  currency: String(item.currency ?? "INR"),
-  date: item.createdAt ?? item.created_at ?? item.submittedAt ?? item.submitted_at ?? "",
-  status: normalizeRequestStatus(item.status),
-  raw: item,
-});
+const getEmployeeEmail = (request) =>
+  request?.employee_email ??
+  request?.requester_email ??
+  request?.email ??
+  request?.user?.email ??
+  request?.requester?.email ??
+  "Not provided";
 
-// --------------------------------------------------
-// Authentication helpers
-// --------------------------------------------------
+const getProductName = (request) =>
+  request?.productName ??
+  request?.product_name ??
+  request?.item_name ??
+  request?.itemName ??
+  request?.title ??
+  request?.name ??
+  "Product not provided";
 
-const getStoredAuthToken = () => {
-  const keys = [
-    "accessToken", "access_token", "token", "authToken", "auth_token",
-    "jwt", "jwtToken", "etdoxToken", "etdox_token", "user", "auth", "session"
-  ];
+const getSupplier = (request) =>
+  request?.supplier_name ??
+  request?.supplierName ??
+  request?.supplier ??
+  request?.preferred_supplier_name ??
+  request?.preferredSupplier ??
+  "Not provided";
 
-  for (const store of [window.localStorage, window.sessionStorage]) {
-    try {
-      for (const key of keys) {
-        const value = store.getItem(key);
-        if (!value) continue;
+const getDepartment = (request) =>
+  request?.department_name ??
+  request?.departmentName ??
+  request?.department ??
+  request?.department_id ??
+  request?.departmentId ??
+  "Not provided";
 
-        if (value.split(".").length === 3) return value;
+const getQuantity = (request) =>
+  request?.quantity ??
+  request?.requested_quantity ??
+  request?.requestedQuantity ??
+  0;
 
-        try {
-          const parsed = JSON.parse(value);
-          const token =
-            parsed?.token ??
-            parsed?.accessToken ??
-            parsed?.access_token ??
-            parsed?.jwt ??
-            parsed?.authToken ??
-            parsed?.data?.token ??
-            parsed?.data?.accessToken;
+const getUnitPrice = (request) =>
+  request?.unit_price ??
+  request?.unitPrice ??
+  0;
 
-          if (typeof token === "string" && token.split(".").length === 3) {
-            return token;
-          }
-        } catch {
-          // Continue checking other storage keys.
-        }
-      }
+const getCurrency = (request) =>
+  request?.currency ??
+  request?.currency_code ??
+  "INR";
 
-      for (let i = 0; i < store.length; i += 1) {
-        const key = store.key(i);
-        const value = key ? store.getItem(key) : null;
-        if (value && value.split(".").length === 3) return value;
-      }
-    } catch {
-      // Browser storage may be unavailable.
-    }
+const getAmount = (request) => {
+  const amount =
+    request?.total_amount ??
+    request?.totalAmount ??
+    request?.total ??
+    request?.amount ??
+    request?.grand_total;
+
+  if (amount !== undefined && amount !== null && amount !== "") {
+    return Number(amount) || 0;
   }
 
-  return "";
+  return (
+    Number(getQuantity(request) || 0) *
+    Number(getUnitPrice(request) || 0)
+  );
 };
 
-async function apiRequest(url, options = {}) {
-  const token = getStoredAuthToken();
-
-  if (!token) {
-    throw new Error("No login token found. Sign in through the ETDOX login page.");
-  }
-
-  let response;
+const money = (value, currency = "INR") => {
+  const amount = Number(value || 0);
 
   try {
-    response = await fetch(url, {
-      ...options,
-      headers: {
-        Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        Authorization: `Bearer ${token}`,
-        ...options.headers,
-      },
-      credentials: "include",
-    });
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: currency || "INR",
+      maximumFractionDigits: 2
+    }).format(amount);
   } catch {
-    throw new Error("Cannot connect to the backend. Check that it is running on port 5000.");
+    return `${currency} ${amount.toLocaleString("en-IN")}`;
+  }
+};
+
+const formatDate = (value) => {
+  if (!value) return "Not available";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
   }
 
-  if (response.status === 204) return null;
+  return date.toLocaleString("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
+};
 
-  const contentType = response.headers.get("content-type") || "";
-  const result = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
+const formatLabel = (key) =>
+  String(key)
+    .replace(/([A-Z])/g, " $1")
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
-  if (!response.ok) {
-    const message =
-      typeof result === "object" && result
-        ? result.message || result.error || result.detail
-        : result;
-
-    if (response.status === 401) {
-      throw new Error("Your session is invalid or expired. Please sign in again.");
-    }
-    if (response.status === 403) {
-      throw new Error(message || "Your account does not have permission for this action.");
-    }
-    if (response.status === 404) {
-      throw new Error(`Backend route not found: ${url}`);
-    }
-    throw new Error(message || `Request failed with HTTP ${response.status}.`);
+const displayValue = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "Not provided";
   }
 
-  return result;
-}
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
 
-const financeApi = (path, options) =>
-  apiRequest(`${API_BASE_URL}${path}`, options);
+  if (Array.isArray(value)) {
+    return value.length
+      ? value.map(displayValue).join(", ")
+      : "None";
+  }
 
-const procurementApi = (path, options) =>
-  apiRequest(`${PROCUREMENT_API_URL}${path}`, options);
+  if (typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
 
-// --------------------------------------------------
-// Finance page
-// --------------------------------------------------
+  return String(value);
+};
+
+// Handles different API response structures.
+const getArray = (result) => {
+  if (Array.isArray(result)) return result;
+
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+
+  const candidates = [
+    result.requests,
+    result.budgets,
+    result.items,
+    result.rows,
+    result.results,
+    result.data?.requests,
+    result.data?.budgets,
+    result.data?.items,
+    result.data?.rows,
+    result.data?.results,
+    result.data?.data
+  ];
+
+  return candidates.find(Array.isArray) || [];
+};
+
+// ============================================================
+// BUDGET HELPERS
+// ============================================================
+
+const getBudgetId = (budget) =>
+  budget?.id ?? budget?.budget_id;
+
+const getBudgetAllocated = (budget) =>
+  Number(
+    budget?.allocatedAmount ??
+    budget?.allocated_amount ??
+    budget?.allocated ??
+    budget?.total_amount ??
+    budget?.amount ??
+    0
+  );
+
+const getBudgetCommitted = (budget) =>
+  Number(
+    budget?.committedAmount ??
+    budget?.committed_amount ??
+    budget?.committed ??
+    0
+  );
+
+const getBudgetReserved = (budget) =>
+  Number(
+    budget?.reservedAmount ??
+    budget?.reserved_amount ??
+    budget?.reserved ??
+    0
+  );
+
+const getBudgetSpent = (budget) =>
+  Number(
+    budget?.spentAmount ??
+    budget?.spent_amount ??
+    budget?.spent ??
+    0
+  );
+
+const getBudgetAvailable = (budget) => {
+  const explicit =
+    budget?.availableAmount ??
+    budget?.available_amount ??
+    budget?.available ??
+    budget?.remaining_amount;
+
+  if (explicit !== undefined && explicit !== null) {
+    return Number(explicit) || 0;
+  }
+
+  return Math.max(
+    0,
+    getBudgetAllocated(budget) -
+    getBudgetCommitted(budget) -
+    getBudgetReserved(budget) -
+    getBudgetSpent(budget)
+  );
+};
+
+const getBudgetTitle = (budget, index) =>
+  budget?.name ??
+  budget?.budget_name ??
+  budget?.department_name ??
+  budget?.department ??
+  `Budget ${index + 1}`;
+
+const getStatusClass = (status) => {
+  const value = normalizeStatus(status);
+
+  if (APPROVED_STATUSES.includes(value)) return "approved";
+  if (REJECTED_STATUSES.includes(value)) return "rejected";
+  if (FINANCE_REVIEW_STATUSES.includes(value)) return "pending";
+  if (WAITING_STATUSES.includes(value)) return "waiting";
+
+  return "default";
+};
+
+// ============================================================
+// BUDGET FORM
+// ============================================================
+
+const emptyBudgetForm = {
+  name: "",
+  description: "",
+  department: "",
+  category: "",
+  allocatedAmount: "",
+  currency: "INR",
+  fiscalYear: String(new Date().getFullYear()),
+  status: "active"
+};
+
+const initialDecision = {
+  request: null,
+  decision: "",
+  reason: ""
+};
+
+// ============================================================
+// MAIN FINANCE PAGE
+// ============================================================
 
 export default function FinancePage() {
-  const [activePage, setActivePage] = useState("Overview");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [invoiceFilter, setInvoiceFilter] = useState("All");
-  const [requestSearch, setRequestSearch] = useState("");
-  const [requestFilter, setRequestFilter] = useState("All");
+  const navigate = useNavigate();
 
-  const [invoices, setInvoices] = useState([]);
-  const [transactions, setTransactions] = useState([]);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const [requests, setRequests] = useState([]);
   const [budgets, setBudgets] = useState([]);
-  const [analytics, setAnalytics] = useState({});
-  const [employeeRequests, setEmployeeRequests] = useState([]);
+
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "{}");
+    } catch {
+      return {};
+    }
+  });
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [savingBudget, setSavingBudget] = useState(false);
+
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
-  const [actionMessage, setActionMessage] = useState("");
-  const [requestActionLoading, setRequestActionLoading] = useState("");
-  const [creatingInvoiceFor, setCreatingInvoiceFor] = useState(null);
+  const [success, setSuccess] = useState("");
+  const [budgetError, setBudgetError] = useState("");
 
-  // All endpoints below exist in the supplied server.js.
-  const loadFinanceData = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
-    setError("");
+  const [selectedRequest, setSelectedRequest] = useState(null);
+  const [decisionModal, setDecisionModal] = useState(initialDecision);
 
-    const tasks = [
-      {
-        key: "invoices",
-        run: () => financeApi("/invoices"),
-      },
-      {
-        key: "transactions",
-        run: () => financeApi("/transactions"),
-      },
-      {
-        key: "budgets",
-        run: () => financeApi("/budgets"),
-      },
-      {
-        key: "analytics",
-        run: () => financeApi("/analytics"),
-      },
-      {
-        // FIX: this is the real route in server.js.
-        key: "employeeRequests",
-        run: () => procurementApi("/requests"),
-      },
-    ];
+  const [budgetModalOpen, setBudgetModalOpen] = useState(false);
+  const [editingBudget, setEditingBudget] = useState(null);
+  const [budgetForm, setBudgetForm] = useState(emptyBudgetForm);
 
-    const results = await Promise.allSettled(tasks.map((task) => task.run()));
-    const failures = [];
+  const token = localStorage.getItem("token");
 
-    results.forEach((result, index) => {
-      const key = tasks[index].key;
+  // ==========================================================
+  // API REQUEST
+  // ==========================================================
 
-      if (result.status === "rejected") {
-        failures.push(`${key}: ${result.reason?.message || "Failed to load"}`);
-        return;
-      }
+  const apiRequest = useCallback(
+    async (path, options = {}) => {
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: {
+          ...(options.body
+            ? { "Content-Type": "application/json" }
+            : {}),
+          ...(token
+            ? { Authorization: `Bearer ${token}` }
+            : {}),
+          ...options.headers
+        }
+      });
 
-      const data = result.value;
+      const data = await response.json().catch(() => ({}));
 
-      if (key === "invoices") {
-        setInvoices(unwrap(data, ["invoices"]).map(normalizeInvoice));
-      } else if (key === "transactions") {
-        setTransactions(unwrap(data, ["transactions"]).map(normalizeTransaction));
-      } else if (key === "budgets") {
-        setBudgets(unwrap(data, ["budgets"]).map(normalizeBudget));
-      } else if (key === "analytics") {
-        setAnalytics(data?.analytics ?? data?.data ?? data ?? {});
-      } else if (key === "employeeRequests") {
-        setEmployeeRequests(
-          unwrap(data, ["requests", "purchaseRequests"]).map(normalizeEmployeeRequest)
+      if (!response.ok) {
+        const validationMessage = Array.isArray(data.errors)
+          ? data.errors
+              .map((item) => item.message)
+              .filter(Boolean)
+              .join(", ")
+          : "";
+
+        throw new Error(
+          validationMessage ||
+          data.message ||
+          data.error ||
+          `Server returned ${response.status}`
         );
       }
-    });
 
-    if (failures.length) {
-      setError(`Some data could not be loaded. ${failures.join(" | ")}`);
-    }
+      return data;
+    },
+    [token]
+  );
 
-    setLoading(false);
-    setRefreshing(false);
-  }, []);
+  // ==========================================================
+  // LOAD REAL FINANCE DATA
+  // ==========================================================
+
+  const loadFinanceData = useCallback(
+    async (showRefresh = false) => {
+      if (showRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      setError("");
+      setBudgetError("");
+
+      try {
+        const [
+          requestResult,
+          budgetResult,
+          userResult
+        ] = await Promise.allSettled([
+          apiRequest("/procurement/requests"),
+          apiRequest("/budgets?page=1&limit=100"),
+          apiRequest("/auth/me")
+        ]);
+
+        // Real employee requests
+        if (requestResult.status === "fulfilled") {
+          setRequests(getArray(requestResult.value));
+        } else {
+          setRequests([]);
+
+          setError(
+            `Unable to load employee requests: ${
+              requestResult.reason?.message || "Unknown error"
+            }`
+          );
+        }
+
+        // Real organization budgets
+        if (budgetResult.status === "fulfilled") {
+          setBudgets(getArray(budgetResult.value));
+        } else {
+          setBudgets([]);
+
+          setBudgetError(
+            budgetResult.reason?.message ||
+            "Unable to load budgets."
+          );
+        }
+
+        // Authenticated finance user
+        if (userResult.status === "fulfilled") {
+          const currentUser =
+            userResult.value?.user ??
+            userResult.value?.data?.user ??
+            userResult.value?.data ??
+            userResult.value;
+
+          if (currentUser && typeof currentUser === "object") {
+            setUser((previous) => ({
+              ...previous,
+              ...currentUser
+            }));
+
+            localStorage.setItem(
+              "user",
+              JSON.stringify(currentUser)
+            );
+          }
+        }
+      } catch (err) {
+        setError(
+          err.message || "Unable to load Finance workspace."
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [apiRequest]
+  );
 
   useEffect(() => {
     loadFinanceData();
   }, [loadFinanceData]);
 
-  // --------------------------------------------------
-  // Calculated values
-  // --------------------------------------------------
+  // ==========================================================
+  // USER DETAILS
+  // ==========================================================
 
-  const filteredInvoices = useMemo(() => invoices.filter((invoice) => {
-    const text = `${invoice.id} ${invoice.client} ${invoice.status}`.toLowerCase();
-    return text.includes(searchTerm.toLowerCase()) &&
-      (invoiceFilter === "All" || invoice.status === invoiceFilter);
-  }), [invoices, searchTerm, invoiceFilter]);
+  const financeName =
+    user?.name ||
+    user?.full_name ||
+    user?.fullName ||
+    [
+      user?.first_name,
+      user?.last_name
+    ].filter(Boolean).join(" ") ||
+    user?.email?.split("@")[0] ||
+    "Finance Manager";
 
-  const filteredRequests = useMemo(() => employeeRequests.filter((request) => {
-    const text = [
-      request.id, request.employeeName, request.employeeEmail,
-      request.title, request.type, request.description,
-      request.department, request.status
-    ].join(" ").toLowerCase();
+  // ==========================================================
+  // REAL REQUEST CALCULATIONS
+  // ==========================================================
 
-    return text.includes(requestSearch.trim().toLowerCase()) &&
-      (requestFilter === "All" || request.status === requestFilter);
-  }), [employeeRequests, requestSearch, requestFilter]);
-
-  // Finance may act only on requests approved by a manager.
-  const pendingFinanceRequests = employeeRequests.filter(
-    (request) => request.status === "Pending Finance"
+  const pendingFinanceRequests = useMemo(
+    () =>
+      requests.filter((request) =>
+        FINANCE_REVIEW_STATUSES.includes(getStatus(request))
+      ),
+    [requests]
   );
 
-  const pendingManagerRequests = employeeRequests.filter(
-    (request) => request.status === "Pending Manager"
+  const waitingForManagerRequests = useMemo(
+    () =>
+      requests.filter((request) =>
+        WAITING_STATUSES.includes(getStatus(request))
+      ),
+    [requests]
   );
 
-  const totalInvoiceValue = invoices.reduce((sum, item) => sum + item.amount, 0);
-  const paidValue = invoices.reduce((sum, item) => sum + item.paidAmount, 0);
-  const pendingValue = invoices.reduce((sum, item) => sum + item.outstanding, 0);
-  const overdueValue = invoices
-    .filter((item) => item.status === "Overdue")
-    .reduce((sum, item) => sum + item.outstanding, 0);
+  const approvedRequests = useMemo(
+    () =>
+      requests.filter((request) =>
+        APPROVED_STATUSES.includes(getStatus(request))
+      ),
+    [requests]
+  );
 
-  const transactionIncome = transactions
-    .filter((item) => item.type === "income")
-    .reduce((sum, item) => sum + item.amount, 0);
+  const rejectedRequests = useMemo(
+    () =>
+      requests.filter((request) =>
+        REJECTED_STATUSES.includes(getStatus(request))
+      ),
+    [requests]
+  );
 
-  const transactionExpenses = transactions
-    .filter((item) => item.type === "expense")
-    .reduce((sum, item) => sum + item.amount, 0);
+  const pendingAmount = pendingFinanceRequests.reduce(
+    (sum, request) => sum + getAmount(request),
+    0
+  );
 
-  const totalRevenue = getNumber(
-    analytics.totalRevenue, analytics.total_revenue, analytics.revenue, analytics.income
-  ) || transactionIncome;
+  const approvedAmount = approvedRequests.reduce(
+    (sum, request) => sum + getAmount(request),
+    0
+  );
 
-  const totalExpenses = getNumber(
-    analytics.totalExpenses, analytics.total_expenses, analytics.expenses, analytics.expense
-  ) || transactionExpenses;
+  const rejectedAmount = rejectedRequests.reduce(
+    (sum, request) => sum + getAmount(request),
+    0
+  );
 
-  const netProfit = getNumber(
-    analytics.netProfit, analytics.net_profit, analytics.profit
-  ) || totalRevenue - totalExpenses;
+  const totalAllocatedBudget = budgets.reduce(
+    (sum, budget) => sum + getBudgetAllocated(budget),
+    0
+  );
 
-  const expenseData = useMemo(() => {
-    const source =
-      analytics.expenseBreakdown ??
-      analytics.expense_breakdown ??
-      analytics.expensesByCategory ??
-      analytics.expenses_by_category;
+  const totalCommittedBudget = budgets.reduce(
+    (sum, budget) => sum + getBudgetCommitted(budget),
+    0
+  );
 
-    if (Array.isArray(source)) {
-      return source.map((item) => ({
-        category: item.category ?? item.name ?? "Other",
-        amount: getNumber(item.amount, item.total, item.value),
-      }));
+  const totalSpentBudget = budgets.reduce(
+    (sum, budget) => sum + getBudgetSpent(budget),
+    0
+  );
+
+  const totalAvailableBudget = budgets.reduce(
+    (sum, budget) => sum + getBudgetAvailable(budget),
+    0
+  );
+
+  // ==========================================================
+  // REQUEST SEARCH AND FILTER
+  // ==========================================================
+
+  const filteredRequests = useMemo(() => {
+    let result = [...requests];
+
+    if (statusFilter === "pending") {
+      result = result.filter((request) =>
+        FINANCE_REVIEW_STATUSES.includes(getStatus(request))
+      );
+    } else if (statusFilter === "waiting") {
+      result = result.filter((request) =>
+        WAITING_STATUSES.includes(getStatus(request))
+      );
+    } else if (statusFilter === "approved") {
+      result = result.filter((request) =>
+        APPROVED_STATUSES.includes(getStatus(request))
+      );
+    } else if (statusFilter === "rejected") {
+      result = result.filter((request) =>
+        REJECTED_STATUSES.includes(getStatus(request))
+      );
     }
 
-    const grouped = {};
-    transactions.filter((item) => item.type === "expense").forEach((item) => {
-      grouped[item.subtitle] = (grouped[item.subtitle] || 0) + item.amount;
-    });
+    const term = searchTerm.toLowerCase().trim();
 
-    return Object.entries(grouped).map(([category, amount]) => ({ category, amount }));
-  }, [analytics, transactions]);
+    if (term) {
+      result = result.filter((request) => {
+        const searchable = [
+          getRequestNumber(request),
+          getEmployeeName(request),
+          getEmployeeEmail(request),
+          getRequesterId(request),
+          getProductName(request),
+          getSupplier(request),
+          getDepartment(request),
+          getStatus(request),
+          request?.description,
+          request?.justification,
+          request?.budgetId,
+          request?.budget_id
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
 
-  const revenueData = useMemo(() => {
-    const source =
-      analytics.monthlyRevenue ??
-      analytics.monthly_revenue ??
-      analytics.monthly ??
-      analytics.revenueTrend ??
-      analytics.revenue_trend;
-
-    if (Array.isArray(source)) {
-      return source.map((item) => ({
-        month: item.month ?? item.label ?? item.period ?? "Period",
-        revenue: getNumber(item.revenue, item.income, item.totalRevenue),
-        expenses: getNumber(item.expenses, item.expense, item.totalExpenses),
-      }));
-    }
-
-    const grouped = {};
-    transactions.forEach((item) => {
-      const date = new Date(item.date);
-      if (Number.isNaN(date.getTime())) return;
-
-      const month = date.toLocaleDateString("en-IN", {
-        month: "short",
-        year: "numeric",
+        return searchable.includes(term);
       });
+    }
 
-      if (!grouped[month]) {
-        grouped[month] = { month, revenue: 0, expenses: 0, timestamp: date.getTime() };
+    return result;
+  }, [requests, statusFilter, searchTerm]);
+
+  // ==========================================================
+  // LOGOUT
+  // ==========================================================
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    localStorage.removeItem("userRole");
+
+    navigate("/login", { replace: true });
+  };
+
+  // ==========================================================
+  // FINANCE APPROVAL
+  // ==========================================================
+
+  const openDecisionModal = (request, decision) => {
+    setError("");
+    setSuccess("");
+
+    setDecisionModal({
+      request,
+      decision,
+      reason: ""
+    });
+  };
+
+  const submitFinanceDecision = async (event) => {
+    event.preventDefault();
+
+    const {
+      request,
+      decision,
+      reason
+    } = decisionModal;
+
+    const requestId = getRequestId(request);
+
+    if (!requestId) {
+      setError("Request ID is missing.");
+      return;
+    }
+
+    if (!FINANCE_REVIEW_STATUSES.includes(getStatus(request))) {
+      setError(
+        "This request has not received manager approval. Finance cannot process it yet."
+      );
+      return;
+    }
+
+    if (!reason.trim()) {
+      setError("Please enter your finance remarks.");
+      return;
+    }
+
+    if (reason.trim().length > 1000) {
+      setError("Remarks cannot exceed 1000 characters.");
+      return;
+    }
+
+    setProcessing(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      // IMPORTANT:
+      // Backend expects APPROVE or REJECT.
+      await apiRequest(
+        `/procurement/requests/${encodeURIComponent(requestId)}/finance-decision`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            decision: decision === "approve"
+              ? "APPROVE"
+              : "REJECT",
+            comment: reason.trim()
+          })
+        }
+      );
+
+      setSuccess(
+        decision === "approve"
+          ? "Employee procurement request approved successfully."
+          : "Employee procurement request rejected successfully."
+      );
+
+      setDecisionModal(initialDecision);
+
+      if (selectedRequest) {
+        setSelectedRequest(null);
       }
 
-      grouped[month][item.type === "expense" ? "expenses" : "revenue"] += item.amount;
+      // Reload actual backend values after processing.
+      await loadFinanceData(true);
+
+    } catch (err) {
+      setError(
+        err.message || "Unable to process finance decision."
+      );
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // ==========================================================
+  // BUDGET MANAGEMENT
+  // ==========================================================
+
+  const openCreateBudget = () => {
+    setEditingBudget(null);
+    setBudgetForm(emptyBudgetForm);
+    setBudgetError("");
+    setBudgetModalOpen(true);
+  };
+
+  const openEditBudget = (budget) => {
+    setEditingBudget(budget);
+
+    setBudgetForm({
+      ...emptyBudgetForm,
+      name: budget.name || budget.budget_name || "",
+      description: budget.description || "",
+      department:
+        budget.department ||
+        budget.department_name ||
+        "",
+      category: budget.category || "",
+      allocatedAmount: String(getBudgetAllocated(budget)),
+      currency: budget.currency || "INR",
+      fiscalYear: String(
+        budget.fiscalYear ||
+        budget.fiscal_year ||
+        new Date().getFullYear()
+      ),
+      status: budget.status || "active"
     });
 
-    return Object.values(grouped)
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map(({ month, revenue, expenses }) => ({ month, revenue, expenses }));
-  }, [analytics, transactions]);
-
-  // --------------------------------------------------
-  // Finance actions
-  // --------------------------------------------------
-
-  const reviewEmployeeRequest = async (request, decision) => {
-    setActionError("");
-    setActionMessage("");
-
-    const isAccept = decision === "APPROVE";
-    const actionLabel = isAccept ? "accept" : "decline";
-    const confirmed = window.confirm(
-      `${isAccept ? "Accept" : "Decline"} purchase request ${request.id} for ${request.title}?`
-    );
-    if (!confirmed) return;
-
-    // Ask for an optional explanation on decline so the decision is auditable.
-    let comment = "";
-    if (!isAccept) {
-      const reason = window.prompt("Reason for declining this request (optional):", "");
-      if (reason === null) return; // User cancelled the decision.
-      comment = reason.trim();
-    }
-
-    const actionKey = `${request.id}-${decision}`;
-    setRequestActionLoading(actionKey);
-
-    try {
-      await procurementApi(
-        `/requests/${encodeURIComponent(request.id)}/finance-decision`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ decision, comment }),
-        }
-      );
-
-      // Update the UI immediately after the backend confirms the decision.
-      // The subsequent refresh then reconciles the row with the database.
-      const nextStatus = isAccept ? "Approved" : "Rejected";
-      setEmployeeRequests((current) => current.map((item) =>
-        item.id === request.id
-          ? { ...item, status: nextStatus, decisionComment: comment }
-          : item
-      ));
-      setActionMessage(
-        `Request ${request.id} ${isAccept ? "accepted" : "declined"} successfully. Status updated to ${nextStatus}.`
-      );
-
-      await loadFinanceData(true);
-    } catch (err) {
-      setActionError(err.message || `Could not ${actionLabel} this request.`);
-    } finally {
-      setRequestActionLoading("");
-    }
+    setBudgetError("");
+    setBudgetModalOpen(true);
   };
 
-  const markInvoicePaid = async (invoice) => {
-    setActionError("");
-    setActionMessage("");
+  const updateBudgetField = (event) => {
+    const { name, value } = event.target;
 
-    if (!invoice.id || invoice.id.startsWith("INV-") && !invoice.raw?.id) {
-      setActionError("This invoice does not have a valid backend ID.");
+    setBudgetForm((previous) => ({
+      ...previous,
+      [name]: value
+    }));
+  };
+
+  const saveBudget = async (event) => {
+    event.preventDefault();
+
+    const allocatedAmount = Number(
+      budgetForm.allocatedAmount
+    );
+
+    const fiscalYear = Number(budgetForm.fiscalYear);
+
+    if (!budgetForm.name.trim()) {
+      setBudgetError("Enter a budget name.");
       return;
     }
 
-    if (invoice.outstanding <= 0) {
-      setActionError("This invoice has no outstanding balance.");
+    if (
+      !Number.isFinite(allocatedAmount) ||
+      allocatedAmount <= 0
+    ) {
+      setBudgetError(
+        "Enter an allocated amount greater than zero."
+      );
       return;
     }
 
-    try {
-      // FIX: server.js records payments through this endpoint.
-      await procurementApi(
-        `/invoices/${encodeURIComponent(invoice.id)}/payment`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ amount: invoice.outstanding }),
-        }
-      );
-
-      setActionMessage(`Payment recorded for invoice ${invoice.id}.`);
-      await loadFinanceData(true);
-    } catch (err) {
-      setActionError(err.message || "Could not record invoice payment.");
+    if (!Number.isInteger(fiscalYear)) {
+      setBudgetError("Enter a valid fiscal year.");
+      return;
     }
-  };
 
-  const createInvoiceForRequest = async (request) => {
-    const invoiceNumber = window.prompt(
-      `Enter an invoice number for ${request.title}:`,
-      `INV-${Date.now().toString().slice(-8)}`
-    );
+    const payload = {
+      name: budgetForm.name.trim(),
+      description: budgetForm.description.trim(),
+      department: budgetForm.department.trim(),
+      category: budgetForm.category.trim(),
+      allocatedAmount,
+      allocated: allocatedAmount,
+      currency: budgetForm.currency,
+      fiscalYear,
+      status: budgetForm.status
+    };
 
-    if (!invoiceNumber?.trim()) return;
-
-    setActionError("");
-    setActionMessage("");
-    setCreatingInvoiceFor(request.id);
+    setSavingBudget(true);
+    setBudgetError("");
 
     try {
-      // Backend permits invoice creation only for fully approved requests.
-      await procurementApi(
-        `/requests/${encodeURIComponent(request.id)}/invoice`,
-        {
+      if (editingBudget) {
+        const budgetId = getBudgetId(editingBudget);
+
+        if (!budgetId) {
+          throw new Error("Budget ID is missing.");
+        }
+
+        await apiRequest(`/budgets/${budgetId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+
+        setSuccess("Budget updated successfully.");
+      } else {
+        await apiRequest("/budgets", {
           method: "POST",
-          body: JSON.stringify({
-            invoiceNumber: invoiceNumber.trim(),
-            amount: request.amount,
-          }),
-        }
-      );
+          body: JSON.stringify(payload)
+        });
 
-      setActionMessage(`Invoice created for request ${request.id}.`);
-      setActivePage("Invoices");
+        setSuccess("Budget created successfully.");
+      }
+
+      setBudgetModalOpen(false);
+      setEditingBudget(null);
+      setBudgetForm(emptyBudgetForm);
+
       await loadFinanceData(true);
+
+      setActiveTab("budgets");
+
     } catch (err) {
-      setActionError(err.message || "Could not create invoice.");
+      setBudgetError(
+        err.message || "Unable to save budget."
+      );
     } finally {
-      setCreatingInvoiceFor(null);
+      setSavingBudget(false);
     }
   };
 
-  const exportInvoices = () => {
-    const rows = [
-      ["Invoice ID", "Client", "Issue Date", "Due Date", "Amount INR", "Paid INR", "Outstanding INR", "Status"],
-      ...filteredInvoices.map((item) => [
-        item.id, item.client, item.date, item.dueDate,
-        item.amount, item.paidAmount, item.outstanding, item.status,
-      ]),
+  // ==========================================================
+  // COMPLETE EMPLOYEE REQUEST DETAILS
+  // ==========================================================
+
+  const getRealRequestDetails = (request) => {
+    const raw =
+      request?.raw &&
+      typeof request.raw === "object"
+        ? request.raw
+        : {};
+
+    const combined = {
+      ...raw,
+      ...request
+    };
+
+    delete combined.raw;
+
+    const preferredKeys = [
+      "id",
+      "requestNumber",
+      "request_number",
+      "requesterId",
+      "requester_id",
+      "employee_name",
+      "employeeName",
+      "requester_name",
+      "requester_email",
+      "productName",
+      "product_name",
+      "title",
+      "description",
+      "justification",
+      "supplier",
+      "supplier_name",
+      "quantity",
+      "unitPrice",
+      "unit_price",
+      "subtotal",
+      "tax_total",
+      "total",
+      "total_amount",
+      "currency",
+      "department",
+      "department_name",
+      "budgetId",
+      "budget_id",
+      "status",
+      "managerDecision",
+      "financeDecision",
+      "workflowRunId",
+      "workflow_run_id",
+      "submitted_at",
+      "submittedAt",
+      "created_at",
+      "createdAt",
+      "updated_at",
+      "updatedAt"
     ];
 
-    const csv = rows.map((row) =>
-      row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")
-    ).join("\n");
+    const keys = [
+      ...preferredKeys.filter(
+        (key) => Object.prototype.hasOwnProperty.call(combined, key)
+      ),
+      ...Object.keys(combined).filter(
+        (key) => !preferredKeys.includes(key)
+      )
+    ];
 
-    const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "etdox-finance-invoices.csv";
-    link.click();
-    URL.revokeObjectURL(url);
+    return [...new Set(keys)]
+      .filter((key) => {
+        const value = combined[key];
+
+        return (
+          value !== undefined &&
+          value !== null &&
+          value !== ""
+        );
+      })
+      .map((key) => ({
+        key,
+        label: formatLabel(key),
+        value: combined[key]
+      }));
   };
 
-  // --------------------------------------------------
-  // Shared UI renderers
-  // --------------------------------------------------
+  // ==========================================================
+  // NAVIGATION
+  // ==========================================================
 
-  const renderInvoices = (compact = false) => (
-    <div className="finance-table-wrap">
+  const navItems = [
+    {
+      id: "overview",
+      label: "Overview",
+      icon: LayoutDashboard
+    },
+    {
+      id: "requests",
+      label: "Employee Requests",
+      icon: ClipboardList
+    },
+    {
+      id: "budgets",
+      label: "Budgets",
+      icon: Wallet
+    },
+    {
+      id: "approvals",
+      label: "Approval History",
+      icon: CheckCircle2
+    }
+  ];
+
+  // ==========================================================
+  // REQUEST TABLE
+  // ==========================================================
+
+  const renderRequestsTable = (items) => (
+    <div className="finance-table-wrapper">
       <table className="finance-table">
         <thead>
           <tr>
-            <th>Invoice</th><th>Client / Employee</th><th>Issue date</th>
-            <th>Amount</th><th>Paid</th><th>Status</th>
-            {!compact && <th>Action</th>}
+            <th>Request</th>
+            <th>Employee</th>
+            <th>Product</th>
+            <th>Supplier</th>
+            <th>Department</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Actions</th>
           </tr>
         </thead>
+
         <tbody>
-          {filteredInvoices.map((invoice) => (
-            <tr key={invoice.id}>
-              <td>
-                <div className="finance-invoice-id">
-                  <span className="finance-file-icon"><FileText size={17} /></span>
-                  <strong>{invoice.invoiceNumber || invoice.id}</strong>
-                </div>
-              </td>
-              <td>{invoice.client}</td>
-              <td>{formatDate(invoice.date)}</td>
-              <td className="finance-amount-cell">{formatCurrency(invoice.amount)}</td>
-              <td>{formatCurrency(invoice.paidAmount)}</td>
-              <td>
-                <span className={`finance-status finance-status-${invoice.status.toLowerCase().replace(/\s+/g, "-")}`}>
-                  <span />{invoice.status}
+          {items.length ? (
+            items.map((request, index) => {
+              const id = getRequestId(request) || index;
+              const status = getStatus(request);
+
+              const canReview =
+                FINANCE_REVIEW_STATUSES.includes(status);
+
+              const employee = getEmployeeName(request);
+              const product = getProductName(request);
+
+              return (
+                <tr key={id}>
+                  <td>
+                    <strong>
+                      {getRequestNumber(request)}
+                    </strong>
+
+                    <small className="sub-value">
+                      {String(id)}
+                    </small>
+                  </td>
+
+                  <td>
+                    <div className="finance-employee-cell">
+                      <span className="finance-mini-avatar">
+                        {employee.charAt(0).toUpperCase()}
+                      </span>
+
+                      <div>
+                        <strong>{employee}</strong>
+
+                        <small>
+                          {getEmployeeEmail(request)}
+                        </small>
+                      </div>
+                    </div>
+                  </td>
+
+                  <td>
+                    <div className="finance-product-cell">
+                      <Package size={15} />
+                      {product}
+                    </div>
+                  </td>
+
+                  <td>{getSupplier(request)}</td>
+
+                  <td>{getDepartment(request)}</td>
+
+                  <td className="finance-amount">
+                    {money(
+                      getAmount(request),
+                      getCurrency(request)
+                    )}
+                  </td>
+
+                  <td>
+                    <span
+                      className={`finance-status ${getStatusClass(status)}`}
+                    >
+                      {status.replaceAll("_", " ")}
+                    </span>
+                  </td>
+
+                  <td>
+                    <div className="finance-row-actions">
+                      <button
+                        className="finance-icon-button"
+                        title="View complete details"
+                        onClick={() =>
+                          setSelectedRequest(request)
+                        }
+                      >
+                        <Eye size={15} />
+                      </button>
+
+                      {canReview && (
+                        <>
+                          <button
+                            className="finance-approve-button"
+                            title="Approve request"
+                            onClick={() =>
+                              openDecisionModal(
+                                request,
+                                "approve"
+                              )
+                            }
+                          >
+                            <Check size={14} />
+                          </button>
+
+                          <button
+                            className="finance-reject-button"
+                            title="Reject request"
+                            onClick={() =>
+                              openDecisionModal(
+                                request,
+                                "reject"
+                              )
+                            }
+                          >
+                            <X size={14} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })
+          ) : (
+            <tr>
+              <td colSpan="8" className="finance-empty">
+                <ClipboardList size={28} />
+                <strong>No requests found</strong>
+                <span>
+                  Employee requests will appear here when submitted.
                 </span>
               </td>
-              {!compact && (
-                <td>
-                  {invoice.outstanding > 0 ? (
-                    <button className="finance-table-action" onClick={() => markInvoicePaid(invoice)}>
-                      Record payment
-                    </button>
-                  ) : (
-                    <span className="finance-paid-label"><CheckCircle2 size={14} /> Paid</span>
-                  )}
-                </td>
-              )}
             </tr>
-          ))}
-          {!loading && filteredInvoices.length === 0 && (
-            <tr><td colSpan={compact ? 6 : 7} className="finance-empty">No invoices found.</td></tr>
-          )}
-          {loading && (
-            <tr><td colSpan={compact ? 6 : 7} className="finance-empty">Loading invoices…</td></tr>
           )}
         </tbody>
       </table>
     </div>
   );
 
-  const renderTransactions = (limit) => {
-    const visible = limit ? transactions.slice(0, limit) : transactions;
-
-    if (!visible.length) {
-      return <p className="finance-empty">{loading ? "Loading transactions…" : "No transaction records found."}</p>;
-    }
-
-    return (
-      <div className="finance-transaction-list">
-        {visible.map((item) => (
-          <div className="finance-transaction-row" key={item.id}>
-            <div className={`finance-transaction-icon ${item.type}`}>
-              {item.type === "income" ? <ArrowDownRight size={19} /> : <ArrowUpRight size={19} />}
-            </div>
-            <div className="finance-transaction-info">
-              <strong>{item.title}</strong><span>{item.subtitle}</span>
-            </div>
-            <span className="finance-transaction-date">{formatDate(item.date)}</span>
-            <strong className={`finance-transaction-amount ${item.type}`}>
-              {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
-            </strong>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const renderEmployeeRequests = () => (
-    <section className="finance-panel">
-      <div className="finance-section-heading">
-        <div>
-          <h2>Employee Purchase Requests</h2>
-          <p>Review employee purchase requests. Accept or decline an unresolved request; final decisions are shown in the status column.</p>
-        </div>
-        <button className="finance-secondary-button" onClick={() => loadFinanceData(true)} disabled={refreshing}>
-          <RefreshCw size={16} /> {refreshing ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
-
-      {error && (
-        <div className="finance-api-error" role="alert">
-          <AlertCircle size={18} />
-          <div>
-            <strong>Backend data warning</strong>
-            <p>{error}</p>
-          </div>
-        </div>
-      )}
-
-      <div className="finance-invoice-summary">
-        <div><span>Total requests</span><strong>{employeeRequests.length}</strong></div>
-        <div><span>Awaiting manager</span><strong>{pendingManagerRequests.length}</strong></div>
-        <div><span>Awaiting Finance</span><strong>{pendingFinanceRequests.length}</strong></div>
-      </div>
-
-      <div className="finance-table-toolbar">
-        <label className="finance-search">
-          <Search size={17} />
-          <input value={requestSearch} onChange={(e) => setRequestSearch(e.target.value)} placeholder="Search employee, request, or department…" />
-        </label>
-        <select value={requestFilter} onChange={(e) => setRequestFilter(e.target.value)} aria-label="Filter requests">
-          <option value="All">All statuses</option>
-          <option value="Pending Manager">Awaiting manager</option>
-          <option value="Pending Finance">Awaiting Finance</option>
-          <option value="Approved">Approved</option>
-          <option value="Rejected">Rejected</option>
-        </select>
-      </div>
-
-      {loading && employeeRequests.length === 0 ? (
-        <p className="finance-empty">Loading employee requests…</p>
-      ) : filteredRequests.length === 0 ? (
-        <div className="finance-empty">
-          <ClipboardList size={28} />
-          <p>No employee requests match this filter.</p>
-          <p>Check the API connection and confirm that employee requests have been saved in the database. Use Refresh to load the latest backend records.</p>
-        </div>
-      ) : (
-        <div className="finance-table-wrap">
-          <table className="finance-table">
-            <thead>
-              <tr>
-                <th>Employee</th><th>Request</th><th>Department</th>
-                <th>Justification</th><th>Amount</th><th>Submitted</th>
-                <th>Status</th><th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRequests.map((request) => (
-                <tr key={request.id}>
-                  <td>
-                    <strong>{request.employeeName}</strong><br />
-                    <span>{request.employeeEmail}</span>
-                  </td>
-                  <td>
-                    <strong>{request.title}</strong><br />
-                    <span>{request.id}</span>
-                  </td>
-                  <td>{request.department}</td>
-                  <td>
-                    {request.description.length > 120
-                      ? `${request.description.slice(0, 120)}…`
-                      : request.description}
-                    {request.decisionComment && (
-                      <div className="finance-request-decision-note">
-                        <strong>Finance note:</strong> {request.decisionComment}
-                      </div>
-                    )}
-                  </td>
-                  <td className="finance-amount-cell">{formatCurrency(request.amount)}</td>
-                  <td>{formatDate(request.date)}</td>
-                  <td>
-                    <span className={`finance-status finance-status-${request.status.toLowerCase().replace(/\s+/g, "-")}`}>
-                      <span />{request.status}
-                    </span>
-                  </td>
-                  <td>
-                    {canFinanceDecide(request) ? (
-                      <div className="finance-request-actions">
-                        <button
-                          className="finance-request-approve"
-                          disabled={Boolean(requestActionLoading)}
-                          onClick={() => reviewEmployeeRequest(request, "APPROVE")}
-                        >
-                          {requestActionLoading === `${request.id}-APPROVE` ? "Accepting…" : "Accept request"}
-                        </button>
-                        <button
-                          className="finance-request-reject"
-                          disabled={Boolean(requestActionLoading)}
-                          onClick={() => reviewEmployeeRequest(request, "REJECT")}
-                        >
-                          {requestActionLoading === `${request.id}-REJECT` ? "Declining…" : "Decline"}
-                        </button>
-                      </div>
-                    ) : request.status === "Approved" ? (
-                      <button
-                        className="finance-table-action"
-                        disabled={creatingInvoiceFor === request.id}
-                        onClick={() => createInvoiceForRequest(request)}
-                      >
-                        {creatingInvoiceFor === request.id ? "Creating…" : "Create invoice"}
-                      </button>
-                    ) : (
-                      <span className="finance-request-closed-label">Decision recorded</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
+  // ==========================================================
+  // BUDGET CARDS
+  // ==========================================================
 
   const renderBudgets = () => (
     <section className="finance-panel">
-      <div className="finance-section-heading">
-        <div><h2>Department Budgets</h2><p>Allocated, committed, spent, and available funds.</p></div>
-        <button className="finance-secondary-button" onClick={() => loadFinanceData(true)} disabled={refreshing}>
-          <RefreshCw size={16} /> Refresh
+      <div className="finance-panel-heading">
+        <div>
+          <h3>Organization Budgets</h3>
+          <p>
+            Monitor actual allocations and available funds.
+          </p>
+        </div>
+
+        <button
+          className="finance-button primary"
+          onClick={openCreateBudget}
+        >
+          <Plus size={15} />
+          Create Budget
         </button>
       </div>
-      {budgets.length === 0 ? (
-        <p className="finance-empty">No budget records returned by the backend.</p>
-      ) : (
-        <div className="finance-budget-list">
-          {budgets.map((budget) => {
-            const used = budget.limit > 0 ? Math.min(100, ((budget.spent + budget.committed) / budget.limit) * 100) : 0;
+
+      {budgetError && (
+        <div className="finance-alert error">
+          {budgetError}
+        </div>
+      )}
+
+      {budgets.length ? (
+        <div className="finance-budget-grid">
+          {budgets.map((budget, index) => {
+            const allocated = getBudgetAllocated(budget);
+            const available = getBudgetAvailable(budget);
+            const committed = getBudgetCommitted(budget);
+            const spent = getBudgetSpent(budget);
+            const reserved = getBudgetReserved(budget);
+
+            const used = Math.max(
+              0,
+              allocated - available
+            );
+
+            const percentage =
+              allocated > 0
+                ? Math.min(
+                    (used / allocated) * 100,
+                    100
+                  )
+                : 0;
+
             return (
-              <div className="finance-budget-row" key={budget.id}>
-                <div className="finance-budget-heading">
-                  <div><strong>{budget.name}</strong><span>{budget.department}</span></div>
-                  <span>{Math.round(used)}% allocated</span>
+              <div
+                className="finance-budget-card"
+                key={getBudgetId(budget) || index}
+              >
+                <div className="finance-budget-card-heading">
+                  <div>
+                    <h4>
+                      {getBudgetTitle(budget, index)}
+                    </h4>
+
+                    <p>
+                      {budget.department_name ||
+                        budget.department ||
+                        "Organization budget"}
+                    </p>
+                  </div>
+
+                  <button
+                    className="finance-icon-button"
+                    onClick={() => openEditBudget(budget)}
+                    title="Edit budget"
+                  >
+                    <Pencil size={14} />
+                  </button>
                 </div>
-                <div className="finance-budget-track">
-                  <span style={{ width: `${used}%` }} className={used >= 90 ? "budget-warning" : ""} />
+
+                <div className="finance-budget-line">
+                  <span>Allocated</span>
+                  <strong>
+                    {money(allocated, budget.currency)}
+                  </strong>
                 </div>
-                <div className="finance-budget-footer">
-                  <span>Spent: {formatCurrency(budget.spent)}</span>
-                  <span>Committed: {formatCurrency(budget.committed)}</span>
-                  <span>Available: {formatCurrency(budget.remaining)}</span>
+
+                <div className="finance-progress">
+                  <span
+                    style={{ width: `${percentage}%` }}
+                  />
+                </div>
+
+                <div className="finance-budget-line">
+                  <span>Committed</span>
+                  <strong>
+                    {money(committed, budget.currency)}
+                  </strong>
+                </div>
+
+                <div className="finance-budget-line">
+                  <span>Reserved</span>
+                  <strong>
+                    {money(reserved, budget.currency)}
+                  </strong>
+                </div>
+
+                <div className="finance-budget-line">
+                  <span>Spent</span>
+                  <strong>
+                    {money(spent, budget.currency)}
+                  </strong>
+                </div>
+
+                <div className="finance-budget-line">
+                  <span>Available</span>
+                  <strong className="finance-available">
+                    {money(available, budget.currency)}
+                  </strong>
+                </div>
+
+                <div className="finance-budget-meta">
+                  <span>
+                    Fiscal year:{" "}
+                    {budget.fiscalYear ||
+                      budget.fiscal_year ||
+                      "—"}
+                  </span>
+
+                  <span>
+                    {budget.currency || "INR"}
+                  </span>
                 </div>
               </div>
             );
           })}
+        </div>
+      ) : (
+        <div className="finance-empty finance-budget-empty">
+          <Wallet size={28} />
+          <strong>No budgets found</strong>
+          <span>
+            No budget records were returned by the server.
+          </span>
+
+          <button
+            className="finance-button primary"
+            onClick={openCreateBudget}
+          >
+            <Plus size={15} />
+            Create Budget
+          </button>
         </div>
       )}
     </section>
   );
 
-  const renderReports = () => (
-    <>
-      <section className="finance-panel">
-        <div className="finance-section-heading">
-          <div><h2>Expense Breakdown</h2><p>Spending categories from available transaction records.</p></div>
-          <button className="finance-secondary-button" onClick={exportInvoices}><Download size={16} /> Export invoices</button>
-        </div>
-        {expenseData.length === 0 ? <p className="finance-empty">No expense breakdown available.</p> : (
-          <div className="finance-report-chart">
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={expenseData} barSize={32}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f6" />
-                <XAxis dataKey="category" axisLine={false} tickLine={false} />
-                <YAxis axisLine={false} tickLine={false} tickFormatter={formatCompactCurrency} />
-                <Tooltip formatter={(value) => formatCurrency(value)} />
-                <Bar dataKey="amount" name="Expenses" fill="#6860e9" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </section>
-      <section className="finance-panel">
-        <div className="finance-section-heading">
-          <div><h2>Monthly Revenue and Expenses</h2><p>Monthly totals from analytics or transactions.</p></div>
-        </div>
-        {revenueData.length === 0 ? <p className="finance-empty">No monthly records available.</p> : (
-          <div className="finance-report-chart">
-            <ResponsiveContainer width="100%" height={280}>
-              <AreaChart data={revenueData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f6" />
-                <XAxis dataKey="month" axisLine={false} tickLine={false} />
-                <YAxis axisLine={false} tickLine={false} tickFormatter={formatCompactCurrency} />
-                <Tooltip formatter={(value) => formatCurrency(value)} />
-                <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#6258e8" fill="#e8e6ff" />
-                <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f0a04a" fill="#fff0dc" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </section>
-    </>
-  );
-
-  const renderSettings = () => (
-    <section className="finance-panel">
-      <div className="finance-section-heading">
-        <div><h2>Finance Settings</h2><p>Finance workspace configuration.</p></div>
-        <Settings size={22} />
-      </div>
-      <div className="finance-setting-row">
-        <div><strong>Reporting currency</strong><p>Indian Rupee (INR · ₹)</p></div>
-        <span className="finance-setting-tag">INR</span>
-      </div>
-      <div className="finance-setting-row">
-        <div><strong>Finance API</strong><p>{API_BASE_URL}</p></div>
-        <span className="finance-setting-tag">{error ? "Check connection" : "Configured"}</span>
-      </div>
-      <div className="finance-setting-row">
-        <div><strong>Procurement API</strong><p>{PROCUREMENT_API_URL}</p></div>
-        <span className="finance-setting-tag">{employeeRequests.length} requests</span>
-      </div>
-      <button className="finance-primary-button finance-settings-refresh" onClick={() => loadFinanceData(true)} disabled={refreshing}>
-        <RefreshCw size={16} /> Refresh finance data
-      </button>
-    </section>
-  );
-
-  const renderContent = () => {
-    if (activePage === "Employee Requests") return renderEmployeeRequests();
-    if (activePage === "Budgets") return renderBudgets();
-    if (activePage === "Reports") return renderReports();
-    if (activePage === "Settings") return renderSettings();
-
-    if (activePage === "Transactions") {
-      return (
-        <section className="finance-panel">
-          <div className="finance-section-heading">
-            <div><h2>Transactions</h2><p>Payment and transaction records from your backend.</p></div>
-            <button className="finance-secondary-button" onClick={() => loadFinanceData(true)} disabled={refreshing}>
-              <RefreshCw size={16} /> Refresh
-            </button>
-          </div>
-          {renderTransactions()}
-        </section>
-      );
-    }
-
-    if (activePage === "Invoices") {
-      return (
-        <section className="finance-panel">
-          <div className="finance-section-heading">
-            <div><h2>Invoices</h2><p>Invoices created for approved purchase requests.</p></div>
-            <button className="finance-secondary-button" onClick={() => setActivePage("Employee Requests")}>
-              <ClipboardList size={16} /> Approved requests
-            </button>
-          </div>
-          <div className="finance-invoice-summary">
-            <div><span>Total invoice value</span><strong>{formatCurrency(totalInvoiceValue)}</strong></div>
-            <div><span>Payments received</span><strong>{formatCurrency(paidValue)}</strong></div>
-            <div><span>Outstanding balance</span><strong>{formatCurrency(pendingValue)}</strong></div>
-          </div>
-          <div className="finance-table-toolbar">
-            <label className="finance-search">
-              <Search size={17} />
-              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search invoices or clients…" />
-            </label>
-            <select value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value)} aria-label="Filter invoices">
-              <option value="All">All statuses</option>
-              <option value="Paid">Paid</option>
-              <option value="Partially Paid">Partially paid</option>
-              <option value="Pending">Unpaid</option>
-              <option value="Overdue">Overdue</option>
-            </select>
-            <button className="finance-secondary-button" onClick={exportInvoices}><Download size={16} /> Export CSV</button>
-          </div>
-          {renderInvoices()}
-        </section>
-      );
-    }
-
-    return (
-      <>
-        <section className="finance-welcome">
-          <div className="finance-welcome-content">
-            <span className="finance-eyebrow">FINANCE WORKSPACE</span>
-            <h2>Financial clarity starts here.</h2>
-            <p>Monitor cash flow, track invoices, and review employee purchase requests.</p>
-            <button className="finance-primary-button" onClick={() => setActivePage("Employee Requests")}>
-              Review requests <ArrowUpRight size={17} />
-            </button>
-          </div>
-          <div className="finance-welcome-art">
-            <div className="finance-welcome-art-circle"><CircleDollarSign size={53} /></div>
-            <div className="finance-welcome-floating"><TrendingUp size={16} /> Finance overview</div>
-          </div>
-        </section>
-
-        <section className="finance-stats-grid">
-          {[
-            { label: "Total revenue", value: totalRevenue, icon: Wallet, color: "purple" },
-            { label: "Total expenses", value: totalExpenses, icon: CreditCard, color: "orange" },
-            { label: "Net profit", value: netProfit, icon: ChartNoAxesCombined, color: "green" },
-            { label: "Outstanding invoices", value: pendingValue, icon: Clock3, color: "blue" },
-          ].map((stat) => {
-            const Icon = stat.icon;
-            return (
-              <div className="finance-stat-card" key={stat.label}>
-                <div className="finance-stat-top">
-                  <span>{stat.label}</span>
-                  <div className={`finance-stat-icon ${stat.color}`}><Icon size={20} /></div>
-                </div>
-                <strong className="finance-stat-value">{loading ? "Loading…" : formatCurrency(stat.value)}</strong>
-                <div className="finance-stat-foot">
-                  <span>From backend records</span>
-                  {stat.label === "Outstanding invoices" && (
-                    <button className="finance-inline-link" onClick={() => setActivePage("Invoices")}>View <ArrowUpRight size={13} /></button>
-                  )}
-                </div>
-                <div className={`finance-progress ${stat.color === "orange" ? "orange-progress" : stat.color === "green" ? "green-progress" : stat.color === "blue" ? "blue-progress" : ""}`}>
-                  <span style={{ width: stat.value > 0 ? "65%" : "0%" }} />
-                </div>
-              </div>
-            );
-          })}
-        </section>
-
-        {pendingFinanceRequests.length > 0 && (
-          <div className="finance-overdue-notice">
-            <ClipboardList size={18} />
-            <span>{pendingFinanceRequests.length} request(s) are waiting for Finance approval.</span>
-            <button onClick={() => setActivePage("Employee Requests")}>Review requests</button>
-          </div>
-        )}
-
-        {pendingManagerRequests.length > 0 && (
-          <div className="finance-overdue-notice">
-            <Clock3 size={18} />
-            <span>{pendingManagerRequests.length} request(s) are still waiting for manager approval.</span>
-            <button onClick={() => setActivePage("Employee Requests")}>View requests</button>
-          </div>
-        )}
-
-        {overdueValue > 0 && (
-          <div className="finance-overdue-notice">
-            <AlertCircle size={18} />
-            <span>{formatCurrency(overdueValue)} in overdue invoices.</span>
-            <button onClick={() => { setInvoiceFilter("Overdue"); setActivePage("Invoices"); }}>Review invoices</button>
-          </div>
-        )}
-
-        <section className="finance-chart-grid">
-          <div className="finance-panel finance-revenue-panel">
-            <div className="finance-section-heading">
-              <div><h2>Revenue Overview</h2><p>Revenue versus expenses from backend records.</p></div>
-              <button className="finance-more-button" onClick={() => loadFinanceData(true)} disabled={refreshing} aria-label="Refresh revenue data">
-                <RefreshCw size={18} />
-              </button>
-            </div>
-            {revenueData.length === 0 ? <p className="finance-empty">No monthly revenue data available yet.</p> : (
-              <div className="finance-chart">
-                <ResponsiveContainer width="100%" height={260}>
-                  <AreaChart data={revenueData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f6" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} />
-                    <YAxis axisLine={false} tickLine={false} tickFormatter={formatCompactCurrency} />
-                    <Tooltip formatter={(value) => formatCurrency(value)} />
-                    <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#6258e8" fill="#e8e6ff" strokeWidth={2.5} />
-                    <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f0a04a" fill="#fff0dc" strokeWidth={2.5} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-          <div className="finance-panel finance-expense-panel">
-            <div className="finance-section-heading">
-              <div><h2>Expense Breakdown</h2><p>Spending categories from financial records.</p></div>
-              <button className="finance-more-button" onClick={() => setActivePage("Reports")} aria-label="Open reports"><MoreHorizontal size={20} /></button>
-            </div>
-            {expenseData.length === 0 ? <p className="finance-empty">No expense breakdown available.</p> : (
-              <div className="finance-expense-chart">
-                <ResponsiveContainer width="100%" height={245}>
-                  <BarChart data={expenseData} barSize={26}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf0f6" />
-                    <XAxis dataKey="category" axisLine={false} tickLine={false} />
-                    <YAxis hide />
-                    <Tooltip formatter={(value) => formatCurrency(value)} />
-                    <Bar dataKey="amount" name="Expenses" fill="#7770ec" radius={[5, 5, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-            <div className="finance-expense-total"><span>Total tracked expenses</span><strong>{formatCurrency(totalExpenses)}</strong></div>
-          </div>
-        </section>
-
-        <section className="finance-panel finance-recent-panel">
-          <div className="finance-section-heading">
-            <div><h2>Recent Invoices</h2><p>Latest invoice activity from the backend.</p></div>
-            <button className="finance-text-button" onClick={() => setActivePage("Invoices")}>View all invoices <ArrowUpRight size={15} /></button>
-          </div>
-          <div className="finance-table-toolbar finance-home-toolbar">
-            <label className="finance-search"><Search size={16} /><input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search invoices…" /></label>
-            <button className="finance-secondary-button" onClick={exportInvoices}><Download size={15} /> Export</button>
-          </div>
-          {renderInvoices(true)}
-        </section>
-
-        <section className="finance-panel finance-transactions-panel">
-          <div className="finance-section-heading">
-            <div><h2>Recent Transactions</h2><p>Latest payment records.</p></div>
-            <button className="finance-text-button" onClick={() => setActivePage("Transactions")}>View transactions <ArrowUpRight size={15} /></button>
-          </div>
-          {renderTransactions(5)}
-        </section>
-      </>
-    );
-  };
-
-  // --------------------------------------------------
-  // Main layout
-  // --------------------------------------------------
-
-  const logout = () => {
-    const keys = [
-      "accessToken", "access_token", "token", "authToken", "auth_token",
-      "jwt", "jwtToken", "etdoxToken", "etdox_token", "user", "auth", "session"
-    ];
-
-    [window.localStorage, window.sessionStorage].forEach((store) => {
-      keys.forEach((key) => store.removeItem(key));
-    });
-
-    window.location.href = "/login";
-  };
+  // ==========================================================
+  // MAIN UI
+  // ==========================================================
 
   return (
-    <div className="finance-dashboard">
-      {mobileMenuOpen && (
-        <button className="finance-mobile-overlay" onClick={() => setMobileMenuOpen(false)} aria-label="Close navigation" />
-      )}
+    <div className="finance-app">
 
-      <aside className={`finance-sidebar ${mobileMenuOpen ? "finance-sidebar-open" : ""}`}>
+      <style>{`
+        .finance-app {
+          --primary: #2864d9;
+          --dark: #17243b;
+          --muted: #8290a5;
+          --border: #e8edf4;
+          min-height: 100vh;
+          display: flex;
+          color: var(--dark);
+          background: #f5f7fb;
+          font-family: Inter, Arial, sans-serif;
+        }
+
+        .finance-sidebar {
+          width: 245px;
+          min-width: 245px;
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+          padding: 24px 16px;
+          background: #fff;
+          border-right: 1px solid var(--border);
+          z-index: 20;
+        }
+
+        .finance-brand {
+          display: flex;
+          align-items: center;
+          gap: 11px;
+          padding: 0 10px 30px;
+          font-size: 23px;
+          font-weight: 800;
+        }
+
+        .finance-brand-icon {
+          width: 39px;
+          height: 39px;
+          display: grid;
+          place-items: center;
+          color: white;
+          background: linear-gradient(145deg,#3679ed,#194ba9);
+          border-radius: 11px;
+        }
+
+        .finance-brand span:last-child span {
+          color: var(--primary);
+        }
+
+        .finance-workspace-label {
+          padding: 0 11px;
+          color: #a0aabd;
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 1.5px;
+        }
+
+        .finance-nav {
+          display: grid;
+          gap: 6px;
+        }
+
+        .finance-nav button {
+          width: 100%;
+          min-height: 45px;
+          padding: 0 12px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          color: #738198;
+          background: transparent;
+          border: 0;
+          border-radius: 9px;
+          text-align: left;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+
+        .finance-nav button:hover,
+        .finance-nav button.active {
+          color: var(--primary);
+          background: #edf3ff;
+        }
+
+        .finance-sidebar-bottom {
+          margin-top: auto;
+          padding-top: 20px;
+          border-top: 1px solid var(--border);
+        }
+
+        .finance-user-mini {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 5px 16px;
+        }
+
+        .finance-avatar,
+        .finance-mini-avatar {
+          display: grid;
+          place-items: center;
+          flex-shrink: 0;
+          color: #2d67ce;
+          background: #eaf1ff;
+          border-radius: 50%;
+          font-weight: 800;
+        }
+
+        .finance-avatar {
+          width: 36px;
+          height: 36px;
+        }
+
+        .finance-user-mini strong,
+        .finance-user-mini small {
+          display: block;
+          max-width: 150px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .finance-user-mini strong {
+          font-size: 11px;
+        }
+
+        .finance-user-mini small {
+          margin-top: 4px;
+          color: var(--muted);
+          font-size: 9px;
+        }
+
+        .finance-logout {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 11px 12px;
+          color: #d14d5b;
+          background: #fff5f5;
+          border: 0;
+          border-radius: 8px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .finance-main {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .finance-topbar {
+          min-height: 72px;
+          padding: 0 30px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          background: #fff;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .finance-topbar-left,
+        .finance-topbar-right {
+          display: flex;
+          align-items: center;
+          gap: 13px;
+        }
+
+        .finance-topbar h1 {
+          margin: 0;
+          font-size: 17px;
+          font-weight: 800;
+        }
+
+        .finance-topbar p {
+          margin: 4px 0 0;
+          color: var(--muted);
+          font-size: 10px;
+        }
+
+        .finance-topbar-user {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding-left: 13px;
+          border-left: 1px solid var(--border);
+        }
+
+        .finance-topbar-user strong,
+        .finance-topbar-user small {
+          display: block;
+        }
+
+        .finance-topbar-user strong {
+          font-size: 11px;
+        }
+
+        .finance-topbar-user small {
+          margin-top: 3px;
+          color: var(--muted);
+          font-size: 9px;
+        }
+
+        .finance-content {
+          max-width: 1500px;
+          margin: auto;
+          padding: 30px 32px 45px;
+        }
+
+        .finance-welcome {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 15px;
+          margin-bottom: 25px;
+        }
+
+        .finance-welcome h2 {
+          margin: 0;
+          font-size: 22px;
+          font-weight: 800;
+        }
+
+        .finance-welcome p {
+          margin: 7px 0 0;
+          color: var(--muted);
+          font-size: 11px;
+        }
+
+        .finance-button {
+          min-height: 38px;
+          padding: 0 12px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          color: #52627a;
+          background: #fff;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          font-size: 10px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        .finance-button:disabled {
+          opacity: .6;
+          cursor: not-allowed;
+        }
+
+        .finance-button.primary {
+          min-height: 41px;
+          padding: 0 16px;
+          color: #fff;
+          background: var(--primary);
+          border-color: var(--primary);
+          font-size: 11px;
+        }
+
+        .finance-stats {
+          display: grid;
+          grid-template-columns: repeat(4,minmax(0,1fr));
+          gap: 15px;
+          margin-bottom: 24px;
+        }
+
+        .finance-stat-card {
+          min-width: 0;
+          padding: 19px;
+          background: #fff;
+          border: 1px solid var(--border);
+          border-radius: 12px;
+        }
+
+        .finance-stat-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .finance-stat-top small {
+          color: var(--muted);
+          font-size: 10px;
+          font-weight: 600;
+        }
+
+        .finance-stat-icon {
+          width: 36px;
+          height: 36px;
+          display: grid;
+          place-items: center;
+          color: var(--primary);
+          background: #edf3ff;
+          border-radius: 9px;
+        }
+
+        .finance-stat-card h3 {
+          margin: 14px 0 4px;
+          font-size: 22px;
+          font-weight: 800;
+          overflow-wrap: anywhere;
+        }
+
+        .finance-stat-card p {
+          margin: 0;
+          color: #9aa5b5;
+          font-size: 9px;
+        }
+
+        .finance-panel {
+          margin-bottom: 22px;
+          padding: 21px;
+          background: #fff;
+          border: 1px solid var(--border);
+          border-radius: 12px;
+        }
+
+        .finance-panel-heading {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 18px;
+        }
+
+        .finance-panel-heading h3 {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 800;
+        }
+
+        .finance-panel-heading p {
+          margin: 5px 0 0;
+          color: var(--muted);
+          font-size: 10px;
+        }
+
+        .finance-table-wrapper {
+          width: 100%;
+          overflow-x: auto;
+        }
+
+        .finance-table {
+          width: 100%;
+          min-width: 1050px;
+          border-collapse: collapse;
+          text-align: left;
+        }
+
+        .finance-table th {
+          padding: 12px 10px;
+          color: #8996a9;
+          background: #f8faff;
+          border-bottom: 1px solid var(--border);
+          font-size: 9px;
+          font-weight: 800;
+          text-transform: uppercase;
+        }
+
+        .finance-table td {
+          padding: 13px 10px;
+          color: #627087;
+          border-bottom: 1px solid #f0f2f6;
+          font-size: 10px;
+          white-space: nowrap;
+          vertical-align: middle;
+        }
+
+        .finance-table td strong {
+          color: #2b3b54;
+          font-size: 10px;
+        }
+
+        .sub-value {
+          display: block;
+          max-width: 150px;
+          margin-top: 4px;
+          color: #9aa5b5;
+          font-size: 8px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .finance-employee-cell {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .finance-mini-avatar {
+          width: 29px;
+          height: 29px;
+          font-size: 10px;
+        }
+
+        .finance-employee-cell strong,
+        .finance-employee-cell small {
+          display: block;
+        }
+
+        .finance-employee-cell small {
+          max-width: 150px;
+          margin-top: 4px;
+          color: #96a2b3;
+          font-size: 8px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .finance-product-cell {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          color: #34445c;
+          font-weight: 600;
+        }
+
+        .finance-product-cell svg {
+          color: var(--primary);
+          flex-shrink: 0;
+        }
+
+        .finance-amount {
+          color: #243651 !important;
+          font-weight: 800;
+        }
+
+        .finance-status {
+          display: inline-flex;
+          padding: 5px 8px;
+          border-radius: 20px;
+          font-size: 8px;
+          font-weight: 800;
+        }
+
+        .finance-status.pending {
+          color: #a76b0b;
+          background: #fff5dc;
+        }
+
+        .finance-status.waiting {
+          color: #3569bf;
+          background: #edf3ff;
+        }
+
+        .finance-status.approved {
+          color: #13834c;
+          background: #e9f9f0;
+        }
+
+        .finance-status.rejected {
+          color: #bd3445;
+          background: #fff0f1;
+        }
+
+        .finance-status.default {
+          color: #59677c;
+          background: #edf0f5;
+        }
+
+        .finance-row-actions {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+        }
+
+        .finance-icon-button,
+        .finance-approve-button,
+        .finance-reject-button {
+          width: 29px;
+          height: 29px;
+          display: grid;
+          place-items: center;
+          border: 0;
+          border-radius: 7px;
+          cursor: pointer;
+        }
+
+        .finance-icon-button {
+          color: #53647d;
+          background: #eef2f7;
+        }
+
+        .finance-approve-button {
+          color: #13834c;
+          background: #e9f9f0;
+        }
+
+        .finance-reject-button {
+          color: #bd3445;
+          background: #fff0f1;
+        }
+
+        .finance-empty {
+          min-height: 145px;
+          text-align: center !important;
+          color: #9aa6b7 !important;
+        }
+
+        .finance-empty svg,
+        .finance-empty strong,
+        .finance-empty span {
+          display: block;
+          margin: 0 auto 7px;
+        }
+
+        .finance-empty strong {
+          color: #53627a !important;
+        }
+
+        .finance-empty span {
+          font-size: 10px;
+          white-space: normal;
+        }
+
+        .finance-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 17px;
+          flex-wrap: wrap;
+        }
+
+        .finance-search {
+          width: min(350px,100%);
+          height: 38px;
+          padding: 0 10px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #8795a9;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+        }
+
+        .finance-search input {
+          width: 100%;
+          min-width: 0;
+          border: 0;
+          outline: 0;
+          font-size: 11px;
+        }
+
+        .finance-filter {
+          height: 38px;
+          padding: 0 10px;
+          color: #52627a;
+          background: #fff;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          outline: 0;
+          font-size: 10px;
+        }
+
+        .finance-budget-grid {
+          display: grid;
+          grid-template-columns: repeat(2,minmax(0,1fr));
+          gap: 13px;
+        }
+
+        .finance-budget-card {
+          padding: 17px;
+          border: 1px solid var(--border);
+          border-radius: 9px;
+        }
+
+        .finance-budget-card-heading {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 10px;
+          margin-bottom: 15px;
+        }
+
+        .finance-budget-card h4 {
+          margin: 0 0 7px;
+          font-size: 12px;
+        }
+
+        .finance-budget-card p {
+          margin: 0;
+          color: var(--muted);
+          font-size: 10px;
+        }
+
+        .finance-budget-line {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          margin-top: 9px;
+          color: #6f7d91;
+          font-size: 9px;
+        }
+
+        .finance-budget-line strong {
+          color: #273951;
+        }
+
+        .finance-available {
+          color: #13834c !important;
+        }
+
+        .finance-progress {
+          height: 6px;
+          margin-top: 10px;
+          overflow: hidden;
+          background: #edf1f7;
+          border-radius: 10px;
+        }
+
+        .finance-progress span {
+          display: block;
+          height: 100%;
+          background: #3476e5;
+          border-radius: inherit;
+        }
+
+        .finance-budget-meta {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          margin-top: 14px;
+          padding-top: 10px;
+          border-top: 1px solid #f0f2f6;
+          color: #8a97a9;
+          font-size: 9px;
+        }
+
+        .finance-budget-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          padding: 30px;
+        }
+
+        .finance-alert {
+          margin-bottom: 17px;
+          padding: 12px 14px;
+          display: flex;
+          align-items: flex-start;
+          gap: 9px;
+          border-radius: 8px;
+          font-size: 10px;
+          line-height: 1.5;
+        }
+
+        .finance-alert.error {
+          color: #b42332;
+          background: #fff0f1;
+          border: 1px solid #ffdadd;
+        }
+
+        .finance-alert.success {
+          color: #16804b;
+          background: #edfff5;
+          border: 1px solid #c9f1db;
+        }
+
+        .finance-modal-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 100;
+          display: grid;
+          place-items: center;
+          padding: 18px;
+          background: rgba(15,28,49,.48);
+        }
+
+        .finance-modal {
+          width: min(760px,100%);
+          max-height: 92vh;
+          overflow-y: auto;
+          padding: 24px;
+          background: #fff;
+          border-radius: 14px;
+          box-shadow: 0 20px 70px rgba(0,0,0,.2);
+        }
+
+        .finance-modal-heading {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 19px;
+        }
+
+        .finance-modal-heading h3 {
+          margin: 0;
+          font-size: 16px;
+          font-weight: 800;
+        }
+
+        .finance-modal-close {
+          width: 30px;
+          height: 30px;
+          display: grid;
+          place-items: center;
+          color: #64748b;
+          background: #f1f4f8;
+          border: 0;
+          border-radius: 7px;
+          cursor: pointer;
+        }
+
+        .finance-modal-close:disabled {
+          opacity: .5;
+          cursor: not-allowed;
+        }
+
+        .finance-detail-grid {
+          display: grid;
+          grid-template-columns: repeat(2,minmax(0,1fr));
+          gap: 10px;
+          margin-bottom: 15px;
+        }
+
+        .finance-detail {
+          min-width: 0;
+          padding: 12px;
+          background: #f7f9fc;
+          border: 1px solid #edf0f5;
+          border-radius: 8px;
+        }
+
+        .finance-detail small {
+          display: block;
+          margin-bottom: 6px;
+          color: #8795a9;
+          font-size: 9px;
+        }
+
+        .finance-detail strong {
+          display: block;
+          color: #293951;
+          font-size: 11px;
+          overflow-wrap: anywhere;
+          white-space: pre-wrap;
+        }
+
+        .finance-all-fields {
+          display: grid;
+          grid-template-columns: repeat(2,minmax(0,1fr));
+          gap: 9px;
+          margin-top: 15px;
+        }
+
+        .finance-history {
+          margin-top: 20px;
+          padding-top: 15px;
+          border-top: 1px solid var(--border);
+        }
+
+        .finance-history h4 {
+          margin: 0 0 12px;
+          font-size: 12px;
+        }
+
+        .finance-history-item {
+          padding: 11px;
+          margin-bottom: 8px;
+          background: #f7f9fc;
+          border-radius: 8px;
+          font-size: 10px;
+          overflow-wrap: anywhere;
+        }
+
+        .finance-form-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 13px;
+        }
+
+        .finance-form-field {
+          min-width: 0;
+          margin-bottom: 13px;
+        }
+
+        .finance-form-field.full {
+          grid-column: 1/-1;
+        }
+
+        .finance-form-field label,
+        .finance-modal-field label {
+          display: block;
+          margin-bottom: 7px;
+          color: #47566d;
+          font-size: 10px;
+          font-weight: 700;
+        }
+
+        .finance-form-field input,
+        .finance-form-field select,
+        .finance-form-field textarea,
+        .finance-modal-field textarea {
+          width: 100%;
+          min-height: 39px;
+          padding: 9px 10px;
+          color: #293951;
+          background: #fff;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          outline: 0;
+          font-size: 11px;
+        }
+
+        .finance-form-field textarea,
+        .finance-modal-field textarea {
+          min-height: 75px;
+          resize: vertical;
+        }
+
+        .finance-modal-field {
+          margin-top: 16px;
+        }
+
+        .finance-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 9px;
+          margin-top: 20px;
+        }
+
+        .finance-mobile-menu {
+          display: none;
+          width: 35px;
+          height: 35px;
+          place-items: center;
+          color: #52627a;
+          background: #f5f7fb;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          cursor: pointer;
+        }
+
+        .finance-loading {
+          min-height: 250px;
+          display: grid;
+          place-items: center;
+          color: #8290a5;
+          font-size: 11px;
+        }
+
+        .finance-loading svg {
+          animation: finance-spin 1s linear infinite;
+        }
+
+        @keyframes finance-spin {
+          to { transform: rotate(360deg); }
+        }
+
+        @media(max-width:1050px) {
+          .finance-sidebar {
+            width: 220px;
+            min-width: 220px;
+          }
+
+          .finance-content {
+            padding: 25px 20px;
+          }
+
+          .finance-stats {
+            grid-template-columns: repeat(2,minmax(0,1fr));
+          }
+        }
+
+        @media(max-width:760px) {
+          .finance-sidebar {
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            transform: translateX(-105%);
+            transition: transform .25s;
+            box-shadow: 10px 0 30px rgba(20,35,60,.08);
+          }
+
+          .finance-sidebar.open {
+            transform: translateX(0);
+          }
+
+          .finance-mobile-menu {
+            display: grid;
+          }
+
+          .finance-topbar {
+            padding: 0 16px;
+          }
+
+          .finance-content {
+            padding: 22px 15px;
+          }
+
+          .finance-welcome {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+
+          .finance-panel {
+            padding: 15px;
+          }
+        }
+
+        @media(max-width:480px) {
+          .finance-topbar-user > div:last-child {
+            display: none;
+          }
+
+          .finance-stats {
+            gap: 10px;
+          }
+
+          .finance-stat-card {
+            padding: 14px;
+          }
+
+          .finance-stat-card h3 {
+            font-size: 19px;
+          }
+
+          .finance-budget-grid,
+          .finance-detail-grid,
+          .finance-all-fields,
+          .finance-form-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .finance-form-field.full {
+            grid-column: auto;
+          }
+
+          .finance-toolbar {
+            align-items: stretch;
+            flex-direction: column;
+          }
+
+          .finance-search {
+            width: 100%;
+          }
+
+          .finance-modal-actions {
+            flex-direction: column-reverse;
+          }
+
+          .finance-modal-actions button {
+            width: 100%;
+          }
+        }
+      `}</style>
+
+      {/* ====================================================
+          SIDEBAR
+      ==================================================== */}
+
+      <aside
+        className={`finance-sidebar ${
+          sidebarOpen ? "open" : ""
+        }`}
+      >
         <div className="finance-brand">
-          <div className="finance-brand-mark">E</div>
-          <div className="finance-brand-copy"><strong>ETDOX</strong><span>FINANCE WORKSPACE</span></div>
-          <button className="finance-close-menu" onClick={() => setMobileMenuOpen(false)} aria-label="Close menu"><X size={20} /></button>
+          <span className="finance-brand-icon">
+            <Building2 size={22} />
+          </span>
+
+          <span>
+            ETDOX<span>.</span>
+          </span>
         </div>
 
-        <div className="finance-sidebar-label">FINANCE MANAGEMENT</div>
+        <p className="finance-workspace-label">
+          FINANCE WORKSPACE
+        </p>
 
         <nav className="finance-nav">
           {navItems.map((item) => {
             const Icon = item.icon;
+
             return (
-              <button key={item.label} className={`finance-nav-item ${activePage === item.label ? "active" : ""}`} onClick={() => { setActivePage(item.label); setMobileMenuOpen(false); }}>
-                <Icon size={19} /><span>{item.label}</span>
-                {item.label === "Invoices" && <span className="finance-nav-count">{invoices.length}</span>}
-                {item.label === "Employee Requests" && pendingFinanceRequests.length > 0 && <span className="finance-nav-count">{pendingFinanceRequests.length}</span>}
+              <button
+                key={item.id}
+                className={
+                  activeTab === item.id ? "active" : ""
+                }
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSidebarOpen(false);
+                  setError("");
+                  setSuccess("");
+                  setBudgetError("");
+                }}
+              >
+                <Icon size={18} />
+                {item.label}
+
+                {activeTab === item.id && (
+                  <ChevronRight
+                    size={15}
+                    style={{ marginLeft: "auto" }}
+                  />
+                )}
               </button>
             );
           })}
         </nav>
 
         <div className="finance-sidebar-bottom">
-          <div className="finance-help-card">
-            <div className="finance-help-icon"><CircleDollarSign size={20} /></div>
-            <strong>Need financial help?</strong>
-            <p>Contact your finance administrator for assistance.</p>
-            <a href="mailto:finance@example.com">Contact finance <ArrowUpRight size={14} /></a>
+          <div className="finance-user-mini">
+            <div className="finance-avatar">
+              {financeName.charAt(0).toUpperCase()}
+            </div>
+
+            <div>
+              <strong>{financeName}</strong>
+              <small>
+                {user?.email || "Finance account"}
+              </small>
+            </div>
           </div>
-          <button className="finance-logout" onClick={logout}><LogOut size={18} /> Log out</button>
+
+          <button
+            className="finance-logout"
+            onClick={handleLogout}
+          >
+            <LogOut size={16} />
+            Sign out
+          </button>
         </div>
       </aside>
 
+      {/* ====================================================
+          MAIN CONTENT
+      ==================================================== */}
+
       <main className="finance-main">
+
         <header className="finance-topbar">
           <div className="finance-topbar-left">
-            <button className="finance-menu-button" onClick={() => setMobileMenuOpen(true)} aria-label="Open menu"><Menu size={22} /></button>
+            <button
+              className="finance-mobile-menu"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label="Toggle menu"
+            >
+              {sidebarOpen
+                ? <X size={18} />
+                : <Menu size={18} />}
+            </button>
+
             <div>
-              <div className="finance-breadcrumb">Workspace <span>/</span> Finance <span>/</span> {activePage}</div>
-              <h1>{activePage}</h1>
+              <h1>
+                {activeTab === "overview"
+                  ? "Finance Dashboard"
+                  : activeTab === "requests"
+                  ? "Employee Requests"
+                  : activeTab === "budgets"
+                  ? "Budget Management"
+                  : "Approval History"}
+              </h1>
+
+              <p>
+                Review procurement requests and manage budgets.
+              </p>
             </div>
           </div>
 
           <div className="finance-topbar-right">
-            <div className="finance-topbar-date"><CalendarDays size={16} /><span>{new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span></div>
-            <button className="finance-notification" aria-label="Finance notifications" onClick={() => setActivePage(pendingFinanceRequests.length ? "Employee Requests" : "Invoices")}>
-              <Bell size={20} />
-              {(pendingFinanceRequests.length > 0 || overdueValue > 0) && <span />}
+            <button
+              className="finance-button"
+              onClick={() => loadFinanceData(true)}
+              disabled={refreshing}
+            >
+              {refreshing
+                ? <LoaderCircle size={14} />
+                : <RefreshCw size={14} />}
+
+              {refreshing ? "Refreshing..." : "Refresh"}
             </button>
-            <div className="finance-user-profile">
-              <div className="finance-user-avatar">FM</div>
-              <div><strong>Finance Manager</strong><span>Finance Department</span></div>
+
+            <div className="finance-topbar-user">
+              <div className="finance-avatar">
+                {financeName.charAt(0).toUpperCase()}
+              </div>
+
+              <div>
+                <strong>{financeName}</strong>
+                <small>Finance</small>
+              </div>
             </div>
           </div>
         </header>
 
-        <div className="finance-page-content">
+        <div className="finance-content">
+
           {error && (
-            <div className="finance-api-error" role="alert">
-              <AlertCircle size={18} />
-              <div><strong>Some finance data could not be loaded</strong><p>{error}</p></div>
-              <button className="finance-error-retry" onClick={() => loadFinanceData(true)} disabled={refreshing}><RefreshCw size={15} /> Retry</button>
+            <div className="finance-alert error" role="alert">
+              <AlertCircle size={16} />
+              <span>{error}</span>
             </div>
           )}
 
-          {actionError && (
-            <div className="finance-api-error" role="alert">
-              <AlertCircle size={18} /><p>{actionError}</p>
-              <button onClick={() => setActionError("")} aria-label="Dismiss error"><X size={16} /></button>
+          {success && (
+            <div className="finance-alert success">
+              <CheckCircle2 size={16} />
+              <span>{success}</span>
             </div>
           )}
 
-          {actionMessage && (
-            <div className="finance-success-message" role="status">
-              <CheckCircle2 size={17} /><span>{actionMessage}</span>
-              <button onClick={() => setActionMessage("")} aria-label="Dismiss message"><X size={16} /></button>
+          {loading ? (
+            <div className="finance-loading">
+              <div>
+                <LoaderCircle size={25} />
+                <p>Loading Finance workspace...</p>
+              </div>
             </div>
-          )}
+          ) : (
+            <>
 
-          {refreshing && <div className="finance-refresh-indicator"><RefreshCw size={14} /> Refreshing finance data…</div>}
-          {renderContent()}
+              {/* ============================================
+                  OVERVIEW
+              ============================================ */}
+
+              {activeTab === "overview" && (
+                <>
+                  <section className="finance-welcome">
+                    <div>
+                      <h2>
+                        Welcome back, {financeName} 👋
+                      </h2>
+
+                      <p>
+                        Review employee procurement requests
+                        and financial approvals.
+                      </p>
+                    </div>
+
+                    <button
+                      className="finance-button primary"
+                      onClick={() => setActiveTab("requests")}
+                    >
+                      <ClipboardList size={15} />
+                      Review Employee Requests
+                    </button>
+                  </section>
+
+                  <section className="finance-stats">
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Awaiting Finance</small>
+                        <span className="finance-stat-icon">
+                          <Clock3 size={18} />
+                        </span>
+                      </div>
+
+                      <h3>
+                        {pendingFinanceRequests.length}
+                      </h3>
+
+                      <p>
+                        Manager-approved requests
+                      </p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Waiting for Manager</small>
+                        <span className="finance-stat-icon">
+                          <ClipboardList size={18} />
+                        </span>
+                      </div>
+
+                      <h3>
+                        {waitingForManagerRequests.length}
+                      </h3>
+
+                      <p>
+                        Requests not yet forwarded to Finance
+                      </p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Approved Requests</small>
+                        <span className="finance-stat-icon">
+                          <CheckCircle2 size={18} />
+                        </span>
+                      </div>
+
+                      <h3>
+                        {approvedRequests.length}
+                      </h3>
+
+                      <p>
+                        Total approved requests
+                      </p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Pending Amount</small>
+                        <span className="finance-stat-icon">
+                          <IndianRupee size={18} />
+                        </span>
+                      </div>
+
+                      <h3 style={{ fontSize: 18 }}>
+                        {money(pendingAmount)}
+                      </h3>
+
+                      <p>
+                        Awaiting Finance review
+                      </p>
+                    </div>
+
+                  </section>
+
+                  {/* FINANCIAL SUMMARY */}
+
+                  <section className="finance-stats">
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Total Allocated</small>
+                        <span className="finance-stat-icon">
+                          <Wallet size={18} />
+                        </span>
+                      </div>
+
+                      <h3 style={{ fontSize: 18 }}>
+                        {money(totalAllocatedBudget)}
+                      </h3>
+
+                      <p>Actual budget allocations</p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Committed</small>
+                        <span className="finance-stat-icon">
+                          <FileText size={18} />
+                        </span>
+                      </div>
+
+                      <h3 style={{ fontSize: 18 }}>
+                        {money(totalCommittedBudget)}
+                      </h3>
+
+                      <p>Committed budget amount</p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Spent</small>
+                        <span className="finance-stat-icon">
+                          <TrendingUp size={18} />
+                        </span>
+                      </div>
+
+                      <h3 style={{ fontSize: 18 }}>
+                        {money(totalSpentBudget)}
+                      </h3>
+
+                      <p>Recorded expenditure</p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Available Budget</small>
+                        <span className="finance-stat-icon">
+                          <IndianRupee size={18} />
+                        </span>
+                      </div>
+
+                      <h3 style={{ fontSize: 18 }}>
+                        {money(totalAvailableBudget)}
+                      </h3>
+
+                      <p>Remaining budget amount</p>
+                    </div>
+
+                  </section>
+
+                  {/* PENDING REQUESTS */}
+
+                  <section className="finance-panel">
+                    <div className="finance-panel-heading">
+                      <div>
+                        <h3>Requests Awaiting Finance</h3>
+                        <p>
+                          Only manager-approved requests can
+                          be processed here.
+                        </p>
+                      </div>
+
+                      <button
+                        className="finance-button"
+                        onClick={() => setActiveTab("requests")}
+                      >
+                        View all
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+
+                    {renderRequestsTable(
+                      pendingFinanceRequests
+                    )}
+                  </section>
+
+                  {/* BUDGET SUMMARY */}
+
+                  <section className="finance-panel">
+                    <div className="finance-panel-heading">
+                      <div>
+                        <h3>Budget Summary</h3>
+
+                        <p>
+                          Total available:{" "}
+                          {money(totalAvailableBudget)}
+                        </p>
+                      </div>
+
+                      <button
+                        className="finance-button"
+                        onClick={() => setActiveTab("budgets")}
+                      >
+                        Manage budgets
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+
+                    {budgets.length ? (
+                      <div className="finance-budget-grid">
+                        {budgets.slice(0, 4).map(
+                          (budget, index) => (
+                            <div
+                              className="finance-budget-card"
+                              key={getBudgetId(budget) || index}
+                            >
+                              <h4>
+                                {getBudgetTitle(budget, index)}
+                              </h4>
+
+                              <div className="finance-budget-line">
+                                <span>Allocated</span>
+                                <strong>
+                                  {money(
+                                    getBudgetAllocated(budget),
+                                    budget.currency
+                                  )}
+                                </strong>
+                              </div>
+
+                              <div className="finance-budget-line">
+                                <span>Available</span>
+                                <strong className="finance-available">
+                                  {money(
+                                    getBudgetAvailable(budget),
+                                    budget.currency
+                                  )}
+                                </strong>
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                    ) : (
+                      <div className="finance-empty finance-budget-empty">
+                        <Wallet size={25} />
+                        <strong>No budgets created yet</strong>
+
+                        <button
+                          className="finance-button primary"
+                          onClick={openCreateBudget}
+                        >
+                          <Plus size={15} />
+                          Create Budget
+                        </button>
+                      </div>
+                    )}
+                  </section>
+                </>
+              )}
+
+              {/* ============================================
+                  EMPLOYEE REQUESTS
+              ============================================ */}
+
+              {activeTab === "requests" && (
+                <>
+                  <section className="finance-welcome">
+                    <div>
+                      <h2>Employee Procurement Requests</h2>
+
+                      <p>
+                        Review employee submissions and process
+                        requests forwarded by managers.
+                      </p>
+                    </div>
+                  </section>
+
+                  <section className="finance-panel">
+                    <div className="finance-panel-heading">
+                      <div>
+                        <h3>All Employee Requests</h3>
+
+                        <p>
+                          Finance pending:{" "}
+                          {pendingFinanceRequests.length}
+                          {" | "}
+                          Waiting for manager:{" "}
+                          {waitingForManagerRequests.length}
+                          {" | "}
+                          Approved: {approvedRequests.length}
+                          {" | "}
+                          Rejected: {rejectedRequests.length}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="finance-toolbar">
+                      <div className="finance-search">
+                        <Search size={15} />
+
+                        <input
+                          value={searchTerm}
+                          onChange={(event) =>
+                            setSearchTerm(event.target.value)
+                          }
+                          placeholder="Search employee, product, supplier, ID..."
+                        />
+                      </div>
+
+                      <select
+                        className="finance-filter"
+                        value={statusFilter}
+                        onChange={(event) =>
+                          setStatusFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">
+                          All requests
+                        </option>
+
+                        <option value="pending">
+                          Awaiting Finance
+                        </option>
+
+                        <option value="waiting">
+                          Waiting for Manager
+                        </option>
+
+                        <option value="approved">
+                          Approved
+                        </option>
+
+                        <option value="rejected">
+                          Rejected
+                        </option>
+                      </select>
+                    </div>
+
+                    {renderRequestsTable(filteredRequests)}
+                  </section>
+                </>
+              )}
+
+              {/* ============================================
+                  BUDGETS
+              ============================================ */}
+
+              {activeTab === "budgets" && (
+                <>
+                  <section className="finance-welcome">
+                    <div>
+                      <h2>Budget Management</h2>
+
+                      <p>
+                        Manage department and organization
+                        budget allocations.
+                      </p>
+                    </div>
+
+                    <button
+                      className="finance-button primary"
+                      onClick={openCreateBudget}
+                    >
+                      <Plus size={15} />
+                      Create Budget
+                    </button>
+                  </section>
+
+                  {renderBudgets()}
+                </>
+              )}
+
+              {/* ============================================
+                  APPROVAL HISTORY
+              ============================================ */}
+
+              {activeTab === "approvals" && (
+                <>
+                  <section className="finance-welcome">
+                    <div>
+                      <h2>Finance Approval History</h2>
+
+                      <p>
+                        Review approved and rejected employee
+                        procurement requests.
+                      </p>
+                    </div>
+                  </section>
+
+                  <section className="finance-stats">
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Approved</small>
+                        <CheckCircle2 size={19} />
+                      </div>
+
+                      <h3>{approvedRequests.length}</h3>
+
+                      <p>
+                        {money(approvedAmount)} total approved
+                      </p>
+                    </div>
+
+                    <div className="finance-stat-card">
+                      <div className="finance-stat-top">
+                        <small>Rejected</small>
+                        <XCircle size={19} />
+                      </div>
+
+                      <h3>{rejectedRequests.length}</h3>
+
+                      <p>
+                        {money(rejectedAmount)} total rejected
+                      </p>
+                    </div>
+                  </section>
+
+                  <section className="finance-panel">
+                    <div className="finance-panel-heading">
+                      <div>
+                        <h3>Processed Requests</h3>
+
+                        <p>
+                          {approvedRequests.length +
+                            rejectedRequests.length}{" "}
+                          processed requests
+                        </p>
+                      </div>
+                    </div>
+
+                    {renderRequestsTable([
+                      ...approvedRequests,
+                      ...rejectedRequests
+                    ])}
+                  </section>
+                </>
+              )}
+
+            </>
+          )}
         </div>
-
-        <footer className="finance-footer">
-          <span>© {new Date().getFullYear()} ETDOX. All rights reserved.</span>
-          <span>Finance Workspace · Backend-connected</span>
-        </footer>
       </main>
+
+      {/* ====================================================
+          COMPLETE EMPLOYEE REQUEST DETAILS MODAL
+      ==================================================== */}
+
+      {selectedRequest && (
+        <div
+          className="finance-modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedRequest(null);
+            }
+          }}
+        >
+          <div className="finance-modal">
+
+            <div className="finance-modal-heading">
+              <div>
+                <h3>Complete Procurement Request</h3>
+
+                <p style={{
+                  color: "#8290a5",
+                  fontSize: 10,
+                  marginTop: 5
+                }}>
+                  {getRequestNumber(selectedRequest)}
+                </p>
+              </div>
+
+              <button
+                className="finance-modal-close"
+                onClick={() => setSelectedRequest(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <h4 style={{
+              margin: "0 0 12px",
+              fontSize: 12
+            }}>
+              <User
+                size={14}
+                style={{
+                  display: "inline",
+                  marginRight: 6
+                }}
+              />
+              Employee Information
+            </h4>
+
+            <div className="finance-detail-grid">
+              <div className="finance-detail">
+                <small>Employee Name</small>
+                <strong>
+                  {getEmployeeName(selectedRequest)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Employee ID</small>
+                <strong>
+                  {getRequesterId(selectedRequest) || "Not provided"}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Email Address</small>
+                <strong>
+                  {getEmployeeEmail(selectedRequest)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Department</small>
+                <strong>
+                  {getDepartment(selectedRequest)}
+                </strong>
+              </div>
+            </div>
+
+            <h4 style={{
+              margin: "18px 0 12px",
+              fontSize: 12
+            }}>
+              <Package
+                size={14}
+                style={{
+                  display: "inline",
+                  marginRight: 6
+                }}
+              />
+              Product Information
+            </h4>
+
+            <div className="finance-detail-grid">
+              <div className="finance-detail">
+                <small>Product Name</small>
+                <strong>
+                  {getProductName(selectedRequest)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Supplier</small>
+                <strong>
+                  {getSupplier(selectedRequest)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Quantity</small>
+                <strong>
+                  {displayValue(getQuantity(selectedRequest))}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Unit Price</small>
+                <strong>
+                  {money(
+                    getUnitPrice(selectedRequest),
+                    getCurrency(selectedRequest)
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Total Amount</small>
+                <strong>
+                  {money(
+                    getAmount(selectedRequest),
+                    getCurrency(selectedRequest)
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Currency</small>
+                <strong>
+                  {getCurrency(selectedRequest)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Budget ID</small>
+                <strong>
+                  {displayValue(
+                    selectedRequest.budgetId ??
+                    selectedRequest.budget_id
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Request Status</small>
+                <strong>
+                  {getStatus(selectedRequest).replaceAll("_", " ")}
+                </strong>
+              </div>
+            </div>
+
+            <h4 style={{
+              margin: "18px 0 12px",
+              fontSize: 12
+            }}>
+              Business Justification
+            </h4>
+
+            <div className="finance-detail">
+              <strong>
+                {selectedRequest.justification ||
+                 selectedRequest.description ||
+                 "No justification was returned by the API."}
+              </strong>
+            </div>
+
+            {selectedRequest.description &&
+             selectedRequest.justification && (
+              <div className="finance-detail" style={{
+                marginTop: 10
+              }}>
+                <small>Additional Description</small>
+                <strong>
+                  {selectedRequest.description}
+                </strong>
+              </div>
+            )}
+
+            <h4 style={{
+              margin: "20px 0 10px",
+              fontSize: 12
+            }}>
+              <History
+                size={14}
+                style={{
+                  display: "inline",
+                  marginRight: 6
+                }}
+              />
+              Approval Information
+            </h4>
+
+            <div className="finance-detail-grid">
+              <div className="finance-detail">
+                <small>Manager Decision</small>
+                <strong>
+                  {displayValue(
+                    selectedRequest.managerDecision ??
+                    selectedRequest.manager_decision
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Finance Decision</small>
+                <strong>
+                  {displayValue(
+                    selectedRequest.financeDecision ??
+                    selectedRequest.finance_decision
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Submitted At</small>
+                <strong>
+                  {formatDate(
+                    selectedRequest.submittedAt ||
+                    selectedRequest.submitted_at
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Created At</small>
+                <strong>
+                  {formatDate(
+                    selectedRequest.createdAt ||
+                    selectedRequest.created_at
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Updated At</small>
+                <strong>
+                  {formatDate(
+                    selectedRequest.updatedAt ||
+                    selectedRequest.updated_at
+                  )}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Workflow Run ID</small>
+                <strong>
+                  {displayValue(
+                    selectedRequest.workflowRunId ||
+                    selectedRequest.workflow_run_id
+                  )}
+                </strong>
+              </div>
+            </div>
+
+            {/* APPROVAL HISTORY */}
+
+            {Array.isArray(selectedRequest.history) &&
+             selectedRequest.history.length > 0 && (
+              <div className="finance-history">
+                <h4>Request History</h4>
+
+                {selectedRequest.history.map((item, index) => (
+                  <div
+                    className="finance-history-item"
+                    key={item.id || index}
+                  >
+                    <strong>
+                      {item.action ||
+                       item.status ||
+                       item.decision ||
+                       "Request activity"}
+                    </strong>
+
+                    <p>
+                      {item.comment ||
+                       item.remarks ||
+                       item.description ||
+                       "No additional remarks"}
+                    </p>
+
+                    <small>
+                      {item.actor_name ||
+                       item.user_name ||
+                       item.actor ||
+                       "System"}
+                      {" · "}
+                      {formatDate(
+                        item.created_at ||
+                        item.createdAt ||
+                        item.timestamp
+                      )}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ALL REMAINING API FIELDS */}
+
+            <h4 style={{
+              margin: "20px 0 10px",
+              fontSize: 12
+            }}>
+              All Other Values Returned by the API
+            </h4>
+
+            <div className="finance-all-fields">
+              {getRealRequestDetails(selectedRequest).map(
+                ({ key, label, value }) => (
+                  <div
+                    className="finance-detail"
+                    key={key}
+                  >
+                    <small>{label}</small>
+                    <strong>
+                      {displayValue(value)}
+                    </strong>
+                  </div>
+                )
+              )}
+            </div>
+
+            <div className="finance-modal-actions">
+              <button
+                className="finance-button"
+                onClick={() => setSelectedRequest(null)}
+              >
+                Close
+              </button>
+
+              {FINANCE_REVIEW_STATUSES.includes(
+                getStatus(selectedRequest)
+              ) && (
+                <>
+                  <button
+                    className="finance-button"
+                    style={{
+                      color: "#bd3445",
+                      background: "#fff0f1"
+                    }}
+                    onClick={() => {
+                      openDecisionModal(
+                        selectedRequest,
+                        "reject"
+                      );
+                      setSelectedRequest(null);
+                    }}
+                  >
+                    <XCircle size={14} />
+                    Reject
+                  </button>
+
+                  <button
+                    className="finance-button primary"
+                    onClick={() => {
+                      openDecisionModal(
+                        selectedRequest,
+                        "approve"
+                      );
+                      setSelectedRequest(null);
+                    }}
+                  >
+                    <CheckCircle2 size={14} />
+                    Approve
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================
+          FINANCE APPROVE / REJECT MODAL
+      ==================================================== */}
+
+      {decisionModal.request && (
+        <div
+          className="finance-modal-overlay"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !processing
+            ) {
+              setDecisionModal(initialDecision);
+            }
+          }}
+        >
+          <div
+            className="finance-modal"
+            style={{ maxWidth: 540 }}
+          >
+            <div className="finance-modal-heading">
+              <h3>
+                {decisionModal.decision === "approve"
+                  ? "Approve Employee Request"
+                  : "Reject Employee Request"}
+              </h3>
+
+              <button
+                className="finance-modal-close"
+                disabled={processing}
+                onClick={() =>
+                  setDecisionModal(initialDecision)
+                }
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="finance-detail-grid">
+              <div className="finance-detail">
+                <small>Request Number</small>
+                <strong>
+                  {getRequestNumber(decisionModal.request)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Employee</small>
+                <strong>
+                  {getEmployeeName(decisionModal.request)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Product</small>
+                <strong>
+                  {getProductName(decisionModal.request)}
+                </strong>
+              </div>
+
+              <div className="finance-detail">
+                <small>Amount</small>
+                <strong>
+                  {money(
+                    getAmount(decisionModal.request),
+                    getCurrency(decisionModal.request)
+                  )}
+                </strong>
+              </div>
+            </div>
+
+            <form onSubmit={submitFinanceDecision}>
+              <div className="finance-modal-field">
+                <label>
+                  {decisionModal.decision === "approve"
+                    ? "Finance Approval Remarks *"
+                    : "Reason for Rejection *"}
+                </label>
+
+                <textarea
+                  value={decisionModal.reason}
+                  onChange={(event) =>
+                    setDecisionModal((previous) => ({
+                      ...previous,
+                      reason: event.target.value
+                    }))
+                  }
+                  placeholder="Enter your decision remarks..."
+                  required
+                  minLength={2}
+                  maxLength={1000}
+                  disabled={processing}
+                />
+
+                <small style={{
+                  color: "#8795a9",
+                  fontSize: 9
+                }}>
+                  {decisionModal.reason.length}/1000 characters
+                </small>
+              </div>
+
+              <div className="finance-modal-actions">
+                <button
+                  type="button"
+                  className="finance-button"
+                  disabled={processing}
+                  onClick={() =>
+                    setDecisionModal(initialDecision)
+                  }
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="finance-button primary"
+                  disabled={processing}
+                  style={
+                    decisionModal.decision === "reject"
+                      ? {
+                          background: "#c83d4d",
+                          borderColor: "#c83d4d"
+                        }
+                      : {}
+                  }
+                >
+                  {processing ? (
+                    <>
+                      <LoaderCircle size={15} />
+                      Processing...
+                    </>
+                  ) : decisionModal.decision === "approve" ? (
+                    <>
+                      <Check size={15} />
+                      Confirm Approval
+                    </>
+                  ) : (
+                    <>
+                      <XCircle size={15} />
+                      Confirm Rejection
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================
+          CREATE / EDIT BUDGET MODAL
+      ==================================================== */}
+
+      {budgetModalOpen && (
+        <div
+          className="finance-modal-overlay"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !savingBudget
+            ) {
+              setBudgetModalOpen(false);
+            }
+          }}
+        >
+          <div
+            className="finance-modal"
+            style={{ maxWidth: 540 }}
+          >
+            <div className="finance-modal-heading">
+              <h3>
+                {editingBudget
+                  ? "Edit Budget"
+                  : "Create New Budget"}
+              </h3>
+
+              <button
+                className="finance-modal-close"
+                disabled={savingBudget}
+                onClick={() => setBudgetModalOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {budgetError && (
+              <div className="finance-alert error">
+                {budgetError}
+              </div>
+            )}
+
+            <form onSubmit={saveBudget}>
+              <div className="finance-form-grid">
+
+                <div className="finance-form-field full">
+                  <label>Budget Name *</label>
+
+                  <input
+                    name="name"
+                    value={budgetForm.name}
+                    onChange={updateBudgetField}
+                    placeholder="IT Department Annual Budget"
+                    required
+                  />
+                </div>
+
+                <div className="finance-form-field">
+                  <label>Department</label>
+
+                  <input
+                    name="department"
+                    value={budgetForm.department}
+                    onChange={updateBudgetField}
+                    placeholder="IT / HR / Finance"
+                  />
+                </div>
+
+                <div className="finance-form-field">
+                  <label>Category</label>
+
+                  <input
+                    name="category"
+                    value={budgetForm.category}
+                    onChange={updateBudgetField}
+                    placeholder="Equipment / Software"
+                  />
+                </div>
+
+                <div className="finance-form-field full">
+                  <label>Allocated Amount *</label>
+
+                  <input
+                    type="number"
+                    name="allocatedAmount"
+                    value={budgetForm.allocatedAmount}
+                    onChange={updateBudgetField}
+                    min="0.01"
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                <div className="finance-form-field">
+                  <label>Currency</label>
+
+                  <select
+                    name="currency"
+                    value={budgetForm.currency}
+                    onChange={updateBudgetField}
+                  >
+                    <option value="INR">
+                      INR - Indian Rupee
+                    </option>
+
+                    <option value="USD">
+                      USD - US Dollar
+                    </option>
+
+                    <option value="EUR">
+                      EUR - Euro
+                    </option>
+                  </select>
+                </div>
+
+                <div className="finance-form-field">
+                  <label>Fiscal Year *</label>
+
+                  <input
+                    type="number"
+                    name="fiscalYear"
+                    value={budgetForm.fiscalYear}
+                    onChange={updateBudgetField}
+                    min="2000"
+                    max="2100"
+                    required
+                  />
+                </div>
+
+                <div className="finance-form-field full">
+                  <label>Status</label>
+
+                  <select
+                    name="status"
+                    value={budgetForm.status}
+                    onChange={updateBudgetField}
+                  >
+                    <option value="active">Active</option>
+                    <option value="draft">Draft</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </div>
+
+                <div className="finance-form-field full">
+                  <label>Description</label>
+
+                  <textarea
+                    name="description"
+                    value={budgetForm.description}
+                    onChange={updateBudgetField}
+                    placeholder="Describe the purpose of this budget..."
+                  />
+                </div>
+              </div>
+
+              <div className="finance-modal-actions">
+                <button
+                  type="button"
+                  className="finance-button"
+                  disabled={savingBudget}
+                  onClick={() => setBudgetModalOpen(false)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="finance-button primary"
+                  disabled={savingBudget}
+                >
+                  {savingBudget ? (
+                    <>
+                      <LoaderCircle size={15} />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Check size={15} />
+                      {editingBudget
+                        ? "Save Changes"
+                        : "Create Budget"}
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

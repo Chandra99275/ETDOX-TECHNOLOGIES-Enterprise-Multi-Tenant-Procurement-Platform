@@ -1,11 +1,15 @@
 
-import { z } from 'zod';
+import { z } from "zod";
+
+// ============================================================
+// COMMON SCHEMAS
+// ============================================================
 
 const uuid = z.string().uuid();
 
 const graphNodeSchema = z.object({
   id: z.string().trim().min(1).max(100),
-  type: z.enum(['start', 'approval', 'end']),
+  type: z.enum(["start", "approval", "end"]),
   assigneeId: uuid.nullable().optional(),
 }).strict();
 
@@ -14,70 +18,130 @@ const graphEdgeSchema = z.object({
   to: z.string().trim().min(1).max(100),
 }).strict();
 
-// Persist graph as { nodes: [{id,type,assigneeId?}], edges: [{from,to}] }.
-// A graph has one start, one end, and zero or more approval nodes.
-// Edges form a directed acyclic graph (DAG).
+// ============================================================
+// WORKFLOW GRAPH SCHEMA
+//
+// Graph format:
+//
+// {
+//   nodes: [
+//     { id: "start", type: "start" },
+//     { id: "manager", type: "approval", assigneeId: "UUID" },
+//     { id: "finance", type: "approval", assigneeId: "UUID" },
+//     { id: "end", type: "end" }
+//   ],
+//   edges: [
+//     { from: "start", to: "manager" },
+//     { from: "manager", to: "finance" },
+//     { from: "finance", to: "end" }
+//   ]
+// }
+//
+// Supports sequential and parallel approval stages.
+// ============================================================
+
 export const workflowGraphSchema = z.object({
   nodes: z.array(graphNodeSchema).min(2).max(200),
   edges: z.array(graphEdgeSchema).min(1).max(500),
 }).strict().superRefine((graph, ctx) => {
-  const ids = new Set();
+  const nodeMap = new Map();
+  const nodeIds = new Set();
 
-  for (const [index, node] of graph.nodes.entries()) {
-    if (ids.has(node.id)) {
+  // ----------------------------------------------------------
+  // NODE VALIDATION
+  // ----------------------------------------------------------
+
+  graph.nodes.forEach((node, index) => {
+    if (nodeIds.has(node.id)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['nodes', index, 'id'],
-        message: 'Node IDs must be unique',
+        path: ["nodes", index, "id"],
+        message: "Node IDs must be unique",
       });
+
+      return;
     }
 
-    ids.add(node.id);
-  }
+    nodeIds.add(node.id);
+    nodeMap.set(node.id, node);
+  });
 
-  if (graph.nodes.filter((node) => node.type === 'start').length !== 1) {
+  const startNodes = graph.nodes.filter(
+    (node) => node.type === "start"
+  );
+
+  const endNodes = graph.nodes.filter(
+    (node) => node.type === "end"
+  );
+
+  const approvalNodes = graph.nodes.filter(
+    (node) => node.type === "approval"
+  );
+
+  if (startNodes.length !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['nodes'],
-      message: 'A graph must contain exactly one start node',
+      path: ["nodes"],
+      message: "A workflow must contain exactly one start node",
     });
   }
 
-  if (graph.nodes.filter((node) => node.type === 'end').length !== 1) {
+  if (endNodes.length !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['nodes'],
-      message: 'A graph must contain exactly one end node',
+      path: ["nodes"],
+      message: "A workflow must contain exactly one end node",
     });
   }
+
+  if (approvalNodes.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["nodes"],
+      message: "A workflow must contain at least one approval node",
+    });
+  }
+
+  // ----------------------------------------------------------
+  // GRAPH STRUCTURES
+  // ----------------------------------------------------------
 
   const adjacency = new Map();
   const reverseAdjacency = new Map();
-  const edgeKeys = new Set();
   const incoming = new Map();
+  const edgeKeys = new Set();
 
-  graph.nodes.forEach((node) => {
+  for (const node of graph.nodes) {
     adjacency.set(node.id, []);
     reverseAdjacency.set(node.id, []);
     incoming.set(node.id, 0);
-  });
+  }
+
+  // ----------------------------------------------------------
+  // EDGE VALIDATION
+  // ----------------------------------------------------------
 
   graph.edges.forEach((edge, index) => {
-    if (!ids.has(edge.from) || !ids.has(edge.to)) {
+    if (
+      !nodeIds.has(edge.from) ||
+      !nodeIds.has(edge.to)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['edges', index],
-        message: 'Edge references an unknown node',
+        path: ["edges", index],
+        message: "Edge references an unknown node",
       });
+
       return;
     }
 
     if (edge.from === edge.to) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['edges', index],
-        message: 'Self-referencing edges are not allowed',
+        path: ["edges", index],
+        message: "Self-referencing edges are not allowed",
       });
+
       return;
     }
 
@@ -86,177 +150,290 @@ export const workflowGraphSchema = z.object({
     if (edgeKeys.has(edgeKey)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['edges', index],
-        message: 'Duplicate edges are not allowed',
+        path: ["edges", index],
+        message: "Duplicate edges are not allowed",
       });
+
       return;
     }
 
     edgeKeys.add(edgeKey);
 
-    adjacency.get(edge.from)?.push(edge.to);
-    reverseAdjacency.get(edge.to)?.push(edge.from);
+    adjacency.get(edge.from).push(edge.to);
+    reverseAdjacency.get(edge.to).push(edge.from);
 
     incoming.set(
       edge.to,
-      (incoming.get(edge.to) ?? 0) + 1
+      incoming.get(edge.to) + 1
     );
   });
 
+  // ----------------------------------------------------------
+  // START AND END NODE RULES
+  // ----------------------------------------------------------
+
   for (const node of graph.nodes) {
     if (
-      node.type === 'start' &&
+      node.type === "start" &&
       incoming.get(node.id) !== 0
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['nodes'],
-        message: 'The start node cannot have incoming edges',
+        path: ["nodes"],
+        message: "The start node cannot have incoming edges",
       });
     }
 
     if (
-      node.type === 'end' &&
-      (adjacency.get(node.id)?.length ?? 0) !== 0
+      node.type === "end" &&
+      adjacency.get(node.id).length !== 0
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['nodes'],
-        message: 'The end node cannot have outgoing edges',
+        path: ["nodes"],
+        message: "The end node cannot have outgoing edges",
+      });
+    }
+
+    if (
+      node.type === "start" &&
+      node.assigneeId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["nodes"],
+        message: "The start node cannot have an assignee",
+      });
+    }
+
+    if (
+      node.type === "end" &&
+      node.assigneeId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["nodes"],
+        message: "The end node cannot have an assignee",
       });
     }
   }
 
-  // Detect cycles using depth-first search.
-  const visited = new Set();
-  const active = new Set();
-  let cycle = false;
+  // ----------------------------------------------------------
+  // CYCLE DETECTION
+  // Kahn's algorithm avoids recursive stack overflow.
+  // ----------------------------------------------------------
 
-  const visit = (id) => {
-    if (active.has(id)) {
-      cycle = true;
-      return;
-    }
-
-    if (visited.has(id)) return;
-
-    active.add(id);
-
-    for (const next of adjacency.get(id) ?? []) {
-      visit(next);
-    }
-
-    active.delete(id);
-    visited.add(id);
-  };
+  const inDegree = new Map(incoming);
+  const queue = [];
 
   for (const node of graph.nodes) {
-    visit(node.id);
+    if (inDegree.get(node.id) === 0) {
+      queue.push(node.id);
+    }
   }
 
-  if (cycle) {
+  let processedCount = 0;
+  let queueIndex = 0;
+
+  while (queueIndex < queue.length) {
+    const current = queue[queueIndex++];
+
+    processedCount++;
+
+    for (const next of adjacency.get(current) ?? []) {
+      const nextDegree = inDegree.get(next) - 1;
+
+      inDegree.set(next, nextDegree);
+
+      if (nextDegree === 0) {
+        queue.push(next);
+      }
+    }
+  }
+
+  if (processedCount !== graph.nodes.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['edges'],
-      message: 'Workflow graphs cannot contain cycles',
+      path: ["edges"],
+      message: "Workflow graphs cannot contain cycles",
     });
   }
 
-  // Verify that every node is reachable from the start node.
-  const start = graph.nodes.find(
-    (node) => node.type === 'start'
-  );
+  // ----------------------------------------------------------
+  // REACHABILITY FROM START
+  // ----------------------------------------------------------
 
+  const start = startNodes[0];
   const reachable = new Set();
 
   if (start) {
     const queue = [start.id];
+    let index = 0;
 
-    while (queue.length) {
-      const id = queue.shift();
+    while (index < queue.length) {
+      const current = queue[index++];
 
-      if (reachable.has(id)) continue;
+      if (reachable.has(current)) {
+        continue;
+      }
 
-      reachable.add(id);
+      reachable.add(current);
 
-      queue.push(...(adjacency.get(id) ?? []));
+      for (const next of adjacency.get(current) ?? []) {
+        queue.push(next);
+      }
     }
   }
 
   if (reachable.size !== graph.nodes.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['nodes'],
-      message: 'Every node must be reachable from the start node',
+      path: ["nodes"],
+      message: "Every node must be reachable from the start node",
     });
   }
 
-  // Verify that every node can reach the end node.
-  const end = graph.nodes.find(
-    (node) => node.type === 'end'
-  );
+  // ----------------------------------------------------------
+  // REVERSE REACHABILITY TO END
+  // ----------------------------------------------------------
 
+  const end = endNodes[0];
   const canReachEnd = new Set();
 
   if (end) {
     const queue = [end.id];
+    let index = 0;
 
-    while (queue.length) {
-      const id = queue.shift();
+    while (index < queue.length) {
+      const current = queue[index++];
 
-      if (canReachEnd.has(id)) continue;
+      if (canReachEnd.has(current)) {
+        continue;
+      }
 
-      canReachEnd.add(id);
+      canReachEnd.add(current);
 
-      queue.push(...(reverseAdjacency.get(id) ?? []));
+      for (
+        const previous of reverseAdjacency.get(current) ?? []
+      ) {
+        queue.push(previous);
+      }
     }
   }
 
   if (canReachEnd.size !== graph.nodes.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['nodes'],
-      message: 'Every node must lead to the end node',
+      path: ["nodes"],
+      message: "Every node must lead to the end node",
     });
   }
+
+  // ----------------------------------------------------------
+  // APPROVAL NODE VALIDATION
+  // ----------------------------------------------------------
+
+  for (const [index, node] of graph.nodes.entries()) {
+    if (
+      node.type === "approval" &&
+      node.assigneeId !== undefined &&
+      node.assigneeId !== null &&
+      !uuid.safeParse(node.assigneeId).success
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["nodes", index, "assigneeId"],
+        message: "Approval assignee must be a valid UUID",
+      });
+    }
+  }
 });
+
+// ============================================================
+// WORKFLOW ID
+// ============================================================
 
 export const workflowIdSchema = z.object({
   id: uuid,
 });
 
+// ============================================================
+// CREATE WORKFLOW
+// ============================================================
+
 export const createWorkflowSchema = z.object({
   name: z.string().trim().min(1).max(200),
+
   resourceType: z.string()
     .trim()
     .min(1)
     .max(100)
-    .default('purchase_request'),
+    .default("purchase_request"),
+
   graph: workflowGraphSchema,
 }).strict();
 
+// ============================================================
+// CREATE WORKFLOW VERSION
+// ============================================================
+
 export const createWorkflowVersionSchema = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
+  name: z.string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional(),
+
   graph: workflowGraphSchema.optional(),
 }).strict().refine(
   (value) =>
     value.name !== undefined ||
     value.graph !== undefined,
   {
-    message: 'Provide a workflow name or graph to create a new version',
+    message:
+      "Provide a workflow name or graph to create a new version",
   }
 );
 
+// ============================================================
+// PENDING APPROVAL TASKS
+// ============================================================
+
 export const pendingTasksSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100000).default(0),
+  limit: z.coerce.number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(50),
+
+  offset: z.coerce.number()
+    .int()
+    .min(0)
+    .max(100000)
+    .default(0),
 }).strict();
+
+// ============================================================
+// APPROVAL TASK ID
+// ============================================================
 
 export const taskIdSchema = z.object({
   taskId: uuid,
 });
 
+// ============================================================
+// APPROVAL TASK ACTION
+// ============================================================
+
 export const taskActionSchema = z.object({
-  action: z.enum(['approve', 'reject', 'request_changes']),
-  comment: z.string().trim().max(4000).optional(),
+  action: z.enum([
+    "approve",
+    "reject",
+    "request_changes",
+  ]),
+
+  comment: z.string()
+    .trim()
+    .max(4000)
+    .optional(),
 }).strict();
