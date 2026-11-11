@@ -1,3 +1,4 @@
+
 import { pool } from "../../config/database.js";
 
 const TABLE_CANDIDATES = {
@@ -10,20 +11,60 @@ const TABLE_CANDIDATES = {
 };
 
 const COLUMN_CANDIDATES = {
-  id: ["id", "request_id", "invoice_id", "budget_id", "purchase_order_id"],
+  id: [
+    "id",
+    "request_id",
+    "invoice_id",
+    "budget_id",
+    "purchase_order_id",
+  ],
   tenant: ["tenant_id", "organization_id", "company_id"],
   status: ["status", "state"],
-  amount: ["total_amount", "amount", "total", "grand_total", "net_amount"],
-  createdAt: ["created_at", "created_on", "submitted_at", "date_created"],
+  amount: [
+    "total_amount",
+    "amount",
+    "total",
+    "grand_total",
+    "net_amount",
+    "allocated",
+    "allocated_amount",
+  ],
+  createdAt: [
+    "created_at",
+    "created_on",
+    "submitted_at",
+    "date_created",
+  ],
   updatedAt: ["updated_at", "modified_at"],
-  requester: ["requester_id", "requested_by", "created_by", "user_id"],
+  requester: [
+    "requester_id",
+    "requested_by",
+    "created_by",
+    "user_id",
+  ],
   invoiceStatus: ["payment_status", "status"],
-  budgetAmount: ["allocated_amount", "budget_amount", "amount", "total_amount"],
-  spentAmount: ["spent_amount", "used_amount", "actual_spend", "utilized_amount"],
+  budgetAmount: [
+    "allocated",
+    "allocated_amount",
+    "budget_amount",
+    "amount",
+    "total_amount",
+  ],
+  spentAmount: [
+    "spent",
+    "spent_amount",
+    "used_amount",
+    "actual_spend",
+    "utilized_amount",
+  ],
 };
 
 function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+function quoteTable(tableName) {
+  return `${quoteIdentifier("public")}.${quoteIdentifier(tableName)}`;
 }
 
 function firstColumn(columns, candidates) {
@@ -35,11 +76,24 @@ function toNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function emptyMetric() {
+  return {
+    available: false,
+    count: 0,
+    totalAmount: 0,
+    byStatus: [],
+    recent: [],
+  };
+}
+
+/**
+ * Read the public PostgreSQL schema.
+ */
 async function getSchema(client) {
   const result = await client.query(
     `SELECT table_name, column_name
      FROM information_schema.columns
-     WHERE table_schema = ANY(current_schemas(false))`
+     WHERE table_schema = 'public'`
   );
 
   const schema = new Map();
@@ -56,11 +110,11 @@ async function getSchema(client) {
 }
 
 function findTable(schema, candidates) {
-  for (const table of candidates) {
-    if (schema.has(table)) {
+  for (const tableName of candidates) {
+    if (schema.has(tableName)) {
       return {
-        name: table,
-        columns: schema.get(table),
+        name: tableName,
+        columns: schema.get(tableName),
       };
     }
   }
@@ -81,31 +135,49 @@ function resolveColumns(table) {
     createdAt: firstColumn(columns, COLUMN_CANDIDATES.createdAt),
     updatedAt: firstColumn(columns, COLUMN_CANDIDATES.updatedAt),
     requester: firstColumn(columns, COLUMN_CANDIDATES.requester),
-    paymentStatus: firstColumn(columns, COLUMN_CANDIDATES.invoiceStatus),
-    budgetAmount: firstColumn(columns, COLUMN_CANDIDATES.budgetAmount),
-    spentAmount: firstColumn(columns, COLUMN_CANDIDATES.spentAmount),
-  };
-}
-
-function emptyMetric() {
-  return {
-    available: false,
-    count: 0,
-    totalAmount: 0,
-    byStatus: [],
-    recent: [],
+    paymentStatus: firstColumn(
+      columns,
+      COLUMN_CANDIDATES.invoiceStatus
+    ),
+    budgetAmount: firstColumn(
+      columns,
+      COLUMN_CANDIDATES.budgetAmount
+    ),
+    spentAmount: firstColumn(
+      columns,
+      COLUMN_CANDIDATES.spentAmount
+    ),
   };
 }
 
 /**
- * Run a tenant-scoped read-only analytics transaction.
- *
- * PostgreSQL's transaction-local setting must be applied on the same client
- * used for every tenant-protected query.
+ * A table is eligible for analytics only when its tenant column
+ * and identifier column can be identified.
+ */
+function isTenantScopedTable(table, columns) {
+  return Boolean(table && columns?.id && columns?.tenant);
+}
+
+/**
+ * Apply tenant filtering to every analytics query.
+ */
+function tenantCondition(columns, parameterIndex = 1) {
+  return `${quoteIdentifier(columns.tenant)} = $${parameterIndex}`;
+}
+
+/**
+ * Execute analytics inside a read-only tenant-scoped transaction.
  */
 async function withTenantClient(tenantId, callback) {
-  if (!tenantId) {
-    const error = new Error("A valid tenant context is required.");
+  if (
+    !tenantId ||
+    typeof tenantId !== "string" ||
+    !tenantId.trim()
+  ) {
+    const error = new Error(
+      "A valid tenant context is required for analytics."
+    );
+
     error.statusCode = 403;
     throw error;
   }
@@ -117,18 +189,19 @@ async function withTenantClient(tenantId, callback) {
 
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true)",
-      [String(tenantId)]
+      [tenantId]
     );
 
     const result = await callback(client);
 
     await client.query("COMMIT");
+
     return result;
   } catch (error) {
     try {
       await client.query("ROLLBACK");
     } catch {
-      // Preserve the original error.
+      // Preserve the original database error.
     }
 
     throw error;
@@ -137,47 +210,83 @@ async function withTenantClient(tenantId, callback) {
   }
 }
 
-async function countRows(client, table, columns) {
-  if (!table || !columns?.id) return 0;
+async function countRows(client, table, columns, tenantId) {
+  if (!isTenantScopedTable(table, columns)) {
+    return 0;
+  }
 
   const result = await client.query(
     `SELECT COUNT(*)::bigint AS count
-     FROM ${quoteIdentifier(table.name)}`
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}`,
+    [tenantId]
   );
 
   return toNumber(result.rows[0]?.count);
 }
 
-async function getAmountTotal(client, table, columns) {
-  if (!table || !columns?.amount) return 0;
+async function getAmountTotal(
+  client,
+  table,
+  columns,
+  tenantId
+) {
+  if (
+    !isTenantScopedTable(table, columns) ||
+    !columns.amount
+  ) {
+    return 0;
+  }
+
+  const amountColumn = quoteIdentifier(columns.amount);
 
   const result = await client.query(
-    `SELECT COALESCE(SUM(
-       CASE
-         WHEN ${quoteIdentifier(columns.amount)}::text
-              ~ '^-?[0-9]+(\\.[0-9]+)?$'
-         THEN ${quoteIdentifier(columns.amount)}::numeric
-         ELSE 0
-       END
-     ), 0)::numeric AS total
-     FROM ${quoteIdentifier(table.name)}`
+    `SELECT COALESCE(
+       SUM(
+         CASE
+           WHEN ${amountColumn}::text
+                ~ '^-?[0-9]+(\\.[0-9]+)?$'
+           THEN ${amountColumn}::numeric
+           ELSE 0
+         END
+       ),
+       0
+     )::numeric AS total
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}`,
+    [tenantId]
   );
 
   return toNumber(result.rows[0]?.total);
 }
 
-async function getStatusBreakdown(client, table, columns) {
-  if (!table || !columns?.status) return [];
+async function getStatusBreakdown(
+  client,
+  table,
+  columns,
+  tenantId
+) {
+  if (
+    !isTenantScopedTable(table, columns) ||
+    !columns.status
+  ) {
+    return [];
+  }
 
   const statusColumn = quoteIdentifier(columns.status);
 
   const result = await client.query(
     `SELECT
-       COALESCE(NULLIF(${statusColumn}::text, ''), 'unknown') AS status,
+       COALESCE(
+         NULLIF(${statusColumn}::text, ''),
+         'unknown'
+       ) AS status,
        COUNT(*)::bigint AS count
-     FROM ${quoteIdentifier(table.name)}
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}
      GROUP BY ${statusColumn}::text
-     ORDER BY count DESC`
+     ORDER BY count DESC`,
+    [tenantId]
   );
 
   return result.rows.map((row) => ({
@@ -186,8 +295,16 @@ async function getStatusBreakdown(client, table, columns) {
   }));
 }
 
-async function getRecentRows(client, table, columns, limit = 5) {
-  if (!table || !columns?.id) return [];
+async function getRecentRows(
+  client,
+  table,
+  columns,
+  tenantId,
+  limit = 5
+) {
+  if (!isTenantScopedTable(table, columns)) {
+    return [];
+  }
 
   const selectedColumns = [
     columns.id,
@@ -200,7 +317,7 @@ async function getRecentRows(client, table, columns, limit = 5) {
   const uniqueColumns = [...new Set(selectedColumns)];
 
   const selectList = uniqueColumns
-    .map((column) => quoteIdentifier(column))
+    .map(quoteIdentifier)
     .join(", ");
 
   const orderColumn = columns.createdAt || columns.updatedAt;
@@ -211,92 +328,163 @@ async function getRecentRows(client, table, columns, limit = 5) {
 
   const result = await client.query(
     `SELECT ${selectList}
-     FROM ${quoteIdentifier(table.name)}
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}
      ORDER BY ${quoteIdentifier(orderColumn)} DESC NULLS LAST
-     LIMIT $1`,
-    [limit]
+     LIMIT $2`,
+    [tenantId, limit]
   );
 
   return result.rows.map((row) => ({
     id: row[columns.id],
     status: columns.status ? row[columns.status] : null,
-    amount: columns.amount ? toNumber(row[columns.amount]) : null,
-    createdAt: columns.createdAt ? row[columns.createdAt] : null,
-    updatedAt: columns.updatedAt ? row[columns.updatedAt] : null,
+    amount: columns.amount
+      ? toNumber(row[columns.amount])
+      : null,
+    createdAt: columns.createdAt
+      ? row[columns.createdAt]
+      : null,
+    updatedAt: columns.updatedAt
+      ? row[columns.updatedAt]
+      : null,
   }));
 }
 
-async function getMetric(client, table) {
-  if (!table) return emptyMetric();
+async function getMetric(
+  client,
+  table,
+  tenantId
+) {
+  if (!table) {
+    return emptyMetric();
+  }
 
   const columns = resolveColumns(table);
+
+  if (!isTenantScopedTable(table, columns)) {
+    return emptyMetric();
+  }
 
   return {
     available: true,
-    count: await countRows(client, table, columns),
-    totalAmount: await getAmountTotal(client, table, columns),
-    byStatus: await getStatusBreakdown(client, table, columns),
-    recent: await getRecentRows(client, table, columns),
+    count: await countRows(
+      client,
+      table,
+      columns,
+      tenantId
+    ),
+    totalAmount: await getAmountTotal(
+      client,
+      table,
+      columns,
+      tenantId
+    ),
+    byStatus: await getStatusBreakdown(
+      client,
+      table,
+      columns,
+      tenantId
+    ),
+    recent: await getRecentRows(
+      client,
+      table,
+      columns,
+      tenantId
+    ),
   };
 }
 
-async function getBudgetSummary(client, table) {
+async function getBudgetSummary(
+  client,
+  table,
+  tenantId
+) {
+  const unavailable = {
+    available: false,
+    count: 0,
+    allocatedAmount: 0,
+    recordedSpentAmount: null,
+    remainingAmount: null,
+    utilizationPercentage: null,
+  };
+
   if (!table) {
-    return {
-      available: false,
-      count: 0,
-      allocatedAmount: 0,
-      recordedSpentAmount: null,
-      remainingAmount: null,
-      utilizationPercentage: null,
-    };
+    return unavailable;
   }
 
   const columns = resolveColumns(table);
 
-  const count = await countRows(client, table, columns);
+  if (!isTenantScopedTable(table, columns)) {
+    return unavailable;
+  }
+
+  const count = await countRows(
+    client,
+    table,
+    columns,
+    tenantId
+  );
 
   if (!columns.budgetAmount) {
     return {
+      ...unavailable,
       available: true,
       count,
-      allocatedAmount: 0,
-      recordedSpentAmount: null,
-      remainingAmount: null,
-      utilizationPercentage: null,
     };
   }
 
-  const allocatedResult = await client.query(
-    `SELECT COALESCE(SUM(
-       CASE
-         WHEN ${quoteIdentifier(columns.budgetAmount)}::text
-              ~ '^-?[0-9]+(\\.[0-9]+)?$'
-         THEN ${quoteIdentifier(columns.budgetAmount)}::numeric
-         ELSE 0
-       END
-     ), 0)::numeric AS total
-     FROM ${quoteIdentifier(table.name)}`
+  const allocatedColumn = quoteIdentifier(
+    columns.budgetAmount
   );
 
-  const allocatedAmount = toNumber(allocatedResult.rows[0]?.total);
+  const allocatedResult = await client.query(
+    `SELECT COALESCE(
+       SUM(
+         CASE
+           WHEN ${allocatedColumn}::text
+                ~ '^-?[0-9]+(\\.[0-9]+)?$'
+           THEN ${allocatedColumn}::numeric
+           ELSE 0
+         END
+       ),
+       0
+     )::numeric AS total
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}`,
+    [tenantId]
+  );
+
+  const allocatedAmount = toNumber(
+    allocatedResult.rows[0]?.total
+  );
 
   let recordedSpentAmount = null;
 
   if (columns.spentAmount) {
-    const spentResult = await client.query(
-      `SELECT COALESCE(SUM(
-         CASE
-           WHEN ${quoteIdentifier(columns.spentAmount)}::text
-                ~ '^-?[0-9]+(\\.[0-9]+)?$'
-           THEN ${quoteIdentifier(columns.spentAmount)}::numeric
-           ELSE 0
-         END
-       ), 0)::numeric AS total
-       FROM ${quoteIdentifier(table.name)}`
+    const spentColumn = quoteIdentifier(
+      columns.spentAmount
     );
 
-    recordedSpentAmount = toNumber(spentResult.rows[0]?.total);
+    const spentResult = await client.query(
+      `SELECT COALESCE(
+         SUM(
+           CASE
+             WHEN ${spentColumn}::text
+                  ~ '^-?[0-9]+(\\.[0-9]+)?$'
+             THEN ${spentColumn}::numeric
+             ELSE 0
+           END
+         ),
+         0
+       )::numeric AS total
+       FROM ${quoteTable(table.name)}
+       WHERE ${tenantCondition(columns)}`,
+      [tenantId]
+    );
+
+    recordedSpentAmount = toNumber(
+      spentResult.rows[0]?.total
+    );
   }
 
   const remainingAmount =
@@ -308,7 +496,10 @@ async function getBudgetSummary(client, table) {
     recordedSpentAmount === null || allocatedAmount <= 0
       ? null
       : Number(
-          ((recordedSpentAmount / allocatedAmount) * 100).toFixed(2)
+          (
+            (recordedSpentAmount / allocatedAmount) *
+            100
+          ).toFixed(2)
         );
 
   return {
@@ -321,38 +512,63 @@ async function getBudgetSummary(client, table) {
   };
 }
 
-async function getMonthlyTrend(client, table) {
-  if (!table) return [];
+async function getMonthlyTrend(
+  client,
+  table,
+  tenantId
+) {
+  if (!table) {
+    return [];
+  }
 
   const columns = resolveColumns(table);
 
-  if (!columns.createdAt) return [];
+  if (
+    !isTenantScopedTable(table, columns) ||
+    !columns.createdAt
+  ) {
+    return [];
+  }
 
   const dateColumn = quoteIdentifier(columns.createdAt);
 
   const amountExpression = columns.amount
-    ? `COALESCE(SUM(
-        CASE
-          WHEN ${quoteIdentifier(columns.amount)}::text
-               ~ '^-?[0-9]+(\\.[0-9]+)?$'
-          THEN ${quoteIdentifier(columns.amount)}::numeric
-          ELSE 0
-        END
-      ), 0)::numeric`
+    ? `COALESCE(
+         SUM(
+           CASE
+             WHEN ${quoteIdentifier(columns.amount)}::text
+                  ~ '^-?[0-9]+(\\.[0-9]+)?$'
+             THEN ${quoteIdentifier(columns.amount)}::numeric
+             ELSE 0
+           END
+         ),
+         0
+       )::numeric`
     : "0::numeric";
 
   const result = await client.query(
     `SELECT
-       TO_CHAR(DATE_TRUNC('month', ${dateColumn}::timestamp), 'YYYY-MM')
-         AS month,
+       TO_CHAR(
+         DATE_TRUNC('month', ${dateColumn}::timestamp),
+         'YYYY-MM'
+       ) AS month,
        COUNT(*)::bigint AS count,
        ${amountExpression} AS amount
-     FROM ${quoteIdentifier(table.name)}
-     WHERE ${dateColumn} IS NOT NULL
+     FROM ${quoteTable(table.name)}
+     WHERE ${tenantCondition(columns)}
+       AND ${dateColumn} IS NOT NULL
        AND ${dateColumn}::timestamp >=
-           DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '5 months'
-     GROUP BY DATE_TRUNC('month', ${dateColumn}::timestamp)
-     ORDER BY DATE_TRUNC('month', ${dateColumn}::timestamp) ASC`
+           DATE_TRUNC('month', CURRENT_DATE)
+           - INTERVAL '5 months'
+     GROUP BY DATE_TRUNC(
+       'month',
+       ${dateColumn}::timestamp
+     )
+     ORDER BY DATE_TRUNC(
+       'month',
+       ${dateColumn}::timestamp
+     ) ASC`,
+    [tenantId]
   );
 
   return result.rows.map((row) => ({
@@ -362,6 +578,9 @@ async function getMonthlyTrend(client, table) {
   }));
 }
 
+/**
+ * Main dashboard analytics.
+ */
 export async function getDashboardAnalytics(tenantId) {
   return withTenantClient(tenantId, async (client) => {
     const schema = await getSchema(client);
@@ -371,11 +590,26 @@ export async function getDashboardAnalytics(tenantId) {
         schema,
         TABLE_CANDIDATES.purchaseRequests
       ),
-      budgets: findTable(schema, TABLE_CANDIDATES.budgets),
-      invoices: findTable(schema, TABLE_CANDIDATES.invoices),
-      purchaseOrders: findTable(schema, TABLE_CANDIDATES.purchaseOrders),
-      suppliers: findTable(schema, TABLE_CANDIDATES.suppliers),
-      receipts: findTable(schema, TABLE_CANDIDATES.receipts),
+      budgets: findTable(
+        schema,
+        TABLE_CANDIDATES.budgets
+      ),
+      invoices: findTable(
+        schema,
+        TABLE_CANDIDATES.invoices
+      ),
+      purchaseOrders: findTable(
+        schema,
+        TABLE_CANDIDATES.purchaseOrders
+      ),
+      suppliers: findTable(
+        schema,
+        TABLE_CANDIDATES.suppliers
+      ),
+      receipts: findTable(
+        schema,
+        TABLE_CANDIDATES.receipts
+      ),
     };
 
     const [
@@ -389,34 +623,46 @@ export async function getDashboardAnalytics(tenantId) {
       monthlyPurchaseRequests,
       monthlyInvoices,
     ] = await Promise.all([
-      getMetric(client, tables.purchaseRequests),
-      getMetric(client, tables.budgets),
-      getMetric(client, tables.invoices),
-      getMetric(client, tables.purchaseOrders),
-      getMetric(client, tables.suppliers),
-      getMetric(client, tables.receipts),
-      getBudgetSummary(client, tables.budgets),
-      getMonthlyTrend(client, tables.purchaseRequests),
-      getMonthlyTrend(client, tables.invoices),
+      getMetric(client, tables.purchaseRequests, tenantId),
+      getMetric(client, tables.budgets, tenantId),
+      getMetric(client, tables.invoices, tenantId),
+      getMetric(client, tables.purchaseOrders, tenantId),
+      getMetric(client, tables.suppliers, tenantId),
+      getMetric(client, tables.receipts, tenantId),
+      getBudgetSummary(client, tables.budgets, tenantId),
+      getMonthlyTrend(
+        client,
+        tables.purchaseRequests,
+        tenantId
+      ),
+      getMonthlyTrend(
+        client,
+        tables.invoices,
+        tenantId
+      ),
     ]);
 
     return {
       generatedAt: new Date().toISOString(),
+
       purchaseRequests,
       budgets,
       invoices,
       purchaseOrders,
       suppliers,
       receipts,
+
       budgetSummary,
+
       trends: {
         purchaseRequests: monthlyPurchaseRequests,
         invoices: monthlyInvoices,
       },
+
       sources: Object.fromEntries(
         Object.entries(tables).map(([key, table]) => [
           key,
-          table ? table.name : null,
+          table?.name ?? null,
         ])
       ),
     };

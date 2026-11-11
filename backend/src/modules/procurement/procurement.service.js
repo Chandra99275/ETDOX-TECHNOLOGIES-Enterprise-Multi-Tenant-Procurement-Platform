@@ -7,9 +7,17 @@ import * as procurementRepository from "./procurement.repository.js";
 
 const PROCUREMENT_ROLES = new Set([
   "admin",
+  "organization_admin",
   "employee",
+  "requester",
   "manager",
+  "department_manager",
+  "procurement_manager",
+  "procurement_specialist",
   "finance",
+  "finance_manager",
+  "auditor",
+  "approver",
 ]);
 
 const MANAGER_ROLES = new Set([
@@ -42,21 +50,20 @@ const UUID_REGEX =
 // ERROR HELPERS
 // ============================================================
 
-function httpError(message, statusCode, code = "PROCUREMENT_ERROR") {
+function appError(
+  statusCode,
+  message,
+  code = "PROCUREMENT_ERROR"
+) {
   const error = new Error(message);
-
   error.statusCode = statusCode;
+  error.status = statusCode;
   error.code = code;
-
   return error;
 }
 
-function appError(statusCode, message, code) {
-  return httpError(message, statusCode, code);
-}
-
 // ============================================================
-// ACTOR AND TENANT VALIDATION
+// ROLE NORMALIZATION
 // ============================================================
 
 function normalizeRole(role) {
@@ -68,7 +75,12 @@ function normalizeRole(role) {
   }
 
   if (role && typeof role === "object") {
-    return normalizeRole(role.name ?? role.role ?? "");
+    return normalizeRole(
+      role.name ??
+      role.role ??
+      role.role_name ??
+      ""
+    );
   }
 
   return "";
@@ -81,19 +93,31 @@ function normalizeRoles(actor) {
     roles.push(actor.role);
   }
 
-  if (actor?.roles && Array.isArray(actor.roles)) {
-    roles.push(...actor.roles);
+  if (actor?.roles) {
+    roles.push(
+      ...(Array.isArray(actor.roles)
+        ? actor.roles
+        : [actor.roles])
+    );
   }
 
   if (actor?.user?.role) {
     roles.push(actor.user.role);
   }
 
-  if (actor?.user?.roles && Array.isArray(actor.user.roles)) {
-    roles.push(...actor.user.roles);
+  if (actor?.user?.roles) {
+    roles.push(
+      ...(Array.isArray(actor.user.roles)
+        ? actor.user.roles
+        : [actor.user.roles])
+    );
   }
 
-  return [...new Set(roles.map(normalizeRole).filter(Boolean))];
+  return [
+    ...new Set(
+      roles.map(normalizeRole).filter(Boolean)
+    ),
+  ];
 }
 
 function normalizeActor(actor) {
@@ -102,13 +126,16 @@ function normalizeActor(actor) {
     actor?.userId ??
     actor?.user_id ??
     actor?.sub ??
-    actor?.user?.id;
+    actor?.user?.id ??
+    actor?.user?.userId ??
+    actor?.user?.user_id;
 
   const tenantId =
     actor?.tenantId ??
     actor?.tenant_id ??
     actor?.user?.tenantId ??
-    actor?.user?.tenant_id;
+    actor?.user?.tenant_id ??
+    actor?.user?.tenant?.id;
 
   const roles = normalizeRoles(actor);
 
@@ -128,6 +155,17 @@ function requireContext(tenantId, userId) {
       "TENANT_CONTEXT_REQUIRED"
     );
   }
+
+  if (
+    !UUID_REGEX.test(String(userId)) ||
+    !UUID_REGEX.test(String(tenantId))
+  ) {
+    throw appError(
+      401,
+      "Invalid authenticated user or tenant context.",
+      "INVALID_TENANT_CONTEXT"
+    );
+  }
 }
 
 function requireActor(actor) {
@@ -135,15 +173,11 @@ function requireActor(actor) {
 
   requireContext(user.tenantId, user.id);
 
-  if (!UUID_REGEX.test(user.id) || !UUID_REGEX.test(user.tenantId)) {
-    throw appError(
-      401,
-      "Invalid authenticated user or tenant context.",
-      "INVALID_TENANT_CONTEXT"
-    );
-  }
-
-  if (!user.roles.some((role) => PROCUREMENT_ROLES.has(role))) {
+  if (
+    !user.roles.some((role) =>
+      PROCUREMENT_ROLES.has(role)
+    )
+  ) {
     throw appError(
       403,
       "Your account does not have procurement access.",
@@ -155,7 +189,9 @@ function requireActor(actor) {
 }
 
 function hasAnyRole(roles, allowedRoles) {
-  return roles.some((role) => allowedRoles.has(role));
+  return roles.some((role) =>
+    allowedRoles.has(role)
+  );
 }
 
 function canViewAllRequests(roles = []) {
@@ -177,11 +213,14 @@ function isAdmin(roles = []) {
 }
 
 // ============================================================
-// INPUT VALIDATION
+// VALIDATION
 // ============================================================
 
 function validateId(id) {
-  if (typeof id !== "string" || !UUID_REGEX.test(id)) {
+  if (
+    typeof id !== "string" ||
+    !UUID_REGEX.test(id)
+  ) {
     throw appError(
       400,
       "Invalid purchase request ID.",
@@ -192,8 +231,15 @@ function validateId(id) {
   return id;
 }
 
-function cleanText(value, field, maxLength = 2000) {
-  if (typeof value !== "string" || !value.trim()) {
+function cleanText(
+  value,
+  field,
+  maxLength = 2000
+) {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
     throw appError(
       400,
       `${field} is required.`,
@@ -206,7 +252,7 @@ function cleanText(value, field, maxLength = 2000) {
   if (cleaned.length > maxLength) {
     throw appError(
       400,
-      `${field} exceeds the maximum length of ${maxLength}.`,
+      `${field} exceeds ${maxLength} characters.`,
       "VALIDATION_ERROR"
     );
   }
@@ -214,8 +260,16 @@ function cleanText(value, field, maxLength = 2000) {
   return cleaned;
 }
 
-function optionalText(value, field, maxLength = 2000) {
-  if (value === undefined || value === null || value === "") {
+function optionalText(
+  value,
+  field,
+  maxLength = 2000
+) {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
     return null;
   }
 
@@ -257,7 +311,7 @@ function validateCurrency(value = "INR") {
   if (typeof value !== "string") {
     throw appError(
       400,
-      "Currency must be a valid three-letter currency code.",
+      "Currency must be a valid three-letter code.",
       "INVALID_CURRENCY"
     );
   }
@@ -267,7 +321,7 @@ function validateCurrency(value = "INR") {
   if (!/^[A-Z]{3}$/.test(currency)) {
     throw appError(
       400,
-      "Currency must be a valid three-letter currency code.",
+      "Currency must be a valid three-letter code.",
       "INVALID_CURRENCY"
     );
   }
@@ -275,7 +329,10 @@ function validateCurrency(value = "INR") {
   return currency;
 }
 
-function validatePagination(page = 1, limit = 20) {
+function validatePagination(
+  page = 1,
+  limit = 20
+) {
   const parsedPage = Number(page);
   const parsedLimit = Number(limit);
 
@@ -308,9 +365,20 @@ function normalizeDecision(decision) {
     );
   }
 
-  const normalized = decision.trim().toLowerCase();
+  const normalized = decision
+    .trim()
+    .toLowerCase();
 
-  if (!["accept", "approve", "decline", "reject"].includes(normalized)) {
+  if (
+    ![
+      "accept",
+      "approve",
+      "approved",
+      "decline",
+      "reject",
+      "rejected",
+    ].includes(normalized)
+  ) {
     throw appError(
       400,
       "Decision must be approve or reject.",
@@ -318,13 +386,21 @@ function normalizeDecision(decision) {
     );
   }
 
-  return ["accept", "approve"].includes(normalized)
+  return [
+    "accept",
+    "approve",
+    "approved",
+  ].includes(normalized)
     ? "approved"
     : "rejected";
 }
 
 function normalizeComment(comment) {
-  if (comment === undefined || comment === null || comment === "") {
+  if (
+    comment === undefined ||
+    comment === null ||
+    comment === ""
+  ) {
     return null;
   }
 
@@ -349,22 +425,57 @@ function normalizeComment(comment) {
   return normalized || null;
 }
 
+function getRequesterId(request) {
+  return (
+    request?.requesterId ??
+    request?.requester_id ??
+    request?.userId ??
+    request?.user_id ??
+    request?.createdBy ??
+    request?.created_by
+  );
+}
+
+function assertRequestAccess(user, request, action) {
+  if (!request) {
+    throw appError(
+      404,
+      "Procurement request not found.",
+      "REQUEST_NOT_FOUND"
+    );
+  }
+
+  if (
+    !canViewAllRequests(user.roles) &&
+    String(getRequesterId(request)) !== user.id
+  ) {
+    throw appError(
+      403,
+      `You cannot ${action} this procurement request.`,
+      "REQUEST_ACCESS_DENIED"
+    );
+  }
+}
+
 // ============================================================
-// REQUEST LISTING
+// LIST PROCUREMENT REQUESTS
 // ============================================================
 
-export async function listRequests(actor, query = {}) {
+export async function listRequests(
+  actor,
+  query = {}
+) {
   const user = requireActor(actor);
 
-  const {
-    page,
-    limit,
-  } = validatePagination(query.page ?? 1, query.limit ?? 20);
+  const { page, limit } = validatePagination(
+    query.page ?? 1,
+    query.limit ?? 20
+  );
 
-  const status = query.status;
-  const search = query.search ?? "";
-
-  if (status !== undefined && typeof status !== "string") {
+  if (
+    query.status !== undefined &&
+    typeof query.status !== "string"
+  ) {
     throw appError(
       400,
       "Invalid status filter.",
@@ -372,7 +483,10 @@ export async function listRequests(actor, query = {}) {
     );
   }
 
-  if (typeof search !== "string") {
+  if (
+    query.search !== undefined &&
+    typeof query.search !== "string"
+  ) {
     throw appError(
       400,
       "Invalid search filter.",
@@ -385,8 +499,10 @@ export async function listRequests(actor, query = {}) {
     userId: user.id,
     page,
     limit,
-    status: status?.trim() || null,
-    search: search.trim().slice(0, 100),
+    status: query.status?.trim() || null,
+    search: (query.search || "")
+      .trim()
+      .slice(0, 100),
     canViewAll: canViewAllRequests(user.roles),
   });
 }
@@ -395,40 +511,25 @@ export async function listRequests(actor, query = {}) {
 // GET SINGLE REQUEST
 // ============================================================
 
-export async function getRequest(actor, requestId) {
+export async function getRequest(
+  actor,
+  requestId
+) {
   const user = requireActor(actor);
 
   validateId(requestId);
 
-  const request = await procurementRepository.findRequestById(
-    user.tenantId,
-    requestId
+  const request =
+    await procurementRepository.findRequestById(
+      user.tenantId,
+      requestId
+    );
+
+  assertRequestAccess(
+    user,
+    request,
+    "access"
   );
-
-  if (!request) {
-    throw appError(
-      404,
-      "Procurement request not found.",
-      "REQUEST_NOT_FOUND"
-    );
-  }
-
-  const requesterId =
-    request.requesterId ??
-    request.requester_id ??
-    request.userId ??
-    request.user_id;
-
-  if (
-    !canViewAllRequests(user.roles) &&
-    String(requesterId) !== String(user.id)
-  ) {
-    throw appError(
-      403,
-      "You cannot access this procurement request.",
-      "REQUEST_ACCESS_DENIED"
-    );
-  }
 
   return request;
 }
@@ -437,10 +538,17 @@ export async function getRequest(actor, requestId) {
 // CREATE REQUEST
 // ============================================================
 
-export async function createRequest(actor, input = {}) {
+export async function createRequest(
+  actor,
+  input = {}
+) {
   const user = requireActor(actor);
 
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input)
+  ) {
     throw appError(
       400,
       "A valid request body is required.",
@@ -448,7 +556,10 @@ export async function createRequest(actor, input = {}) {
     );
   }
 
-  if (user.roles.includes("finance") && !isAdmin(user.roles)) {
+  if (
+    isFinanceOrAdmin(user.roles) &&
+    !isAdmin(user.roles)
+  ) {
     throw appError(
       403,
       "Finance users cannot create procurement requests.",
@@ -457,29 +568,44 @@ export async function createRequest(actor, input = {}) {
   }
 
   const title = cleanText(
-    input.title || input.productName || "Purchase Request",
+    input.title ||
+    input.productName ||
+    "Purchase Request",
     "Title",
     200
   );
 
   const description = cleanText(
-    input.description || input.justification || title,
+    input.description ||
+    input.justification ||
+    title,
     "Description",
     5000
   );
 
   const amount = validateAmount(
-    input.amount !== undefined ? input.amount : input.total
+    input.amount !== undefined
+      ? input.amount
+      : input.total
   );
 
-  const currency = validateCurrency(input.currency ?? "INR");
+  const currency = validateCurrency(
+    input.currency ?? "INR"
+  );
 
   let quantity = null;
 
-  if (input.quantity !== undefined && input.quantity !== null) {
+  if (
+    input.quantity !== undefined &&
+    input.quantity !== null
+  ) {
     quantity = Number(input.quantity);
 
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1000000) {
+    if (
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 1000000
+    ) {
       throw appError(
         400,
         "Quantity must be a positive whole number.",
@@ -488,11 +614,11 @@ export async function createRequest(actor, input = {}) {
     }
   }
 
-  let unitPrice = null;
-
-  if (input.unitPrice !== undefined && input.unitPrice !== null) {
-    unitPrice = validateAmount(input.unitPrice);
-  }
+  const unitPrice =
+    input.unitPrice !== undefined &&
+    input.unitPrice !== null
+      ? validateAmount(input.unitPrice)
+      : null;
 
   return procurementRepository.createRequest({
     tenantId: user.tenantId,
@@ -503,9 +629,17 @@ export async function createRequest(actor, input = {}) {
     currency,
     quantity,
     unitPrice,
-    department: optionalText(input.department, "Department", 200),
+    department: optionalText(
+      input.department,
+      "Department",
+      200
+    ),
     budgetId: input.budgetId || null,
-    supplier: optionalText(input.supplier, "Supplier", 300),
+    supplier: optionalText(
+      input.supplier,
+      "Supplier",
+      300
+    ),
   });
 }
 
@@ -513,12 +647,20 @@ export async function createRequest(actor, input = {}) {
 // UPDATE REQUEST
 // ============================================================
 
-export async function updateRequest(actor, requestId, input = {}) {
+export async function updateRequest(
+  actor,
+  requestId,
+  input = {}
+) {
   const user = requireActor(actor);
 
   validateId(requestId);
 
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input)
+  ) {
     throw appError(
       400,
       "A valid request body is required.",
@@ -526,7 +668,10 @@ export async function updateRequest(actor, requestId, input = {}) {
     );
   }
 
-  if (user.roles.includes("finance") && !isAdmin(user.roles)) {
+  if (
+    isFinanceOrAdmin(user.roles) &&
+    !isAdmin(user.roles)
+  ) {
     throw appError(
       403,
       "Finance users cannot edit procurement request details.",
@@ -534,50 +679,35 @@ export async function updateRequest(actor, requestId, input = {}) {
     );
   }
 
-  const admin = isAdmin(user.roles);
+  const existing =
+    await procurementRepository.findRequestById(
+      user.tenantId,
+      requestId
+    );
 
-  const existing = await procurementRepository.findRequestById(
-    user.tenantId,
-    requestId
+  assertRequestAccess(
+    user,
+    existing,
+    "edit"
   );
 
-  if (!existing) {
+  if (
+    String(existing.status || "").toUpperCase() !==
+    "DRAFT"
+  ) {
     throw appError(
-      404,
-      "Procurement request not found.",
-      "REQUEST_NOT_FOUND"
+      409,
+      "Only draft procurement requests can be edited.",
+      "REQUEST_EDIT_CONFLICT"
     );
-  }
-
-  const requesterId =
-    existing.requesterId ??
-    existing.requester_id ??
-    existing.userId ??
-    existing.user_id;
-
-  if (!admin) {
-    if (String(requesterId) !== String(user.id)) {
-      throw appError(
-        403,
-        "You can only edit your own procurement requests.",
-        "REQUEST_EDIT_DENIED"
-      );
-    }
-
-    if (!["draft", "pending"].includes(
-      String(existing.status || "").toLowerCase()
-    )) {
-      throw appError(
-        409,
-        "Only draft or pending requests can be edited.",
-        "REQUEST_EDIT_CONFLICT"
-      );
-    }
   }
 
   const changes = {};
 
-  if (input.title !== undefined || input.productName !== undefined) {
+  if (
+    input.title !== undefined ||
+    input.productName !== undefined
+  ) {
     changes.title = cleanText(
       input.title ?? input.productName,
       "Title",
@@ -596,36 +726,21 @@ export async function updateRequest(actor, requestId, input = {}) {
     );
   }
 
-  if (input.amount !== undefined || input.total !== undefined) {
+  if (
+    input.amount !== undefined ||
+    input.total !== undefined
+  ) {
     changes.amount = validateAmount(
-      input.amount !== undefined ? input.amount : input.total
+      input.amount !== undefined
+        ? input.amount
+        : input.total
     );
   }
 
   if (input.currency !== undefined) {
-    changes.currency = validateCurrency(input.currency);
-  }
-
-  if (input.quantity !== undefined) {
-    const quantity = Number(input.quantity);
-
-    if (
-      !Number.isInteger(quantity) ||
-      quantity < 1 ||
-      quantity > 1000000
-    ) {
-      throw appError(
-        400,
-        "Quantity must be a positive whole number.",
-        "INVALID_QUANTITY"
-      );
-    }
-
-    changes.quantity = quantity;
-  }
-
-  if (input.unitPrice !== undefined) {
-    changes.unitPrice = validateAmount(input.unitPrice);
+    changes.currency = validateCurrency(
+      input.currency
+    );
   }
 
   if (input.department !== undefined) {
@@ -648,11 +763,16 @@ export async function updateRequest(actor, requestId, input = {}) {
     );
   }
 
+  if (input.requiredByDate !== undefined) {
+    changes.requiredByDate =
+      input.requiredByDate || null;
+  }
+
   return procurementRepository.updateRequest(
     user.tenantId,
     requestId,
     user.id,
-    admin,
+    isAdmin(user.roles),
     changes
   );
 }
@@ -661,12 +781,18 @@ export async function updateRequest(actor, requestId, input = {}) {
 // SUBMIT REQUEST
 // ============================================================
 
-export async function submitRequest(actor, requestId) {
+export async function submitRequest(
+  actor,
+  requestId
+) {
   const user = requireActor(actor);
 
   validateId(requestId);
 
-  if (user.roles.includes("finance") && !isAdmin(user.roles)) {
+  if (
+    isFinanceOrAdmin(user.roles) &&
+    !isAdmin(user.roles)
+  ) {
     throw appError(
       403,
       "Finance users cannot submit procurement requests.",
@@ -674,10 +800,74 @@ export async function submitRequest(actor, requestId) {
     );
   }
 
-  const existing = await procurementRepository.findRequestById(
-    user.tenantId,
-    requestId
+  const existing =
+    await procurementRepository.findRequestById(
+      user.tenantId,
+      requestId
+    );
+
+  assertRequestAccess(
+    user,
+    existing,
+    "submit"
   );
+
+  if (
+    String(existing.status || "").toUpperCase() !==
+    "DRAFT"
+  ) {
+    throw appError(
+      409,
+      "Only draft procurement requests can be submitted.",
+      "REQUEST_NOT_SUBMITTABLE"
+    );
+  }
+
+  const result =
+    await procurementRepository.submitRequest(
+      user.tenantId,
+      requestId,
+      user.id,
+      isAdmin(user.roles)
+    );
+
+  if (!result) {
+    throw appError(
+      409,
+      "Request was not found or is no longer eligible for submission.",
+      "REQUEST_SUBMIT_CONFLICT"
+    );
+  }
+
+  return result;
+}
+
+// ============================================================
+// RECOVER EXISTING SUBMITTED REQUEST
+// Admin-only recovery operation.
+// ============================================================
+
+export async function recoverSubmittedRequest(
+  actor,
+  requestId
+) {
+  const user = requireActor(actor);
+
+  validateId(requestId);
+
+  if (!isAdmin(user.roles)) {
+    throw appError(
+      403,
+      "Only an organization administrator can recover a submitted request.",
+      "REQUEST_RECOVERY_ADMIN_REQUIRED"
+    );
+  }
+
+  const existing =
+    await procurementRepository.findRequestById(
+      user.tenantId,
+      requestId
+    );
 
   if (!existing) {
     throw appError(
@@ -687,45 +877,38 @@ export async function submitRequest(actor, requestId) {
     );
   }
 
-  const requesterId =
-    existing.requesterId ??
-    existing.requester_id ??
-    existing.userId ??
-    existing.user_id;
-
-  if (
-    !isAdmin(user.roles) &&
-    String(requesterId) !== String(user.id)
-  ) {
-    throw appError(
-      403,
-      "You can only submit your own procurement requests.",
-      "REQUEST_SUBMIT_DENIED"
-    );
-  }
-
-  if (!["draft", "pending"].includes(
-    String(existing.status || "").toLowerCase()
-  )) {
+  if (existing.workflowRunId) {
     throw appError(
       409,
-      "This request cannot be submitted in its current status.",
-      "REQUEST_NOT_SUBMITTABLE"
+      "This request already has an approval workflow.",
+      "REQUEST_ALREADY_HAS_WORKFLOW"
     );
   }
 
-  const result = await procurementRepository.submitRequest(
-    user.tenantId,
-    requestId,
-    user.id,
-    isAdmin(user.roles)
-  );
+  if (
+    String(existing.status || "").toUpperCase() !==
+    "SUBMITTED"
+  ) {
+    throw appError(
+      409,
+      "Only submitted requests without a workflow can be recovered.",
+      "REQUEST_NOT_RECOVERABLE"
+    );
+  }
+
+  const result =
+    await procurementRepository.recoverSubmittedRequest(
+      user.tenantId,
+      requestId,
+      user.id,
+      true
+    );
 
   if (!result) {
     throw appError(
       409,
-      "Request was not found or is no longer eligible for submission.",
-      "REQUEST_SUBMIT_CONFLICT"
+      "The submitted request could not be recovered.",
+      "REQUEST_RECOVERY_CONFLICT"
     );
   }
 
@@ -748,9 +931,11 @@ export async function managerDecision({
   validateId(requestId);
 
   const normalizedRoles = [
-    ...new Set((Array.isArray(roles) ? roles : [roles])
-      .map(normalizeRole)
-      .filter(Boolean)),
+    ...new Set(
+      (Array.isArray(roles) ? roles : [roles])
+        .map(normalizeRole)
+        .filter(Boolean)
+    ),
   ];
 
   if (!isManagerOrAdmin(normalizedRoles)) {
@@ -761,16 +946,20 @@ export async function managerDecision({
     );
   }
 
-  const normalizedDecision = normalizeDecision(decision);
-  const normalizedComment = normalizeComment(comment);
+  const normalizedDecision =
+    normalizeDecision(decision);
 
-  const result = await procurementRepository.recordManagerDecision({
-    tenantId,
-    requestId,
-    actorId: userId,
-    decision: normalizedDecision,
-    comment: normalizedComment,
-  });
+  const normalizedComment =
+    normalizeComment(comment);
+
+  const result =
+    await procurementRepository.recordManagerDecision({
+      tenantId,
+      requestId,
+      actorId: userId,
+      decision: normalizedDecision,
+      comment: normalizedComment,
+    });
 
   if (!result) {
     throw appError(
@@ -799,9 +988,11 @@ export async function financeDecision({
   validateId(requestId);
 
   const normalizedRoles = [
-    ...new Set((Array.isArray(roles) ? roles : [roles])
-      .map(normalizeRole)
-      .filter(Boolean)),
+    ...new Set(
+      (Array.isArray(roles) ? roles : [roles])
+        .map(normalizeRole)
+        .filter(Boolean)
+    ),
   ];
 
   if (!isFinanceOrAdmin(normalizedRoles)) {
@@ -812,16 +1003,20 @@ export async function financeDecision({
     );
   }
 
-  const normalizedDecision = normalizeDecision(decision);
-  const normalizedComment = normalizeComment(comment);
+  const normalizedDecision =
+    normalizeDecision(decision);
 
-  const result = await procurementRepository.recordFinanceDecision({
-    tenantId,
-    requestId,
-    actorId: userId,
-    decision: normalizedDecision,
-    comment: normalizedComment,
-  });
+  const normalizedComment =
+    normalizeComment(comment);
+
+  const result =
+    await procurementRepository.recordFinanceDecision({
+      tenantId,
+      requestId,
+      actorId: userId,
+      decision: normalizedDecision,
+      comment: normalizedComment,
+    });
 
   if (!result) {
     throw appError(

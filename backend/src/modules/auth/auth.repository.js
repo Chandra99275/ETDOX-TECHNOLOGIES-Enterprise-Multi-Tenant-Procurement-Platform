@@ -9,6 +9,132 @@ import {
 // Utilities
 // ------------------------------------------------------------
 
+const DEFAULT_ROLES = [
+  {
+    name: "organization_admin",
+    permissions: [
+      "users:read",
+      "users:manage",
+      "roles:read",
+      "roles:manage",
+      "workflows:manage",
+      "approvals:read",
+      "approvals:act",
+      "procurement:read",
+      "procurement:create",
+      "procurement:manage",
+      "budgets:read",
+      "budgets:manage",
+      "analytics:read",
+    ],
+  },
+  {
+    name: "admin",
+    permissions: [
+      "users:read",
+      "users:manage",
+      "roles:read",
+      "roles:manage",
+      "workflows:manage",
+      "approvals:read",
+      "approvals:act",
+      "procurement:read",
+      "procurement:create",
+      "procurement:manage",
+      "budgets:read",
+      "budgets:manage",
+      "analytics:read",
+    ],
+  },
+  {
+    name: "employee",
+    permissions: [
+      "procurement:create",
+      "procurement:read",
+      "budgets:read",
+    ],
+  },
+  {
+    name: "requester",
+    permissions: [
+      "procurement:create",
+      "procurement:read",
+      "budgets:read",
+    ],
+  },
+  {
+    name: "manager",
+    permissions: [
+      "procurement:read",
+      "approvals:read",
+      "approvals:act",
+      "budgets:read",
+    ],
+  },
+  {
+    name: "department_manager",
+    permissions: [
+      "procurement:read",
+      "approvals:read",
+      "approvals:act",
+      "budgets:read",
+    ],
+  },
+  {
+    name: "finance",
+    permissions: [
+      "procurement:read",
+      "approvals:read",
+      "approvals:act",
+      "budgets:read",
+      "budgets:manage",
+    ],
+  },
+  {
+    name: "finance_manager",
+    permissions: [
+      "procurement:read",
+      "approvals:read",
+      "approvals:act",
+      "budgets:read",
+      "budgets:manage",
+    ],
+  },
+  {
+    name: "procurement_specialist",
+    permissions: [
+      "procurement:read",
+      "procurement:create",
+      "procurement:manage",
+      "approvals:read",
+    ],
+  },
+  {
+    name: "procurement_manager",
+    permissions: [
+      "procurement:read",
+      "procurement:manage",
+      "approvals:read",
+      "approvals:act",
+      "budgets:read",
+    ],
+  },
+  {
+    name: "auditor",
+    permissions: [
+      "procurement:read",
+      "budgets:read",
+      "analytics:read",
+    ],
+  },
+  {
+    name: "supplier_user",
+    permissions: [
+      "procurement:read",
+    ],
+  },
+];
+
 function parseRoles(value) {
   if (Array.isArray(value)) {
     return value.filter(Boolean);
@@ -30,6 +156,7 @@ function mapUserRow(row) {
   if (!row) return null;
 
   const roles = parseRoles(row.roles);
+
   const primaryRole =
     row.direct_role ||
     row.role ||
@@ -37,8 +164,8 @@ function mapUserRow(row) {
     row.requested_role ||
     "requester";
 
-  const firstName = row.first_name ?? row.firstName ?? "";
-  const lastName = row.last_name ?? row.lastName ?? "";
+  const firstName = row.first_name ?? "";
+  const lastName = row.last_name ?? "";
 
   return {
     id: row.id,
@@ -47,11 +174,10 @@ function mapUserRow(row) {
     lastName,
     fullName:
       row.full_name ||
-      row.fullName ||
       [firstName, lastName].filter(Boolean).join(" ").trim() ||
       row.email,
-    passwordHash: row.password_hash ?? row.passwordHash,
-    tenantId: row.tenant_id ?? row.tenantId,
+    passwordHash: row.password_hash,
+    tenantId: row.tenant_id,
     organizationName: row.organization_name ?? null,
     status:
       row.status ||
@@ -76,6 +202,87 @@ function normalizeEmail(email) {
 }
 
 // ------------------------------------------------------------
+// Default tenant roles
+// ------------------------------------------------------------
+
+async function ensureTenantRoles(client, tenantId) {
+  for (const role of DEFAULT_ROLES) {
+    await client.query(
+      `
+        INSERT INTO public.roles (
+          id,
+          tenant_id,
+          name,
+          description,
+          permissions,
+          is_system,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5::text[], true, NOW(), NOW()
+        )
+        ON CONFLICT (tenant_id, name)
+        DO NOTHING
+      `,
+      [
+        randomUUID(),
+        tenantId,
+        role.name,
+        `${role.name.replaceAll("_", " ")} role`,
+        role.permissions,
+      ]
+    );
+  }
+}
+
+async function assignRolesWithClient(
+  client,
+  tenantId,
+  userId,
+  roleNames
+) {
+  for (const roleName of roleNames) {
+    const result = await client.query(
+      `
+        INSERT INTO public.user_roles (
+          tenant_id,
+          user_id,
+          role_id
+        )
+        SELECT $1, $2, r.id
+        FROM public.roles r
+        WHERE r.tenant_id = $1
+          AND LOWER(r.name) = LOWER($3)
+        ON CONFLICT (tenant_id, user_id, role_id)
+        DO NOTHING
+        RETURNING role_id
+      `,
+      [tenantId, userId, roleName]
+    );
+
+    if (!result.rowCount) {
+      const existing = await client.query(
+        `
+          SELECT id
+          FROM public.roles
+          WHERE tenant_id = $1
+            AND LOWER(name) = LOWER($2)
+          LIMIT 1
+        `,
+        [tenantId, roleName]
+      );
+
+      if (!existing.rowCount) {
+        throw new Error(
+          `Role '${roleName}' does not exist for this organization.`
+        );
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------
 // Database health
 // ------------------------------------------------------------
 
@@ -94,86 +301,53 @@ export async function checkAuthRepository() {
 
 // ------------------------------------------------------------
 // User lookup
-//
-// IMPORTANT:
-// findUserByEmail uses the database authentication function
-// because the users table has forced row-level security.
 // ------------------------------------------------------------
 
 export async function findUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail) {
-    return null;
-  }
+  if (!normalizedEmail) return null;
 
   const result = await pool.query(
     `
-      SELECT
-        id,
-        email,
-        password_hash,
-        tenant_id,
-        first_name,
-        last_name,
-        full_name,
-        is_active,
-        direct_role
+      SELECT *
       FROM public.etdox_auth_user_by_email($1)
     `,
     [normalizedEmail]
   );
 
-  if (!result.rows.length) {
-    return null;
-  }
+  if (!result.rows.length) return null;
 
   const row = result.rows[0];
 
-  if (!row.direct_role && row.tenant_id) {
-    row.direct_role = await findAssignedRole(
-      row.id,
-      row.tenant_id
+  if (row.tenant_id) {
+    const roleResult = await withTenantTransaction(
+      row.tenant_id,
+      async (client) =>
+        client.query(
+          `
+            SELECT r.name
+            FROM public.user_roles ur
+            INNER JOIN public.roles r
+              ON r.id = ur.role_id
+             AND r.tenant_id = ur.tenant_id
+            WHERE ur.user_id = $1
+              AND ur.tenant_id = $2
+            ORDER BY r.name
+          `,
+          [row.id, row.tenant_id]
+        )
     );
+
+    row.roles = roleResult.rows.map((item) => item.name);
+    row.direct_role = row.roles[0] || row.direct_role;
   }
 
   return mapUserRow(row);
 }
 
-async function findAssignedRole(userId, tenantId) {
-  if (!userId || !tenantId) {
-    return null;
-  }
-
-  return withTenantTransaction(tenantId, async (client) => {
-    const result = await client.query(
-      `
-        SELECT r.name AS role
-        FROM public.user_roles AS ur
-        INNER JOIN public.roles AS r
-          ON r.id = ur.role_id
-         AND r.tenant_id = ur.tenant_id
-        WHERE ur.user_id::text = $1::text
-          AND ur.tenant_id::text = $2::text
-        ORDER BY r.name
-        LIMIT 1
-      `,
-      [userId, tenantId]
-    );
-
-    return result.rows[0]?.role ?? null;
-  });
-}
-
 export async function findUserById(id, tenantId) {
-  if (!id) {
-    return null;
-  }
-
-  // Tenant-scoped lookup is required for RLS-protected user data.
-  if (!tenantId) {
-    return null;
-  }
+  if (!id || !tenantId) return null;
 
   return withTenantTransaction(tenantId, async (client) => {
     const result = await client.query(
@@ -193,31 +367,29 @@ export async function findUserById(id, tenantId) {
           u.created_at,
           u.updated_at,
           t.name AS organization_name
-        FROM public.users AS u
-        LEFT JOIN public.tenants AS t
+        FROM public.users u
+        LEFT JOIN public.tenants t
           ON t.id = u.tenant_id
-        WHERE u.id::text = $1::text
-          AND u.tenant_id::text = $2::text
+        WHERE u.id = $1
+          AND u.tenant_id = $2
         LIMIT 1
       `,
       [id, tenantId]
     );
 
-    if (!result.rows.length) {
-      return null;
-    }
+    if (!result.rowCount) return null;
 
     const user = result.rows[0];
 
     const roleResult = await client.query(
       `
         SELECT r.name
-        FROM public.user_roles AS ur
-        INNER JOIN public.roles AS r
+        FROM public.user_roles ur
+        INNER JOIN public.roles r
           ON r.id = ur.role_id
          AND r.tenant_id = ur.tenant_id
-        WHERE ur.user_id::text = $1::text
-          AND ur.tenant_id::text = $2::text
+        WHERE ur.user_id = $1
+          AND ur.tenant_id = $2
         ORDER BY r.name
       `,
       [id, tenantId]
@@ -227,8 +399,6 @@ export async function findUserById(id, tenantId) {
 
     if (user.roles.length) {
       user.direct_role = user.roles[0];
-    } else if (user.requested_role) {
-      user.direct_role = user.requested_role;
     }
 
     return mapUserRow(user);
@@ -261,7 +431,6 @@ export async function createTenant({ name, slug }) {
   try {
     await client.query("BEGIN");
 
-    // Transaction-local tenant context.
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true)",
       [id]
@@ -278,7 +447,6 @@ export async function createTenant({ name, slug }) {
       [id, name.trim(), cleanSlug]
     );
 
-    // Preserve compatibility with deployments using organizations.
     await client.query(
       `
         INSERT INTO public.organizations (id, name, slug)
@@ -287,6 +455,8 @@ export async function createTenant({ name, slug }) {
       `,
       [id, name.trim(), cleanSlug]
     );
+
+    await ensureTenantRoles(client, id);
 
     await client.query("COMMIT");
 
@@ -306,7 +476,7 @@ export async function findTenantById(id) {
     `
       SELECT *
       FROM public.tenants
-      WHERE id::text = $1::text
+      WHERE id = $1
       LIMIT 1
     `,
     [id]
@@ -315,13 +485,6 @@ export async function findTenantById(id) {
   return result.rows[0] ?? null;
 }
 
-/**
- * Returns the oldest active tenant.
- *
- * This does not create a demo tenant or depend on a demo ID.
- * Use only if your registration workflow intentionally supports
- * registration into an existing organization.
- */
 export async function findDefaultTenant() {
   const result = await pool.query(
     `
@@ -352,16 +515,10 @@ export async function createUser({
 }) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail) {
-    throw new Error("A valid email address is required.");
-  }
-
-  if (!tenantId) {
-    throw new Error("Tenant ID is required to create a user.");
-  }
-
-  if (!passwordHash) {
-    throw new Error("Password hash is required.");
+  if (!normalizedEmail || !tenantId || !passwordHash) {
+    throw new Error(
+      "Valid email, tenant ID, and password hash are required."
+    );
   }
 
   const id = randomUUID();
@@ -405,21 +562,14 @@ export async function createUser({
       ]
     );
 
-    for (const roleName of assignedRoles) {
-      await client.query(
-        `
-          INSERT INTO public.user_roles
-            (tenant_id, user_id, role_id)
-          SELECT $1, $2, r.id
-          FROM public.roles AS r
-          WHERE r.tenant_id = $1
-            AND LOWER(r.name) = LOWER($3)
-          ON CONFLICT (tenant_id, user_id, role_id)
-          DO NOTHING
-        `,
-        [tenantId, id, roleName]
-      );
-    }
+    await ensureTenantRoles(client, tenantId);
+
+    await assignRolesWithClient(
+      client,
+      tenantId,
+      id,
+      assignedRoles
+    );
 
     await client.query("COMMIT");
   } catch (error) {
@@ -441,9 +591,6 @@ export async function updateUserStatus(
     throw new Error("User ID and status are required.");
   }
 
-  // This update is restricted to the user's own ID. If your users
-  // table has forced RLS, call this operation through a tenant-aware
-  // function that receives a verified tenantId.
   const result = await pool.query(
     `
       UPDATE public.users
@@ -451,12 +598,10 @@ export async function updateUserStatus(
         status = $1,
         is_active = $2,
         email_verified_at =
-          CASE
-            WHEN $3::boolean THEN NOW()
-            ELSE email_verified_at
-          END,
+          CASE WHEN $3::boolean THEN NOW()
+               ELSE email_verified_at END,
         updated_at = NOW()
-      WHERE id::text = $4::text
+      WHERE id = $4
       RETURNING id
     `,
     [
@@ -482,18 +627,13 @@ export async function assignUserRole(
   }
 
   return withTenantTransaction(tenantId, async (client) => {
-    await client.query(
-      `
-        INSERT INTO public.user_roles
-          (tenant_id, user_id, role_id)
-        SELECT $1, $2, r.id
-        FROM public.roles AS r
-        WHERE r.tenant_id::text = $1::text
-          AND LOWER(r.name) = LOWER($3)
-        ON CONFLICT (tenant_id, user_id, role_id)
-        DO NOTHING
-      `,
-      [tenantId, userId, roleName]
+    await ensureTenantRoles(client, tenantId);
+
+    await assignRolesWithClient(
+      client,
+      tenantId,
+      userId,
+      [roleName]
     );
 
     return true;
@@ -513,7 +653,7 @@ export async function updateUserPassword(
       UPDATE public.users
       SET password_hash = $1,
           updated_at = NOW()
-      WHERE id::text = $2::text
+      WHERE id = $2
       RETURNING id
     `,
     [newPasswordHash, userId]
@@ -546,9 +686,7 @@ export async function createEmailVerificationToken({
   return { id, userId, tokenHash, otp, expiresAt };
 }
 
-export async function findAndConsumeVerificationToken(
-  tokenHash
-) {
+export async function findAndConsumeVerificationToken(tokenHash) {
   const result = await pool.query(
     `
       UPDATE public.email_verifications
@@ -572,21 +710,14 @@ export async function findAndConsumeVerificationToken(
     : null;
 }
 
-export async function findAndConsumeVerificationByOtp(
-  email,
-  otp
-) {
+export async function findAndConsumeVerificationByOtp(email, otp) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail || !otp) {
-    return null;
-  }
+  if (!normalizedEmail || !otp) return null;
 
   const user = await findUserByEmail(normalizedEmail);
 
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   const result = await pool.query(
     `
@@ -643,21 +774,14 @@ export async function createPasswordResetToken({
   return { id, userId, tokenHash, otp, expiresAt };
 }
 
-export async function findActivePasswordResetByOtp(
-  email,
-  otp
-) {
+export async function findActivePasswordResetByOtp(email, otp) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail || !otp) {
-    return null;
-  }
+  if (!normalizedEmail || !otp) return null;
 
   const user = await findUserByEmail(normalizedEmail);
 
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   const result = await pool.query(
     `
@@ -686,21 +810,14 @@ export async function findActivePasswordResetByOtp(
     : null;
 }
 
-export async function findAndConsumePasswordResetByOtp(
-  email,
-  otp
-) {
+export async function findAndConsumePasswordResetByOtp(email, otp) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail || !otp) {
-    return null;
-  }
+  if (!normalizedEmail || !otp) return null;
 
   const user = await findUserByEmail(normalizedEmail);
 
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   const result = await pool.query(
     `
@@ -734,9 +851,7 @@ export async function findAndConsumePasswordResetByOtp(
     : null;
 }
 
-export async function findAndConsumePasswordResetToken(
-  tokenHash
-) {
+export async function findAndConsumePasswordResetToken(tokenHash) {
   const result = await pool.query(
     `
       UPDATE public.password_resets
@@ -802,9 +917,6 @@ export async function createSession({
       ]
     );
   } catch (error) {
-    // Session persistence should not silently hide unexpected schema
-    // problems in production. This warning preserves the behavior of
-    // the original repository while making the failure visible.
     console.warn(
       "[AuthRepository] Could not save session:",
       error.message
@@ -815,9 +927,7 @@ export async function createSession({
 }
 
 export async function revokeUserSessions(userId) {
-  if (!userId) {
-    return false;
-  }
+  if (!userId) return false;
 
   try {
     await pool.query(
@@ -843,10 +953,7 @@ export async function revokeUserSessions(userId) {
 // Permissions
 // ------------------------------------------------------------
 
-export async function getUserPermissions(
-  tenantId,
-  roles = []
-) {
+export async function getUserPermissions(tenantId, roles = []) {
   if (!tenantId || !Array.isArray(roles) || !roles.length) {
     return [];
   }
@@ -862,15 +969,13 @@ export async function getUserPermissions(
       )
       .filter(Boolean);
 
-    if (!normalizedRoles.length) {
-      return [];
-    }
+    if (!normalizedRoles.length) return [];
 
     const result = await client.query(
       `
         SELECT DISTINCT unnest(r.permissions) AS permission
-        FROM public.roles AS r
-        WHERE r.tenant_id::text = $1::text
+        FROM public.roles r
+        WHERE r.tenant_id = $1
           AND LOWER(r.name) = ANY($2::text[])
       `,
       [tenantId, normalizedRoles]

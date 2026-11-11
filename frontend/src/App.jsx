@@ -1,78 +1,151 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
-import LandingPage from "./pages/LandingPage.jsx";
-import Login from "./pages/Login.jsx";
-import Register from "./pages/Register.jsx";
-import VerifyEmail from "./pages/VerifyEmail.jsx";
-import ForgotPassword from "./pages/ForgotPassword.jsx";
-import ResetPassword from "./pages/ResetPassword.jsx";
-import PendingApproval from "./pages/PendingApproval.jsx";
+import React from "react";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+} from "react-router-dom";
 
-import EmployeePage from "./pages/EmployeePage.jsx";
-import FinancePage from "./pages/FinancePage.jsx";
-import ManagerPage from "./pages/ManagerPage.jsx";
-import AdminPage from "./pages/AdminPage.jsx";
-import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import LandingPage from "./pages/LandingPage";
+import LoginPage from "./pages/LoginPage";
+import EmployeePage from "./pages/employeepage";
+import ManagerPage from "./pages/ManagerPage";
+import FinancePage from "./pages/FinancePage";
+import AdminPage from "./pages/AdminPage";
+
+const getToken = () =>
+  localStorage.getItem("token") ||
+  localStorage.getItem("accessToken");
+
+const getUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem("user") || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const getUserRole = () => {
+  const user = getUser();
+  return String(
+    user.role ||
+      user.userRole ||
+      user.user_type ||
+      user.userType ||
+      ""
+  ).toLowerCase();
+};
+
+const roleRoutes = {
+  employee: "/employee/dashboard",
+  requester: "/employee/dashboard",
+  manager: "/manager/dashboard",
+  department_manager: "/manager/dashboard",
+  finance: "/finance/dashboard",
+  finance_manager: "/finance/dashboard",
+  admin: "/admin/dashboard",
+  organization_admin: "/admin/dashboard",
+};
+
+function ProtectedRoute({ children, allowedRoles }) {
+  const token = getToken();
+
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+
+  const role = getUserRole();
+
+  if (allowedRoles && role && !allowedRoles.includes(role)) {
+    return (
+      <Navigate
+        to={roleRoutes[role] || "/login"}
+        replace
+      />
+    );
+  }
+
+  return children;
+}
+
+function DashboardRedirect() {
+  if (!getToken()) {
+    return <Navigate to="/login" replace />;
+  }
+
+  const role = getUserRole();
+
+  return (
+    <Navigate
+      to={roleRoutes[role] || "/login"}
+      replace
+    />
+  );
+}
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public Routes */}
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/verify-email" element={<VerifyEmail />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/pending-approval" element={<PendingApproval />} />
+        {/* Public Pages */}
+        <Route path="/" element={<Navigate to="/landingpage" replace />} />
+        <Route path="/landingpage" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
 
-        {/* Employee / Requester Dashboard */}
-        <Route element={<ProtectedRoute allowedRoles={["employee", "requester"]} />}>
-          <Route path="/employee/dashboard" element={<EmployeePage />} />
-          <Route path="/dashboard" element={<EmployeePage />} />
-        </Route>
-
-        {/* Finance Manager Dashboard */}
-        <Route element={<ProtectedRoute allowedRoles={["finance", "finance_manager"]} />}>
-          <Route path="/finance/dashboard" element={<FinancePage />} />
-          <Route path="/dashboard/finance" element={<FinancePage />} />
-        </Route>
-
-        {/* Department / Procurement Manager Dashboard */}
+        {/* Employee Dashboard */}
         <Route
+          path="/employee/dashboard"
           element={
             <ProtectedRoute
-              allowedRoles={["manager", "department_manager", "procurement_manager"]}
-            />
+              allowedRoles={["employee", "requester"]}
+            >
+              <EmployeePage />
+            </ProtectedRoute>
           }
-        >
-          <Route path="/manager/dashboard" element={<ManagerPage />} />
-          <Route path="/dashboard/manager" element={<ManagerPage />} />
-          <Route path="/dashboard/procurement-manager" element={<ManagerPage />} />
-        </Route>
+        />
 
-        {/* Organization Admin / Procurement Specialist / Auditor Dashboard */}
+        {/* Manager Dashboard */}
         <Route
+          path="/manager/dashboard"
           element={
             <ProtectedRoute
-              allowedRoles={[
-                "admin",
-                "organization_admin",
-                "procurement_specialist",
-                "auditor",
-              ]}
-            />
+              allowedRoles={["manager", "department_manager"]}
+            >
+              <ManagerPage />
+            </ProtectedRoute>
           }
-        >
-          <Route path="/admin/dashboard" element={<AdminPage />} />
-          <Route path="/dashboard/admin" element={<AdminPage />} />
-          <Route path="/dashboard/procurement" element={<AdminPage />} />
-          <Route path="/dashboard/audit" element={<AdminPage />} />
-        </Route>
+        />
 
-        {/* Catch-all Fallback */}
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        {/* Finance Dashboard */}
+        <Route
+          path="/finance/dashboard"
+          element={
+            <ProtectedRoute
+              allowedRoles={["finance", "finance_manager"]}
+            >
+              <FinancePage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Admin Dashboard */}
+        <Route
+          path="/admin/dashboard"
+          element={
+            <ProtectedRoute
+              allowedRoles={["admin", "organization_admin"]}
+            >
+              <AdminPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Role-based Dashboard Redirect */}
+        <Route path="/dashboard" element={<DashboardRedirect />} />
+
+        {/* Unknown Routes */}
+        <Route path="*" element={<Navigate to="/landingpage" replace />} />
       </Routes>
     </BrowserRouter>
   );

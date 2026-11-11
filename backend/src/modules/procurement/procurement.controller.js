@@ -1,4 +1,9 @@
+
 import * as procurementService from "./procurement.service.js";
+
+// ============================================================
+// AUTHENTICATED USER
+// ============================================================
 
 function getActor(req) {
   const user = req.user;
@@ -9,16 +14,72 @@ function getActor(req) {
     throw error;
   }
 
+  const id =
+    user.id ??
+    user.userId ??
+    user.user_id ??
+    user.sub;
+
+  const tenantId =
+    user.tenantId ??
+    user.tenant_id ??
+    user.tenant?.id ??
+    req.tenantId ??
+    req.tenant_id;
+
+  if (!id || !tenantId) {
+    const error = new Error(
+      "Authenticated user is missing user ID or tenant ID"
+    );
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const roles = [
+    ...(Array.isArray(user.roles) ? user.roles : []),
+    ...(user.role ? [user.role] : []),
+    ...(user.roleName ? [user.roleName] : []),
+    ...(user.role_name ? [user.role_name] : []),
+  ];
+
   return {
-    id: user.id ?? user.userId,
-    tenantId: user.tenantId ?? user.tenant_id,
-    role: user.role,
+    id: String(id),
+    userId: String(id),
+    sub: String(id),
+    tenantId: String(tenantId),
+    role: user.role ?? user.roleName ?? user.role_name ?? null,
+    roles,
+    permissions: Array.isArray(user.permissions)
+      ? user.permissions
+      : [],
   };
 }
 
-/**
- * GET /api/v1/procurement
- */
+// ============================================================
+// REQUEST CONTEXT
+// ============================================================
+
+function getContext(req) {
+  const actor = getActor(req);
+
+  return {
+    actor,
+    user: actor,
+    id: actor.id,
+    userId: actor.userId,
+    tenantId: actor.tenantId,
+    role: actor.role,
+    roles: actor.roles,
+    permissions: actor.permissions,
+  };
+}
+
+// ============================================================
+// GET ALL PROCUREMENT REQUESTS
+// GET /api/v1/procurement
+// GET /api/v1/procurement/requests
+// ============================================================
+
 export async function listRequests(req, res, next) {
   try {
     const result = await procurementService.listRequests(
@@ -26,21 +87,34 @@ export async function listRequests(req, res, next) {
       req.validatedQuery ?? req.query
     );
 
+    const requests = Array.isArray(result?.items)
+      ? result.items
+      : [];
+
+    const pagination = {
+      total: Number(result?.total ?? requests.length),
+      page: Number(result?.page ?? 1),
+      limit: Number(result?.limit ?? 20),
+      totalPages: Number(result?.totalPages ?? 1),
+    };
+
     return res.status(200).json({
       success: true,
       message: "Procurement requests retrieved successfully",
-      data: result.requests,
-      requests: result.requests, // compatibility
-      pagination: result.pagination,
+      data: requests,
+      requests,
+      pagination,
     });
   } catch (error) {
     return next(error);
   }
 }
 
-/**
- * GET /api/v1/procurement/:id
- */
+// ============================================================
+// GET SINGLE PROCUREMENT REQUEST
+// GET /api/v1/procurement/:id
+// ============================================================
+
 export async function getRequest(req, res, next) {
   try {
     const request = await procurementService.getRequest(
@@ -59,14 +133,16 @@ export async function getRequest(req, res, next) {
   }
 }
 
-/**
- * POST /api/v1/procurement
- */
+// ============================================================
+// CREATE PROCUREMENT REQUEST
+// POST /api/v1/procurement
+// ============================================================
+
 export async function createRequest(req, res, next) {
   try {
     const request = await procurementService.createRequest(
       getActor(req),
-      req.validatedBody
+      req.validatedBody ?? req.body
     );
 
     return res.status(201).json({
@@ -80,15 +156,17 @@ export async function createRequest(req, res, next) {
   }
 }
 
-/**
- * PATCH /api/v1/procurement/:id
- */
+// ============================================================
+// UPDATE PROCUREMENT REQUEST
+// PATCH /api/v1/procurement/:id
+// ============================================================
+
 export async function updateRequest(req, res, next) {
   try {
     const request = await procurementService.updateRequest(
       getActor(req),
       req.params.id,
-      req.validatedBody
+      req.validatedBody ?? req.body
     );
 
     return res.status(200).json({
@@ -102,9 +180,11 @@ export async function updateRequest(req, res, next) {
   }
 }
 
-/**
- * POST /api/v1/procurement/:id/submit
- */
+// ============================================================
+// SUBMIT PROCUREMENT REQUEST
+// POST /api/v1/procurement/:id/submit
+// ============================================================
+
 export async function submitRequest(req, res, next) {
   try {
     const request = await procurementService.submitRequest(
@@ -119,9 +199,42 @@ export async function submitRequest(req, res, next) {
       request,
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
+
+// ============================================================
+// RECOVER SUBMITTED REQUEST
+// POST /api/v1/procurement/requests/:id/recover
+// Admin-only service operation.
+// Starts the approval workflow for a SUBMITTED request that
+// does not yet have a workflow_run_id.
+// ============================================================
+
+export async function recoverSubmittedRequest(req, res, next) {
+  try {
+    const request =
+      await procurementService.recoverSubmittedRequest(
+        getActor(req),
+        req.params.id
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Submitted procurement request recovered and approval workflow started successfully",
+      data: request,
+      request,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+// ============================================================
+// MANAGER APPROVAL / REJECTION
+// PATCH /api/v1/procurement/requests/:id/manager-decision
+// ============================================================
 
 export async function managerDecision(req, res, next) {
   try {
@@ -132,17 +245,21 @@ export async function managerDecision(req, res, next) {
       comment: req.body?.comment,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Manager decision recorded successfully.',
+      message: "Manager decision recorded successfully",
       data: request,
       request,
     });
   } catch (error) {
-
-    next(error);
+    return next(error);
   }
 }
+
+// ============================================================
+// FINANCE APPROVAL / REJECTION
+// PATCH /api/v1/procurement/requests/:id/finance-decision
+// ============================================================
 
 export async function financeDecision(req, res, next) {
   try {
@@ -153,16 +270,13 @@ export async function financeDecision(req, res, next) {
       comment: req.body?.comment,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Finance decision recorded successfully.',
+      message: "Finance decision recorded successfully",
       data: request,
       request,
     });
   } catch (error) {
-    next(error);
-
     return next(error);
-
   }
 }

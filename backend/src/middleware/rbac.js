@@ -1,7 +1,7 @@
+
 const VALID_ROLES = new Set([
   "admin",
   "organization_admin",
-  "organization admin",
   "employee",
   "requester",
   "manager",
@@ -14,26 +14,112 @@ const VALID_ROLES = new Set([
   "supplier_user",
 ]);
 
+const ROLE_PERMISSIONS = {
+  admin: [
+    "analytics:read",
+    "workflows:manage",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  organization_admin: [
+    "analytics:read",
+    "workflows:manage",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  manager: [
+    "analytics:read",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  department_manager: [
+    "analytics:read",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  procurement_manager: [
+    "analytics:read",
+    "workflows:manage",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  procurement_specialist: [
+    "analytics:read",
+    "workflows:manage",
+    "approvals:read",
+  ],
+
+  finance: [
+    "analytics:read",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  finance_manager: [
+    "analytics:read",
+    "approvals:read",
+    "approvals:act",
+  ],
+
+  auditor: [
+    "analytics:read",
+    "approvals:read",
+  ],
+
+  employee: [],
+  requester: [],
+  supplier_user: [],
+};
+
 function normalizeRole(role) {
-  return typeof role === "string"
-    ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
-    : "";
+  if (typeof role !== "string") return "";
+
+  return role
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function normalizePermission(permission) {
+  if (typeof permission !== "string") return "";
+  return permission.trim().toLowerCase();
 }
 
 function expandRoleAliases(roleSet) {
-  if (roleSet.has("organization_admin") || roleSet.has("admin")) {
+  if (
+    roleSet.has("organization_admin") ||
+    roleSet.has("admin")
+  ) {
     roleSet.add("admin");
     roleSet.add("organization_admin");
   }
-  if (roleSet.has("requester") || roleSet.has("employee")) {
+
+  if (
+    roleSet.has("requester") ||
+    roleSet.has("employee")
+  ) {
     roleSet.add("employee");
     roleSet.add("requester");
   }
-  if (roleSet.has("department_manager") || roleSet.has("procurement_manager") || roleSet.has("manager")) {
+
+  if (
+    roleSet.has("department_manager") ||
+    roleSet.has("procurement_manager") ||
+    roleSet.has("manager")
+  ) {
     roleSet.add("manager");
     roleSet.add("department_manager");
   }
-  if (roleSet.has("finance_manager") || roleSet.has("finance")) {
+
+  if (
+    roleSet.has("finance_manager") ||
+    roleSet.has("finance")
+  ) {
     roleSet.add("finance");
     roleSet.add("finance_manager");
   }
@@ -41,53 +127,68 @@ function expandRoleAliases(roleSet) {
 
 function getUserRoles(req) {
   const roles = new Set();
-  const user = req.user;
 
-  if (user?.role) {
-    roles.add(normalizeRole(user.role));
-  }
+  const addRole = (value) => {
+    const normalized = normalizeRole(value);
 
-  if (user?.roleName) {
-    roles.add(normalizeRole(user.roleName));
-  }
+    if (normalized && VALID_ROLES.has(normalized)) {
+      roles.add(normalized);
+    }
+  };
 
-  if (Array.isArray(user?.roles)) {
-    for (const role of user.roles) {
-      if (typeof role === "string") {
-        roles.add(normalizeRole(role));
-      } else if (typeof role?.name === "string") {
-        roles.add(normalizeRole(role.name));
+  const sources = [
+    req.user,
+    req.context,
+  ];
+
+  for (const source of sources) {
+    if (!source) continue;
+
+    addRole(source.role);
+    addRole(source.roleName);
+    addRole(source.role_name);
+
+    if (Array.isArray(source.roles)) {
+      for (const role of source.roles) {
+        if (typeof role === "string") {
+          addRole(role);
+        } else if (role && typeof role === "object") {
+          addRole(role.name);
+          addRole(role.role);
+          addRole(role.role_name);
+        }
       }
     }
   }
 
-  if (Array.isArray(req.context?.roles)) {
-    for (const role of req.context.roles) {
-      if (typeof role === "string") {
-        roles.add(normalizeRole(role));
-      } else if (typeof role?.name === "string") {
-        roles.add(normalizeRole(role.name));
-      }
-    }
-  }
-
-  roles.delete("");
   expandRoleAliases(roles);
+
   return roles;
 }
 
-function getPermissions(req) {
+function getExplicitPermissions(req) {
   const permissions = new Set();
 
-  for (const source of [
+  const sources = [
     req.user?.permissions,
     req.context?.permissions,
-  ]) {
-    if (Array.isArray(source)) {
-      for (const permission of source) {
-        if (typeof permission === "string") {
-          permissions.add(permission.trim().toLowerCase());
-        }
+  ];
+
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+
+    for (const permission of source) {
+      if (typeof permission === "string") {
+        const normalized = normalizePermission(permission);
+        if (normalized) permissions.add(normalized);
+      } else if (permission && typeof permission === "object") {
+        const normalized = normalizePermission(
+          permission.name ??
+          permission.permission ??
+          permission.code
+        );
+
+        if (normalized) permissions.add(normalized);
       }
     }
   }
@@ -95,7 +196,23 @@ function getPermissions(req) {
   return permissions;
 }
 
-function sendForbidden(res, message = "You do not have permission to perform this action.") {
+function getPermissions(req) {
+  const permissions = getExplicitPermissions(req);
+  const roles = getUserRoles(req);
+
+  for (const role of roles) {
+    for (const permission of ROLE_PERMISSIONS[role] ?? []) {
+      permissions.add(permission);
+    }
+  }
+
+  return permissions;
+}
+
+function sendForbidden(
+  res,
+  message = "You do not have permission to perform this action."
+) {
   return res.status(403).json({
     success: false,
     message,
@@ -103,9 +220,14 @@ function sendForbidden(res, message = "You do not have permission to perform thi
   });
 }
 
-/**
- * Restrict a route to one or more roles.
- */
+function sendUnauthorized(res) {
+  return res.status(401).json({
+    success: false,
+    message: "Authentication required.",
+    error: "UNAUTHENTICATED",
+  });
+}
+
 export function requireRole(...allowedRoles) {
   const normalizedAllowedRoles = allowedRoles
     .flat()
@@ -113,52 +235,46 @@ export function requireRole(...allowedRoles) {
     .filter((role) => VALID_ROLES.has(role));
 
   return function roleMiddleware(req, res, next) {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required.",
-        error: "UNAUTHENTICATED",
-      });
-    }
+    if (!req.user) return sendUnauthorized(res);
 
     if (normalizedAllowedRoles.length === 0) {
-      return sendForbidden(res, "No valid roles were configured for this route.");
+      return sendForbidden(
+        res,
+        "No valid roles were configured for this route."
+      );
     }
 
     const userRoles = getUserRoles(req);
 
-    if (!normalizedAllowedRoles.some((role) => userRoles.has(role))) {
-      return sendForbidden(res, "Your account role cannot access this resource.");
+    const hasAllowedRole = normalizedAllowedRoles.some(
+      (role) => userRoles.has(role)
+    );
+
+    if (!hasAllowedRole) {
+      return sendForbidden(
+        res,
+        "Your account role cannot access this resource."
+      );
     }
 
     return next();
   };
 }
 
-/**
- * Require all listed permissions.
- */
 export function requirePermission(...requiredPermissions) {
   const required = requiredPermissions
     .flat()
-    .map((permission) =>
-      typeof permission === "string"
-        ? permission.trim().toLowerCase()
-        : ""
-    )
+    .map(normalizePermission)
     .filter(Boolean);
 
   return function permissionMiddleware(req, res, next) {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required.",
-        error: "UNAUTHENTICATED",
-      });
-    }
+    if (!req.user) return sendUnauthorized(res);
 
     if (required.length === 0) {
-      return sendForbidden(res, "No permissions were configured for this route.");
+      return sendForbidden(
+        res,
+        "No permissions were configured for this route."
+      );
     }
 
     const permissions = getPermissions(req);
@@ -170,37 +286,30 @@ export function requirePermission(...requiredPermissions) {
     );
 
     if (!hasAllPermissions) {
-      return sendForbidden(res);
+      return sendForbidden(
+        res,
+        "Your account does not have the required permission."
+      );
     }
 
     return next();
   };
 }
 
-/**
- * Require at least one listed permission.
- */
 export function requireAnyPermission(...requiredPermissions) {
   const required = requiredPermissions
     .flat()
-    .map((permission) =>
-      typeof permission === "string"
-        ? permission.trim().toLowerCase()
-        : ""
-    )
+    .map(normalizePermission)
     .filter(Boolean);
 
   return function anyPermissionMiddleware(req, res, next) {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required.",
-        error: "UNAUTHENTICATED",
-      });
-    }
+    if (!req.user) return sendUnauthorized(res);
 
     if (required.length === 0) {
-      return sendForbidden(res, "No permissions were configured for this route.");
+      return sendForbidden(
+        res,
+        "No permissions were configured for this route."
+      );
     }
 
     const permissions = getPermissions(req);
@@ -212,7 +321,10 @@ export function requireAnyPermission(...requiredPermissions) {
     );
 
     if (!hasAnyPermission) {
-      return sendForbidden(res);
+      return sendForbidden(
+        res,
+        "Your account does not have any of the required permissions."
+      );
     }
 
     return next();

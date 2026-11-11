@@ -1,8 +1,372 @@
 
-import { withTenantTransaction } from '../../database/db.js';
-import { AppError } from '../../utils/errors.js';
-import { workflowGraphSchema } from './workflows.schema.js';
-import { enqueueInAppNotification } from '../notifications/events.js';
+import { withTenantTransaction } from "../../config/database.js";
+import { AppError } from "../../utils/errors.js";
+import { workflowGraphSchema } from "./workflows.schema.js";
+import { enqueueInAppNotification } from "../notifications/events.js";
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+const RESOURCE_PURCHASE_REQUEST = "purchase_request";
+
+const TASK_PENDING = "PENDING";
+const TASK_APPROVED = "APPROVED";
+const TASK_REJECTED = "REJECTED";
+const TASK_CHANGES_REQUESTED = "CHANGES_REQUESTED";
+
+const RUNNING = "RUNNING";
+const RUN_APPROVED = "APPROVED";
+const RUN_REJECTED = "REJECTED";
+const RUN_CANCELLED = "CANCELLED";
+
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
+
+function requiredContext(context) {
+  if (!context?.tenantId || !context?.userId) {
+    throw new AppError(
+      403,
+      "INVALID_CONTEXT",
+      "A valid tenant and authenticated user are required."
+    );
+  }
+}
+
+function validateGraph(graph) {
+  const parsed = workflowGraphSchema.safeParse(graph);
+
+  if (!parsed.success) {
+    throw new AppError(
+      422,
+      "INVALID_WORKFLOW",
+      "The workflow graph is invalid."
+    );
+  }
+
+  const validated = parsed.data;
+
+  if (!validated.nodes.some((node) => node.type === "approval")) {
+    throw new AppError(
+      422,
+      "INVALID_WORKFLOW",
+      "The workflow must contain at least one approval node."
+    );
+  }
+
+  return validated;
+}
+
+function isUniqueViolation(error) {
+  return error?.code === "23505";
+}
+
+function isForeignKeyViolation(error) {
+  return error?.code === "23503";
+}
+
+function normalizeAction(action) {
+  const normalized = String(action ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (!["approve", "reject", "request_changes"].includes(normalized)) {
+    throw new AppError(
+      422,
+      "INVALID_APPROVAL_ACTION",
+      "Decision must be approve, reject, or request_changes."
+    );
+  }
+
+  return normalized;
+}
+
+function parseActiveNodes(activeNode, fallbackNodeId) {
+  if (Array.isArray(activeNode)) {
+    if (
+      activeNode.length &&
+      activeNode.every((value) => typeof value === "string")
+    ) {
+      return activeNode;
+    }
+
+    throw new AppError(
+      409,
+      "INVALID_WORKFLOW_STATE",
+      "Workflow run has an invalid active stage."
+    );
+  }
+
+  if (activeNode === null || activeNode === undefined) {
+    return fallbackNodeId ? [fallbackNodeId] : [];
+  }
+
+  if (typeof activeNode !== "string") {
+    throw new AppError(
+      409,
+      "INVALID_WORKFLOW_STATE",
+      "Workflow run has an invalid active stage."
+    );
+  }
+
+  try {
+    const parsed = JSON.parse(activeNode);
+
+    if (
+      Array.isArray(parsed) &&
+      parsed.every((value) => typeof value === "string")
+    ) {
+      return parsed;
+    }
+
+    if (typeof parsed === "string") {
+      return [parsed];
+    }
+
+    throw new AppError(
+      409,
+      "INVALID_WORKFLOW_STATE",
+      "Workflow run has an invalid active stage."
+    );
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+
+    return [activeNode];
+  }
+}
+
+// ============================================================
+// WORKFLOW GRAPH TRAVERSAL
+// ============================================================
+
+function nextApprovalStage(graph, origins) {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const outgoing = new Map();
+
+  for (const edge of graph.edges) {
+    const successors = outgoing.get(edge.from) ?? [];
+    successors.push(edge.to);
+    outgoing.set(edge.from, successors);
+  }
+
+  const queue = origins.flatMap((id) => outgoing.get(id) ?? []);
+  const visited = new Set();
+  const approvals = new Set();
+
+  let reachesEnd = false;
+
+  while (queue.length) {
+    const id = queue.shift();
+
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const node = byId.get(id);
+
+    if (!node) {
+      throw new AppError(
+        422,
+        "INVALID_WORKFLOW",
+        `Workflow edge references missing node "${id}".`
+      );
+    }
+
+    if (node.type === "approval") {
+      approvals.add(id);
+      continue;
+    }
+
+    if (node.type === "end") {
+      reachesEnd = true;
+      continue;
+    }
+
+    queue.push(...(outgoing.get(id) ?? []));
+  }
+
+  return {
+    nodeIds: [...approvals],
+    reachesEnd,
+  };
+}
+
+// ============================================================
+// APPROVAL ASSIGNEE VALIDATION
+// ============================================================
+
+async function validateStageAssignees(client, tenantId, graph, nodeIds) {
+  const assignees = graph.nodes
+    .filter((node) => nodeIds.includes(node.id))
+    .map((node) => node.assigneeId);
+
+  if (assignees.some((id) => !id)) {
+    throw new AppError(
+      422,
+      "INVALID_WORKFLOW_ASSIGNEE",
+      "Every approval node must have an assigned user."
+    );
+  }
+
+  const uniqueAssignees = [
+    ...new Set(assignees.map((id) => String(id).toLowerCase())),
+  ];
+
+  if (!uniqueAssignees.length) return;
+
+  const result = await client.query(
+    `SELECT id
+     FROM public.users
+     WHERE tenant_id = $1
+       AND is_active = true
+       AND id = ANY($2::uuid[])`,
+    [tenantId, uniqueAssignees]
+  );
+
+  const validIds = new Set(
+    result.rows.map((row) => String(row.id).toLowerCase())
+  );
+
+  if (validIds.size !== uniqueAssignees.length) {
+    throw new AppError(
+      422,
+      "INVALID_WORKFLOW_ASSIGNEE",
+      "An approval node is assigned to a missing or inactive user."
+    );
+  }
+}
+
+// ============================================================
+// AUDIT
+// ============================================================
+
+async function audit(client, context, action, resourceId, metadata = {}) {
+  await client.query(
+    `INSERT INTO public.audit_events
+      (
+        tenant_id,
+        actor_type,
+        actor_id,
+        action,
+        resource_type,
+        resource_id,
+        metadata
+      )
+     VALUES ($1, 'USER', $2, $3, 'workflow', $4, $5::jsonb)`,
+    [
+      context.tenantId,
+      context.userId,
+      action,
+      resourceId,
+      JSON.stringify(metadata),
+    ]
+  );
+}
+
+// ============================================================
+// CREATE APPROVAL TASKS
+// ============================================================
+
+async function createStageTasks(client, context, runId, graph, nodeIds) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+
+  const run = await client.query(
+    `SELECT resource_type, resource_id
+     FROM public.workflow_runs
+     WHERE tenant_id = $1
+       AND id = $2`,
+    [context.tenantId, runId]
+  );
+
+  if (!run.rowCount) {
+    throw new AppError(
+      404,
+      "WORKFLOW_RUN_NOT_FOUND",
+      "Workflow run not found while creating approval tasks."
+    );
+  }
+
+  let resourceName = `${run.rows[0].resource_type} ${run.rows[0].resource_id}`;
+
+  if (run.rows[0].resource_type === RESOURCE_PURCHASE_REQUEST) {
+    const request = await client.query(
+      `SELECT request_number
+       FROM public.purchase_requests
+       WHERE tenant_id = $1
+         AND id = $2`,
+      [context.tenantId, run.rows[0].resource_id]
+    );
+
+    if (request.rowCount) {
+      resourceName = request.rows[0].request_number;
+    }
+  }
+
+  for (const nodeId of nodeIds) {
+    const node = nodes.get(nodeId);
+
+    if (!node || node.type !== "approval" || !node.assigneeId) {
+      throw new AppError(
+        422,
+        "INVALID_WORKFLOW",
+        `Invalid approval node or missing assignee: "${nodeId}".`
+      );
+    }
+
+    const task = await client.query(
+      `INSERT INTO public.approval_tasks
+        (
+          tenant_id,
+          workflow_run_id,
+          node_id,
+          assignee_id,
+          status
+        )
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [
+        context.tenantId,
+        runId,
+        node.id,
+        node.assigneeId,
+        TASK_PENDING,
+      ]
+    );
+
+    const taskId = task.rows[0].id;
+
+    await audit(
+      client,
+      context,
+      "approval_task.created",
+      taskId,
+      {
+        workflowRunId: runId,
+        nodeId: node.id,
+        assigneeId: node.assigneeId,
+      }
+    );
+
+    await enqueueInAppNotification(
+      client,
+      context.tenantId,
+      node.assigneeId,
+      "approval.task_assigned",
+      `Approval required for ${resourceName}`,
+      {
+        taskId,
+        workflowRunId: runId,
+        resourceType: run.rows[0].resource_type,
+        resourceId: run.rows[0].resource_id,
+        nodeId: node.id,
+      }
+    );
+  }
+}
+
+// ============================================================
+// START WORKFLOW RUN
+// ============================================================
 
 export async function startWorkflowRun(
   client,
@@ -12,26 +376,17 @@ export async function startWorkflowRun(
   resourceId,
   graph
 ) {
-  const parsed = workflowGraphSchema.safeParse(graph);
+  requiredContext(context);
 
-  if (!parsed.success) {
-    throw new AppError(
-      422,
-      'INVALID_WORKFLOW',
-      'The workflow graph is invalid'
-    );
-  }
+  const validatedGraph = validateGraph(graph);
 
-  const validatedGraph = parsed.data;
-  const start = validatedGraph.nodes.find(
-    (node) => node.type === 'start'
-  );
+  const start = validatedGraph.nodes.find((node) => node.type === "start");
 
   if (!start) {
     throw new AppError(
       422,
-      'INVALID_WORKFLOW',
-      'The workflow graph has no start node'
+      "INVALID_WORKFLOW",
+      "The workflow graph has no start node."
     );
   }
 
@@ -40,51 +395,36 @@ export async function startWorkflowRun(
   if (!stage.nodeIds.length) {
     throw new AppError(
       422,
-      'INVALID_WORKFLOW',
-      'The workflow graph has no approval stage'
+      "INVALID_WORKFLOW",
+      "The workflow graph has no approval stage."
     );
   }
 
-  const assignees = validatedGraph.nodes
-    .filter(
-      (node) =>
-        stage.nodeIds.includes(node.id) && !!node.assigneeId
-    )
-    .map((node) => node.assigneeId);
-
-  if (assignees.length) {
-    const validAssignees = await client.query(
-      `SELECT id FROM users
-       WHERE tenant_id = $1
-         AND is_active = true
-         AND id = ANY($2::uuid[])`,
-      [context.tenantId, assignees]
-    );
-
-    if (
-      new Set(
-        validAssignees.rows.map((row) => row.id.toLowerCase())
-      ).size !==
-      new Set(assignees.map((id) => id.toLowerCase())).size
-    ) {
-      throw new AppError(
-        422,
-        'INVALID_WORKFLOW_ASSIGNEE',
-        'An approval node is assigned to a user who is missing or inactive'
-      );
-    }
-  }
+  await validateStageAssignees(
+    client,
+    context.tenantId,
+    validatedGraph,
+    stage.nodeIds
+  );
 
   const inserted = await client.query(
-    `INSERT INTO workflow_runs
-      (tenant_id, definition_id, resource_type, resource_id, status, active_node)
-     VALUES ($1, $2, $3, $4, 'RUNNING', $5)
+    `INSERT INTO public.workflow_runs
+      (
+        tenant_id,
+        definition_id,
+        resource_type,
+        resource_id,
+        status,
+        active_node
+      )
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
      RETURNING *`,
     [
       context.tenantId,
       definitionId,
       resourceType,
       resourceId,
+      RUNNING,
       JSON.stringify(stage.nodeIds),
     ]
   );
@@ -99,967 +439,799 @@ export async function startWorkflowRun(
     stage.nodeIds
   );
 
-  await audit(client, context, 'workflow_run.started', run.id, {
-    definitionId,
-    resourceType,
-    resourceId,
-    activeNodes: stage.nodeIds,
-  });
+  await audit(
+    client,
+    context,
+    "workflow_run.started",
+    run.id,
+    {
+      definitionId,
+      resourceType,
+      resourceId,
+      activeNodes: stage.nodeIds,
+    }
+  );
 
   return run;
 }
 
-export async function listWorkflows(context) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const result = await client.query(
-        `SELECT id, name, version, resource_type, graph, is_active,
-                created_by, created_at, updated_at
-         FROM workflow_definitions
-         WHERE tenant_id = $1
-         ORDER BY name, version DESC`,
-        [context.tenantId]
-      );
+// ============================================================
+// LIST WORKFLOWS
+// ============================================================
 
-      return result.rows;
-    }
-  );
+export async function listWorkflows(context) {
+  requiredContext(context);
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query(
+      `SELECT
+         id,
+         tenant_id,
+         name,
+         version,
+         resource_type,
+         graph,
+         is_active,
+         created_by,
+         created_at,
+         updated_at
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+       ORDER BY name, version DESC`,
+      [context.tenantId]
+    );
+
+    return result.rows;
+  });
 }
+
+// ============================================================
+// GET WORKFLOW
+// ============================================================
 
 export async function getWorkflow(context, id) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const result = await client.query(
-        `SELECT id, name, version, resource_type, graph, is_active,
-                created_by, created_at, updated_at
-         FROM workflow_definitions
-         WHERE tenant_id = $1 AND id = $2`,
-        [context.tenantId, id]
+  requiredContext(context);
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const result = await client.query(
+      `SELECT
+         id,
+         tenant_id,
+         name,
+         version,
+         resource_type,
+         graph,
+         is_active,
+         created_by,
+         created_at,
+         updated_at
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+         AND id = $2`,
+      [context.tenantId, id]
+    );
+
+    if (!result.rowCount) {
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
       );
-
-      if (!result.rowCount) {
-        throw new AppError(
-          404,
-          'NOT_FOUND',
-          'Workflow definition not found'
-        );
-      }
-
-      return result.rows[0];
     }
-  );
+
+    return result.rows[0];
+  });
 }
+
+// ============================================================
+// CREATE WORKFLOW
+// ============================================================
 
 export async function createWorkflow(context, input) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      try {
-        const result = await client.query(
-          `INSERT INTO workflow_definitions
-            (tenant_id, name, version, resource_type, graph, created_by)
-           VALUES ($1, $2, 1, $3, $4::jsonb, $5)
-           RETURNING *`,
-          [
-            context.tenantId,
-            input.name,
-            input.resourceType,
-            JSON.stringify(input.graph),
-            context.userId,
-          ]
-        );
+  requiredContext(context);
 
-        await audit(
-          client,
-          context,
-          'workflow.created',
-          result.rows[0].id,
-          { version: 1 }
-        );
+  const graph = validateGraph(input.graph);
 
-        return result.rows[0];
-      } catch (error) {
-        if (isUniqueViolation(error)) {
-          throw new AppError(
-            409,
-            'WORKFLOW_VERSION_EXISTS',
-            'A workflow with this name already exists'
-          );
-        }
-
-        throw error;
-      }
-    }
-  );
-}
-
-export async function createWorkflowVersion(
-  context,
-  id,
-  input
-) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const current = await client.query(
-        `SELECT name, resource_type, graph
-         FROM workflow_definitions
-         WHERE tenant_id = $1 AND id = $2
-         FOR UPDATE`,
-        [context.tenantId, id]
-      );
-
-      if (!current.rowCount) {
-        throw new AppError(
-          404,
-          'NOT_FOUND',
-          'Workflow definition not found'
-        );
-      }
-
-      const name = input.name ?? current.rows[0].name;
-
-      const version = await client.query(
-        `SELECT COALESCE(MAX(version), 0) + 1 AS next_version
-         FROM workflow_definitions
-         WHERE tenant_id = $1
-           AND name = $2
-           AND resource_type = $3`,
-        [
-          context.tenantId,
-          name,
-          current.rows[0].resource_type,
-        ]
-      );
-
-      try {
-        const result = await client.query(
-          `INSERT INTO workflow_definitions
-            (tenant_id, name, version, resource_type, graph, created_by)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-           RETURNING *`,
-          [
-            context.tenantId,
+  return withTenantTransaction(context.tenantId, async (client) => {
+    try {
+      const result = await client.query(
+        `INSERT INTO public.workflow_definitions
+          (
+            tenant_id,
             name,
-            version.rows[0].next_version,
-            current.rows[0].resource_type,
-            JSON.stringify(
-              input.graph ?? current.rows[0].graph
-            ),
-            context.userId,
-          ]
-        );
-
-        await audit(
-          client,
-          context,
-          'workflow.version_created',
-          result.rows[0].id,
-          {
-            sourceWorkflowId: id,
-            version: result.rows[0].version,
-          }
-        );
-
-        return result.rows[0];
-      } catch (error) {
-        if (isUniqueViolation(error)) {
-          throw new AppError(
-            409,
-            'WORKFLOW_VERSION_EXISTS',
-            'A workflow version with this name already exists'
-          );
-        }
-
-        throw error;
-      }
-    }
-  );
-}
-
-export async function activateWorkflow(context, id) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const target = await client.query(
-        `SELECT id, name, resource_type, graph, is_active
-         FROM workflow_definitions
-         WHERE tenant_id = $1 AND id = $2
-         FOR UPDATE`,
-        [context.tenantId, id]
-      );
-
-      if (!target.rowCount) {
-        throw new AppError(
-          404,
-          'NOT_FOUND',
-          'Workflow definition not found'
-        );
-      }
-
-      if (
-        !Array.isArray(target.rows[0].graph?.nodes) ||
-        !target.rows[0].graph.nodes.some(
-          (node) => node.type === 'approval'
-        )
-      ) {
-        throw new AppError(
-          422,
-          'INVALID_WORKFLOW',
-          'An active workflow must contain an approval node'
-        );
-      }
-
-      const deactivated = await client.query(
-        `UPDATE workflow_definitions
-         SET is_active = false, updated_at = now()
-         WHERE tenant_id = $1
-           AND resource_type = $2
-           AND is_active = true
-           AND id <> $3
-         RETURNING id`,
-        [
-          context.tenantId,
-          target.rows[0].resource_type,
-          id,
-        ]
-      );
-
-      for (const row of deactivated.rows) {
-        await audit(
-          client,
-          context,
-          'workflow.deactivated',
-          row.id,
-          { replacedByWorkflowId: id }
-        );
-      }
-
-      const updated = await client.query(
-        `UPDATE workflow_definitions
-         SET is_active = true, updated_at = now()
-         WHERE tenant_id = $1 AND id = $2
-         RETURNING *`,
-        [context.tenantId, id]
-      );
-
-      if (!target.rows[0].is_active) {
-        await audit(
-          client,
-          context,
-          'workflow.activated',
-          id,
-          { name: target.rows[0].name }
-        );
-      }
-
-      return updated.rows[0];
-    }
-  );
-}
-
-export async function deleteWorkflow(context, id) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const current = await client.query(
-        `SELECT is_active
-         FROM workflow_definitions
-         WHERE tenant_id = $1 AND id = $2
-         FOR UPDATE`,
-        [context.tenantId, id]
-      );
-
-      if (!current.rowCount) {
-        throw new AppError(
-          404,
-          'NOT_FOUND',
-          'Workflow definition not found'
-        );
-      }
-
-      if (current.rows[0].is_active) {
-        throw new AppError(
-          409,
-          'ACTIVE_WORKFLOW',
-          'Deactivate the workflow before deleting it'
-        );
-      }
-
-      await audit(client, context, 'workflow.deleted', id, {});
-
-      try {
-        await client.query(
-          `DELETE FROM workflow_definitions
-           WHERE tenant_id = $1 AND id = $2`,
-          [context.tenantId, id]
-        );
-      } catch (error) {
-        if (isForeignKeyViolation(error)) {
-          throw new AppError(
-            409,
-            'WORKFLOW_IN_USE',
-            'A workflow referenced by a run cannot be deleted'
-          );
-        }
-
-        throw error;
-      }
-    }
-  );
-}
-
-export async function listPendingTasks(context, options) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const values = [
-        context.tenantId,
-        context.userId,
-      ];
-
-      const result = await client.query(
-        `SELECT t.*, r.resource_type, r.resource_id, r.active_node,
-                d.name AS workflow_name, pr.request_number,
-                pr.total_amount, pr.currency, pr.requester_id
-         FROM approval_tasks t
-         JOIN workflow_runs r
-           ON r.tenant_id = t.tenant_id
-          AND r.id = t.workflow_run_id
-         JOIN workflow_definitions d
-           ON d.tenant_id = r.tenant_id
-          AND d.id = r.definition_id
-         LEFT JOIN purchase_requests pr
-           ON pr.tenant_id = r.tenant_id
-          AND r.resource_type = 'purchase_request'
-          AND pr.id = r.resource_id
-         WHERE t.tenant_id = $1
-           AND t.status = 'PENDING'
-           AND (t.assignee_id IS NULL OR t.assignee_id = $2)
-           AND r.status = 'RUNNING'
-         ORDER BY t.due_at NULLS LAST, t.created_at, t.id
-         LIMIT $3 OFFSET $4`,
-        [...values, options.limit, options.offset]
-      );
-
-      const count = await client.query(
-        `SELECT count(*)::text AS total
-         FROM approval_tasks t
-         JOIN workflow_runs r
-           ON r.tenant_id = t.tenant_id
-          AND r.id = t.workflow_run_id
-         WHERE t.tenant_id = $1
-           AND t.status = 'PENDING'
-           AND (t.assignee_id IS NULL OR t.assignee_id = $2)
-           AND r.status = 'RUNNING'`,
-        values
-      );
-
-      return {
-        data: result.rows,
-        total: Number(count.rows[0].total),
-      };
-    }
-  );
-}
-
-export async function actOnTask(context, taskId, input) {
-  return withTenantTransaction(
-    context.tenantId,
-    async (client) => {
-      const task = await client.query(
-        `SELECT workflow_run_id, node_id, assignee_id, status
-         FROM approval_tasks
-         WHERE tenant_id = $1 AND id = $2`,
-        [context.tenantId, taskId]
-      );
-
-      if (!task.rowCount) {
-        throw new AppError(
-          404,
-          'NOT_FOUND',
-          'Approval task not found'
-        );
-      }
-
-      const run = await client.query(
-        `SELECT r.status, r.active_node, r.resource_type,
-                r.resource_id, d.graph
-         FROM workflow_runs r
-         JOIN workflow_definitions d
-           ON d.tenant_id = r.tenant_id
-          AND d.id = r.definition_id
-         WHERE r.tenant_id = $1 AND r.id = $2
-         FOR UPDATE OF r`,
-        [
-          context.tenantId,
-          task.rows[0].workflow_run_id,
-        ]
-      );
-
-      if (
-        !run.rowCount ||
-        run.rows[0].status !== 'RUNNING'
-      ) {
-        throw new AppError(
-          409,
-          'INVALID_STATE',
-          'The workflow run is no longer active'
-        );
-      }
-
-      const lockedTask = await client.query(
-        `SELECT workflow_run_id, node_id, assignee_id, status
-         FROM approval_tasks
-         WHERE tenant_id = $1 AND id = $2
-         FOR UPDATE`,
-        [context.tenantId, taskId]
-      );
-
-      if (
-        !lockedTask.rowCount ||
-        lockedTask.rows[0].status !== 'PENDING'
-      ) {
-        throw new AppError(
-          409,
-          'INVALID_STATE',
-          'This approval task is no longer pending'
-        );
-      }
-
-      if (
-        lockedTask.rows[0].assignee_id &&
-        lockedTask.rows[0].assignee_id !== context.userId
-      ) {
-        throw new AppError(
-          403,
-          'FORBIDDEN',
-          'This task is assigned to another user'
-        );
-      }
-
-      const activeNodes = parseActiveNodes(
-        run.rows[0].active_node,
-        lockedTask.rows[0].node_id
-      );
-
-      if (!activeNodes.includes(lockedTask.rows[0].node_id)) {
-        throw new AppError(
-          409,
-          'INVALID_STATE',
-          'This task is not part of the active approval stage'
-        );
-      }
-
-      const graphResult = workflowGraphSchema.safeParse(
-        run.rows[0].graph
-      );
-
-      if (!graphResult.success) {
-        throw new AppError(
-          422,
-          'INVALID_WORKFLOW',
-          'The workflow run has an invalid graph'
-        );
-      }
-
-      const graph = graphResult.data;
-
-      const taskStatus =
-        input.action === 'approve'
-          ? 'APPROVED'
-          : input.action === 'reject'
-            ? 'REJECTED'
-            : 'CHANGES_REQUESTED';
-
-      const result = await client.query(
-        `UPDATE approval_tasks
-         SET status = $3, action = $4, comment = $5,
-             acted_at = now(), updated_at = now()
-         WHERE tenant_id = $1 AND id = $2 AND status = 'PENDING'
+            version,
+            resource_type,
+            graph,
+            is_active,
+            created_by
+          )
+         VALUES ($1, $2, 1, $3, $4::jsonb, false, $5)
          RETURNING *`,
         [
           context.tenantId,
-          taskId,
-          taskStatus,
-          input.action,
-          input.comment ?? null,
+          input.name,
+          input.resourceType,
+          JSON.stringify(graph),
+          context.userId,
         ]
       );
-
-      if (!result.rowCount) {
-        throw new AppError(
-          409,
-          'INVALID_STATE',
-          'This approval task is no longer pending'
-        );
-      }
-
-      let runStatus = run.rows[0].status;
-      let requestStatus = null;
-      let currentActiveNodes = activeNodes;
-
-      if (
-        input.action === 'reject' ||
-        input.action === 'request_changes'
-      ) {
-        const finalRunStatus =
-          input.action === 'reject' ? 'REJECTED' : 'CANCELLED';
-
-        requestStatus =
-          input.action === 'reject'
-            ? 'REJECTED'
-            : 'CHANGES_REQUESTED';
-
-        await client.query(
-          `UPDATE approval_tasks
-           SET status = 'CANCELLED', updated_at = now()
-           WHERE tenant_id = $1
-             AND workflow_run_id = $2
-             AND status = 'PENDING'`,
-          [
-            context.tenantId,
-            task.rows[0].workflow_run_id,
-          ]
-        );
-
-        await client.query(
-          `UPDATE workflow_runs
-           SET status = $3, completed_at = now(), updated_at = now()
-           WHERE tenant_id = $1 AND id = $2`,
-          [
-            context.tenantId,
-            task.rows[0].workflow_run_id,
-            finalRunStatus,
-          ]
-        );
-
-        runStatus = finalRunStatus;
-      } else {
-        const remaining = await client.query(
-          `SELECT node_id
-           FROM approval_tasks
-           WHERE tenant_id = $1
-             AND workflow_run_id = $2
-             AND status = 'PENDING'
-             AND node_id = ANY($3::text[])`,
-          [
-            context.tenantId,
-            lockedTask.rows[0].workflow_run_id,
-            activeNodes,
-          ]
-        );
-
-        if (remaining.rowCount) {
-          await client.query(
-            `UPDATE workflow_runs
-             SET active_node = $3, updated_at = now()
-             WHERE tenant_id = $1 AND id = $2`,
-            [
-              context.tenantId,
-              lockedTask.rows[0].workflow_run_id,
-              JSON.stringify(activeNodes),
-            ]
-          );
-        } else {
-          const stage = nextApprovalStage(graph, activeNodes);
-
-          if (stage.nodeIds.length) {
-            const assignees = graph.nodes
-              .filter(
-                (node) =>
-                  stage.nodeIds.includes(node.id) &&
-                  !!node.assigneeId
-              )
-              .map((node) => node.assigneeId);
-
-            if (assignees.length) {
-              const validAssignees = await client.query(
-                `SELECT id FROM users
-                 WHERE tenant_id = $1
-                   AND is_active = true
-                   AND id = ANY($2::uuid[])`,
-                [context.tenantId, assignees]
-              );
-
-              if (
-                new Set(
-                  validAssignees.rows.map((row) =>
-                    row.id.toLowerCase()
-                  )
-                ).size !==
-                new Set(
-                  assignees.map((id) => id.toLowerCase())
-                ).size
-              ) {
-                throw new AppError(
-                  422,
-                  'INVALID_WORKFLOW_ASSIGNEE',
-                  'An approval node is assigned to a user who is missing or inactive'
-                );
-              }
-            }
-
-            await createStageTasks(
-              client,
-              context,
-              lockedTask.rows[0].workflow_run_id,
-              graph,
-              stage.nodeIds
-            );
-
-            currentActiveNodes = stage.nodeIds;
-
-            await client.query(
-              `UPDATE workflow_runs
-               SET active_node = $3, updated_at = now()
-               WHERE tenant_id = $1 AND id = $2`,
-              [
-                context.tenantId,
-                lockedTask.rows[0].workflow_run_id,
-                JSON.stringify(currentActiveNodes),
-              ]
-            );
-
-            await audit(
-              client,
-              context,
-              'workflow_run.stage_started',
-              lockedTask.rows[0].workflow_run_id,
-              { activeNodes: currentActiveNodes }
-            );
-          } else {
-            if (!stage.reachesEnd) {
-              throw new AppError(
-                422,
-                'INVALID_WORKFLOW',
-                'The workflow graph cannot advance to an approval stage or end node'
-              );
-            }
-
-            runStatus = 'APPROVED';
-            requestStatus = 'APPROVED';
-            currentActiveNodes = [];
-
-            await client.query(
-              `UPDATE workflow_runs
-               SET status = 'APPROVED', completed_at = now(),
-                   updated_at = now(), active_node = NULL
-               WHERE tenant_id = $1 AND id = $2`,
-              [
-                context.tenantId,
-                lockedTask.rows[0].workflow_run_id,
-              ]
-            );
-          }
-        }
-      }
-
-      if (run.rows[0].resource_type === 'purchase_request') {
-        if (requestStatus) {
-          const updatedRequest = await client.query(
-            `UPDATE purchase_requests
-             SET status = $3,
-                 approved_at = CASE
-                   WHEN $3 = 'APPROVED' THEN now()
-                   ELSE approved_at
-                 END,
-                 updated_at = now()
-             WHERE tenant_id = $1
-               AND id = $2
-               AND workflow_run_id = $4
-               AND status = 'IN_APPROVAL'`,
-            [
-              context.tenantId,
-              run.rows[0].resource_id,
-              requestStatus,
-              lockedTask.rows[0].workflow_run_id,
-            ]
-          );
-
-          if (!updatedRequest.rowCount) {
-            throw new AppError(
-              409,
-              'INVALID_STATE',
-              'The associated purchase request is not in this active approval run'
-            );
-          }
-
-          const purchaseRequest = await client.query(
-            `SELECT requester_id, request_number
-             FROM purchase_requests
-             WHERE tenant_id = $1 AND id = $2`,
-            [
-              context.tenantId,
-              run.rows[0].resource_id,
-            ]
-          );
-
-          if (purchaseRequest.rowCount) {
-            const requestNumber =
-              purchaseRequest.rows[0].request_number;
-
-            const subject =
-              requestStatus === 'APPROVED'
-                ? `Purchase request ${requestNumber} was approved`
-                : requestStatus === 'REJECTED'
-                  ? `Purchase request ${requestNumber} was rejected`
-                  : `Changes were requested for purchase request ${requestNumber}`;
-
-            await enqueueInAppNotification(
-              client,
-              context.tenantId,
-              purchaseRequest.rows[0].requester_id,
-              `purchase_request.${requestStatus.toLowerCase()}`,
-              subject,
-              {
-                purchaseRequestId: run.rows[0].resource_id,
-                requestNumber,
-                status: requestStatus,
-              }
-            );
-          }
-        }
-      }
 
       await audit(
         client,
         context,
-        `approval_task.${input.action}`,
-        taskId,
-        {
-          workflowRunId: lockedTask.rows[0].workflow_run_id,
-          nodeId: lockedTask.rows[0].node_id,
-          runStatus,
-          requestStatus,
-          activeNodes: currentActiveNodes,
-          comment: input.comment ?? null,
-        }
+        "workflow.created",
+        result.rows[0].id,
+        { version: 1 }
       );
 
-      return {
-        task: result.rows[0],
-        workflowRunStatus: runStatus,
-        purchaseRequestStatus: requestStatus,
-        activeNodes: currentActiveNodes,
-      };
+      return result.rows[0];
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new AppError(
+          409,
+          "WORKFLOW_VERSION_EXISTS",
+          "A workflow with this name already exists."
+        );
+      }
+
+      throw error;
     }
-  );
+  });
 }
 
-function nextApprovalStage(graph, origins) {
-  const byId = new Map(
-    graph.nodes.map((node) => [node.id, node])
-  );
+// ============================================================
+// CREATE WORKFLOW VERSION
+// ============================================================
 
-  const outgoing = new Map();
+export async function createWorkflowVersion(context, id, input) {
+  requiredContext(context);
 
-  for (const edge of graph.edges) {
-    const successors = outgoing.get(edge.from) ?? [];
-    successors.push(edge.to);
-    outgoing.set(edge.from, successors);
-  }
-
-  const queue = origins.flatMap(
-    (id) => outgoing.get(id) ?? []
-  );
-
-  const visited = new Set();
-  const approvals = new Set();
-  let reachesEnd = false;
-
-  while (queue.length) {
-    const id = queue.shift();
-
-    if (visited.has(id)) continue;
-
-    visited.add(id);
-
-    const node = byId.get(id);
-
-    if (!node) {
-      throw new AppError(
-        422,
-        'INVALID_WORKFLOW',
-        `Workflow edge references missing node "${id}"`
-      );
-    }
-
-    if (node.type === 'approval') {
-      approvals.add(id);
-    } else if (node.type === 'end') {
-      reachesEnd = true;
-    } else {
-      queue.push(...(outgoing.get(id) ?? []));
-    }
-  }
-
-  return {
-    nodeIds: [...approvals],
-    reachesEnd,
-  };
-}
-
-function parseActiveNodes(activeNode, fallbackNodeId) {
-  if (activeNode === null) {
-    return [fallbackNodeId];
-  }
-
-  try {
-    const parsed = JSON.parse(activeNode);
-
-    if (
-      Array.isArray(parsed) &&
-      parsed.every((value) => typeof value === 'string')
-    ) {
-      return parsed;
-    }
-
-    if (typeof parsed === 'string') {
-      return [parsed];
-    }
-
-    throw new AppError(
-      409,
-      'INVALID_WORKFLOW_STATE',
-      'Workflow run has an invalid active stage'
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const current = await client.query(
+      `SELECT name, resource_type, graph
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+         AND id = $2
+       FOR UPDATE`,
+      [context.tenantId, id]
     );
-  } catch (error) {
-    if (error instanceof AppError) throw error;
 
-    return [activeNode];
-  }
-}
-
-async function createStageTasks(
-  client,
-  context,
-  runId,
-  graph,
-  nodeIds
-) {
-  const nodes = new Map(
-    graph.nodes.map((node) => [node.id, node])
-  );
-
-  for (const nodeId of nodeIds) {
-    const node = nodes.get(nodeId);
-
-    if (!node || node.type !== 'approval') {
+    if (!current.rowCount) {
       throw new AppError(
-        422,
-        'INVALID_WORKFLOW',
-        `Active stage references non-approval node "${nodeId}"`
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
       );
     }
 
-    const task = await client.query(
-      `INSERT INTO approval_tasks
-        (tenant_id, workflow_run_id, node_id, assignee_id, status)
-       VALUES ($1, $2, $3, $4, 'PENDING')
-       RETURNING id`,
+    const name = input.name ?? current.rows[0].name;
+    const graph = validateGraph(input.graph ?? current.rows[0].graph);
+
+    const version = await client.query(
+      `SELECT COALESCE(MAX(version), 0) + 1 AS next_version
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+         AND name = $2
+         AND resource_type = $3`,
       [
         context.tenantId,
-        runId,
-        node.id,
-        node.assigneeId ?? null,
+        name,
+        current.rows[0].resource_type,
       ]
     );
 
-    await audit(
-      client,
-      context,
-      'approval_task.created',
-      task.rows[0].id,
-      {
-        workflowRunId: runId,
-        nodeId: node.id,
-        assigneeId: node.assigneeId ?? null,
+    try {
+      const result = await client.query(
+        `INSERT INTO public.workflow_definitions
+          (
+            tenant_id,
+            name,
+            version,
+            resource_type,
+            graph,
+            is_active,
+            created_by
+          )
+         VALUES ($1, $2, $3, $4, $5::jsonb, false, $6)
+         RETURNING *`,
+        [
+          context.tenantId,
+          name,
+          version.rows[0].next_version,
+          current.rows[0].resource_type,
+          JSON.stringify(graph),
+          context.userId,
+        ]
+      );
+
+      await audit(
+        client,
+        context,
+        "workflow.version_created",
+        result.rows[0].id,
+        {
+          sourceWorkflowId: id,
+          version: result.rows[0].version,
+        }
+      );
+
+      return result.rows[0];
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new AppError(
+          409,
+          "WORKFLOW_VERSION_EXISTS",
+          "A workflow version with this name already exists."
+        );
       }
+
+      throw error;
+    }
+  });
+}
+
+// ============================================================
+// ACTIVATE WORKFLOW
+// ============================================================
+
+export async function activateWorkflow(context, id) {
+  requiredContext(context);
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const target = await client.query(
+      `SELECT
+         id,
+         name,
+         resource_type,
+         graph,
+         is_active
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+         AND id = $2
+       FOR UPDATE`,
+      [context.tenantId, id]
     );
 
-    if (node.assigneeId) {
-      const run = await client.query(
-        `SELECT resource_type, resource_id
-         FROM workflow_runs
-         WHERE tenant_id = $1 AND id = $2`,
+    if (!target.rowCount) {
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
+    }
+
+    const graph = validateGraph(target.rows[0].graph);
+
+    const approvalNodes = graph.nodes
+      .filter((node) => node.type === "approval")
+      .map((node) => node.id);
+
+    await validateStageAssignees(
+      client,
+      context.tenantId,
+      graph,
+      approvalNodes
+    );
+
+    await client.query(
+      `UPDATE public.workflow_definitions
+       SET is_active = false,
+           updated_at = now()
+       WHERE tenant_id = $1
+         AND resource_type = $2
+         AND is_active = true
+         AND id <> $3`,
+      [
+        context.tenantId,
+        target.rows[0].resource_type,
+        id,
+      ]
+    );
+
+    const updated = await client.query(
+      `UPDATE public.workflow_definitions
+       SET is_active = true,
+           updated_at = now()
+       WHERE tenant_id = $1
+         AND id = $2
+       RETURNING *`,
+      [context.tenantId, id]
+    );
+
+    if (!target.rows[0].is_active) {
+      await audit(
+        client,
+        context,
+        "workflow.activated",
+        id,
+        { name: target.rows[0].name }
+      );
+    }
+
+    return updated.rows[0];
+  });
+}
+
+// ============================================================
+// DELETE WORKFLOW
+// ============================================================
+
+export async function deleteWorkflow(context, id) {
+  requiredContext(context);
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const current = await client.query(
+      `SELECT is_active
+       FROM public.workflow_definitions
+       WHERE tenant_id = $1
+         AND id = $2
+       FOR UPDATE`,
+      [context.tenantId, id]
+    );
+
+    if (!current.rowCount) {
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
+    }
+
+    if (current.rows[0].is_active) {
+      throw new AppError(
+        409,
+        "ACTIVE_WORKFLOW",
+        "Deactivate the workflow before deleting it."
+      );
+    }
+
+    await audit(client, context, "workflow.deleted", id, {});
+
+    try {
+      await client.query(
+        `DELETE FROM public.workflow_definitions
+         WHERE tenant_id = $1
+           AND id = $2`,
+        [context.tenantId, id]
+      );
+    } catch (error) {
+      if (isForeignKeyViolation(error)) {
+        throw new AppError(
+          409,
+          "WORKFLOW_IN_USE",
+          "A workflow referenced by a run cannot be deleted."
+        );
+      }
+
+      throw error;
+    }
+  });
+}
+
+// ============================================================
+// LIST PENDING APPROVAL TASKS
+// ============================================================
+
+export async function listPendingTasks(context, options = {}) {
+  requiredContext(context);
+
+  const limit = Math.min(Math.max(Number(options.limit) || 20, 1), 100);
+  const offset = Math.max(Number(options.offset) || 0, 0);
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const values = [context.tenantId, context.userId];
+
+    const result = await client.query(
+      `SELECT
+         t.*,
+         r.resource_type,
+         r.resource_id,
+         r.active_node,
+         d.name AS workflow_name,
+         pr.request_number,
+         pr.total_amount,
+         pr.currency,
+         pr.requester_id
+       FROM public.approval_tasks t
+       JOIN public.workflow_runs r
+         ON r.tenant_id = t.tenant_id
+        AND r.id = t.workflow_run_id
+       JOIN public.workflow_definitions d
+         ON d.tenant_id = r.tenant_id
+        AND d.id = r.definition_id
+       LEFT JOIN public.purchase_requests pr
+         ON pr.tenant_id = r.tenant_id
+        AND r.resource_type = 'purchase_request'
+        AND pr.id = r.resource_id
+       WHERE t.tenant_id = $1
+         AND t.status = 'PENDING'
+         AND t.assignee_id = $2
+         AND r.status = 'RUNNING'
+       ORDER BY
+         t.due_at NULLS LAST,
+         t.created_at,
+         t.id
+       LIMIT $3
+       OFFSET $4`,
+      [...values, limit, offset]
+    );
+
+    const count = await client.query(
+      `SELECT COUNT(*)::text AS total
+       FROM public.approval_tasks t
+       JOIN public.workflow_runs r
+         ON r.tenant_id = t.tenant_id
+        AND r.id = t.workflow_run_id
+       WHERE t.tenant_id = $1
+         AND t.status = 'PENDING'
+         AND t.assignee_id = $2
+         AND r.status = 'RUNNING'`,
+      values
+    );
+
+    return {
+      data: result.rows,
+      total: Number(count.rows[0].total),
+    };
+  });
+}
+
+// ============================================================
+// APPROVE / REJECT / REQUEST CHANGES
+// ============================================================
+
+export async function actOnTask(context, taskId, input = {}) {
+  requiredContext(context);
+
+  const action = normalizeAction(input.action);
+  const comment =
+    typeof input.comment === "string"
+      ? input.comment.trim() || null
+      : null;
+
+  return withTenantTransaction(context.tenantId, async (client) => {
+    const initialTask = await client.query(
+      `SELECT workflow_run_id
+       FROM public.approval_tasks
+       WHERE tenant_id = $1
+         AND id = $2`,
+      [context.tenantId, taskId]
+    );
+
+    if (!initialTask.rowCount) {
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Approval task not found."
+      );
+    }
+
+    const runId = initialTask.rows[0].workflow_run_id;
+
+    const run = await client.query(
+      `SELECT
+         r.status,
+         r.active_node,
+         r.resource_type,
+         r.resource_id,
+         d.graph
+       FROM public.workflow_runs r
+       JOIN public.workflow_definitions d
+         ON d.tenant_id = r.tenant_id
+        AND d.id = r.definition_id
+       WHERE r.tenant_id = $1
+         AND r.id = $2
+       FOR UPDATE OF r`,
+      [context.tenantId, runId]
+    );
+
+    if (!run.rowCount || run.rows[0].status !== RUNNING) {
+      throw new AppError(
+        409,
+        "INVALID_STATE",
+        "The workflow run is no longer active."
+      );
+    }
+
+    const lockedTask = await client.query(
+      `SELECT
+         workflow_run_id,
+         node_id,
+         assignee_id,
+         status
+       FROM public.approval_tasks
+       WHERE tenant_id = $1
+         AND id = $2
+       FOR UPDATE`,
+      [context.tenantId, taskId]
+    );
+
+    if (
+      !lockedTask.rowCount ||
+      lockedTask.rows[0].status !== TASK_PENDING
+    ) {
+      throw new AppError(
+        409,
+        "INVALID_STATE",
+        "This approval task is no longer pending."
+      );
+    }
+
+    const taskRow = lockedTask.rows[0];
+
+    if (
+      !taskRow.assignee_id ||
+      String(taskRow.assignee_id).toLowerCase() !==
+        String(context.userId).toLowerCase()
+    ) {
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "This task is not assigned to the authenticated user."
+      );
+    }
+
+    const activeNodes = parseActiveNodes(
+      run.rows[0].active_node,
+      taskRow.node_id
+    );
+
+    if (!activeNodes.includes(taskRow.node_id)) {
+      throw new AppError(
+        409,
+        "INVALID_STATE",
+        "This task is not part of the active approval stage."
+      );
+    }
+
+    const graph = validateGraph(run.rows[0].graph);
+
+    const taskStatus =
+      action === "approve"
+        ? TASK_APPROVED
+        : action === "reject"
+          ? TASK_REJECTED
+          : TASK_CHANGES_REQUESTED;
+
+    const updatedTask = await client.query(
+      `UPDATE public.approval_tasks
+       SET status = $3,
+           action = $4,
+           comment = $5,
+           acted_at = now(),
+           updated_at = now()
+       WHERE tenant_id = $1
+         AND id = $2
+         AND status = 'PENDING'
+       RETURNING *`,
+      [
+        context.tenantId,
+        taskId,
+        taskStatus,
+        action,
+        comment,
+      ]
+    );
+
+    if (!updatedTask.rowCount) {
+      throw new AppError(
+        409,
+        "INVALID_STATE",
+        "This approval task is no longer pending."
+      );
+    }
+
+    let runStatus = RUNNING;
+    let requestStatus = null;
+    let currentActiveNodes = activeNodes;
+
+    if (action === "reject" || action === "request_changes") {
+      const finalRunStatus =
+        action === "reject" ? RUN_REJECTED : RUN_CANCELLED;
+
+      requestStatus =
+        action === "reject" ? "REJECTED" : "CHANGES_REQUESTED";
+
+      await client.query(
+        `UPDATE public.approval_tasks
+         SET status = 'CANCELLED',
+             updated_at = now()
+         WHERE tenant_id = $1
+           AND workflow_run_id = $2
+           AND status = 'PENDING'`,
         [context.tenantId, runId]
       );
 
-      if (run.rowCount) {
-        const resource =
-          run.rows[0].resource_type === 'purchase_request'
-            ? await client.query(
-                `SELECT request_number
-                 FROM purchase_requests
-                 WHERE tenant_id = $1 AND id = $2`,
-                [
-                  context.tenantId,
-                  run.rows[0].resource_id,
-                ]
-              )
-            : undefined;
+      await client.query(
+        `UPDATE public.workflow_runs
+         SET status = $3,
+             completed_at = now(),
+             active_node = NULL,
+             updated_at = now()
+         WHERE tenant_id = $1
+           AND id = $2`,
+        [context.tenantId, runId, finalRunStatus]
+      );
 
-        const name =
-          resource?.rows[0]?.request_number ??
-          `${run.rows[0].resource_type} ${run.rows[0].resource_id}`;
+      runStatus = finalRunStatus;
+      currentActiveNodes = [];
+    } else {
+      const remaining = await client.query(
+        `SELECT node_id
+         FROM public.approval_tasks
+         WHERE tenant_id = $1
+           AND workflow_run_id = $2
+           AND status = 'PENDING'
+           AND node_id = ANY($3::text[])`,
+        [context.tenantId, runId, activeNodes]
+      );
+
+      if (remaining.rowCount) {
+        await client.query(
+          `UPDATE public.workflow_runs
+           SET active_node = $3::jsonb,
+               updated_at = now()
+           WHERE tenant_id = $1
+             AND id = $2`,
+          [
+            context.tenantId,
+            runId,
+            JSON.stringify(activeNodes),
+          ]
+        );
+      } else {
+        const stage = nextApprovalStage(graph, activeNodes);
+
+        if (stage.nodeIds.length) {
+          await validateStageAssignees(
+            client,
+            context.tenantId,
+            graph,
+            stage.nodeIds
+          );
+
+          await createStageTasks(
+            client,
+            context,
+            runId,
+            graph,
+            stage.nodeIds
+          );
+
+          currentActiveNodes = stage.nodeIds;
+
+          await client.query(
+            `UPDATE public.workflow_runs
+             SET active_node = $3::jsonb,
+                 updated_at = now()
+             WHERE tenant_id = $1
+               AND id = $2`,
+            [
+              context.tenantId,
+              runId,
+              JSON.stringify(currentActiveNodes),
+            ]
+          );
+
+          await audit(
+            client,
+            context,
+            "workflow_run.stage_started",
+            runId,
+            { activeNodes: currentActiveNodes }
+          );
+        } else {
+          if (!stage.reachesEnd) {
+            throw new AppError(
+              422,
+              "INVALID_WORKFLOW",
+              "The workflow graph cannot advance to an approval stage or end node."
+            );
+          }
+
+          runStatus = RUN_APPROVED;
+          requestStatus = "APPROVED";
+          currentActiveNodes = [];
+
+          await client.query(
+            `UPDATE public.workflow_runs
+             SET status = 'APPROVED',
+                 completed_at = now(),
+                 active_node = NULL,
+                 updated_at = now()
+             WHERE tenant_id = $1
+               AND id = $2`,
+            [context.tenantId, runId]
+          );
+        }
+      }
+    }
+
+    if (
+      run.rows[0].resource_type === RESOURCE_PURCHASE_REQUEST &&
+      requestStatus
+    ) {
+      const updatedRequest = await client.query(
+        `UPDATE public.purchase_requests
+         SET status = $3,
+             approved_at = CASE
+               WHEN $3 = 'APPROVED' THEN now()
+               ELSE approved_at
+             END,
+             updated_at = now()
+         WHERE tenant_id = $1
+           AND id = $2
+           AND workflow_run_id = $4
+           AND status = 'IN_APPROVAL'`,
+        [
+          context.tenantId,
+          run.rows[0].resource_id,
+          requestStatus,
+          runId,
+        ]
+      );
+
+      if (!updatedRequest.rowCount) {
+        throw new AppError(
+          409,
+          "INVALID_STATE",
+          "The associated purchase request is not in this active approval run."
+        );
+      }
+
+      const purchaseRequest = await client.query(
+        `SELECT requester_id, request_number
+         FROM public.purchase_requests
+         WHERE tenant_id = $1
+           AND id = $2`,
+        [context.tenantId, run.rows[0].resource_id]
+      );
+
+      if (purchaseRequest.rowCount) {
+        const requestNumber = purchaseRequest.rows[0].request_number;
+
+        const subject =
+          requestStatus === "APPROVED"
+            ? `Purchase request ${requestNumber} was approved`
+            : requestStatus === "REJECTED"
+              ? `Purchase request ${requestNumber} was rejected`
+              : `Changes were requested for purchase request ${requestNumber}`;
 
         await enqueueInAppNotification(
           client,
           context.tenantId,
-          node.assigneeId,
-          'approval.task_assigned',
-          `Approval required for ${name}`,
+          purchaseRequest.rows[0].requester_id,
+          `purchase_request.${requestStatus.toLowerCase()}`,
+          subject,
           {
-            taskId: task.rows[0].id,
-            workflowRunId: runId,
-            resourceType: run.rows[0].resource_type,
-            resourceId: run.rows[0].resource_id,
-            nodeId: node.id,
+            purchaseRequestId: run.rows[0].resource_id,
+            requestNumber,
+            status: requestStatus,
           }
         );
       }
     }
-  }
-}
 
-function isUniqueViolation(error) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === '23505'
-  );
-}
+    await audit(
+      client,
+      context,
+      `approval_task.${action}`,
+      taskId,
+      {
+        workflowRunId: runId,
+        nodeId: taskRow.node_id,
+        runStatus,
+        requestStatus,
+        activeNodes: currentActiveNodes,
+        comment,
+      }
+    );
 
-function isForeignKeyViolation(error) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === '23503'
-  );
-}
-
-async function audit(
-  client,
-  context,
-  action,
-  resourceId,
-  metadata = {}
-) {
-  await client.query(
-    `INSERT INTO audit_events
-      (tenant_id, actor_type, actor_id, action, resource_type, resource_id, metadata)
-     VALUES ($1, 'USER', $2, $3, 'workflow', $4, $5::jsonb)`,
-    [
-      context.tenantId,
-      context.userId,
-      action,
-      resourceId,
-      JSON.stringify(metadata),
-    ]
-  );
+    return {
+      task: updatedTask.rows[0],
+      workflowRunStatus: runStatus,
+      purchaseRequestStatus: requestStatus,
+      activeNodes: currentActiveNodes,
+    };
+  });
 }
