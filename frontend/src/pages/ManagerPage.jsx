@@ -15,14 +15,16 @@ import {
   Check,
   Ban,
   RefreshCw,
-  User,
   Building2,
   AlertCircle,
   ChevronDown,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-// Backend is mounted at /api/v1.
+// ============================================================
+// API CONFIGURATION
+// ============================================================
+
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   "http://localhost:5000/api/v1"
@@ -46,10 +48,17 @@ const getArray = (response, keys = []) => {
   }
 
   if (Array.isArray(response?.data)) return response.data;
-  if (Array.isArray(response?.data?.requests)) return response.data.requests;
+
+  if (Array.isArray(response?.data?.requests)) {
+    return response.data.requests;
+  }
 
   return [];
 };
+
+// ============================================================
+// FORMATTERS
+// ============================================================
 
 const formatCurrency = (value) =>
   new Intl.NumberFormat("en-IN", {
@@ -68,6 +77,10 @@ const formatDate = (value) => {
     : date.toLocaleDateString("en-IN");
 };
 
+// ============================================================
+// REQUEST HELPERS
+// ============================================================
+
 const getStatus = (request) =>
   String(
     request.status ||
@@ -79,7 +92,11 @@ const getStatus = (request) =>
     .replaceAll(" ", "_");
 
 const getEmployee = (request) => {
-  const employee = request.employee || request.requester || request.user || {};
+  const employee =
+    request.employee ||
+    request.requester ||
+    request.user ||
+    {};
 
   const nestedName = [
     employee.firstName || employee.first_name,
@@ -121,20 +138,30 @@ const getAmount = (request) => {
 };
 
 const getRequestId = (request) =>
-  request.id || request.requestId || request.request_id;
+  request.id ||
+  request.requestId ||
+  request.request_id;
 
 const getSupplier = (request) =>
-  request.supplier ||
   request.supplierName ||
   request.supplier_name ||
+  request.supplier ||
   "—";
 
-const getDepartment = (request) =>
-  request.department ||
-  request.departmentName ||
-  request.department_name ||
-  request.department?.name ||
-  "—";
+const getDepartment = (request) => {
+  const department = request.department;
+
+  if (department && typeof department === "object") {
+    return department.name || "—";
+  }
+
+  return (
+    department ||
+    request.departmentName ||
+    request.department_name ||
+    "—"
+  );
+};
 
 const getRequestDate = (request) =>
   request.createdAt ||
@@ -142,11 +169,9 @@ const getRequestDate = (request) =>
   request.submittedAt ||
   request.submitted_at;
 
-const MANAGER_PENDING_STATUSES = [
-  "PENDING_MANAGER",
-  "SUBMITTED",
-  "MANAGER_PENDING",
-];
+// ============================================================
+// STATUS CONSTANTS
+// ============================================================
 
 const FINANCE_PENDING_STATUSES = [
   "MANAGER_APPROVED",
@@ -166,10 +191,16 @@ const REJECTED_STATUSES = [
   "REJECTED",
 ];
 
+// ============================================================
+// MANAGER PAGE
+// ============================================================
+
 export default function ManagerPage() {
   const navigate = useNavigate();
 
   const [requests, setRequests] = useState([]);
+  const [pendingTasks, setPendingTasks] = useState([]);
+
   const [activeTab, setActiveTab] = useState("Overview");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
@@ -187,13 +218,17 @@ export default function ManagerPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [managerName, setManagerName] = useState("Manager");
 
-  // API helper.
-  // The token is retrieved for every request so updated login sessions are used.
+  // ==========================================================
+  // API REQUEST HELPER
+  // ==========================================================
+
   const apiRequest = useCallback(async (endpoint, options = {}) => {
     const token = getToken();
 
     if (!token) {
-      throw new Error("Your session has expired. Please log in again.");
+      throw new Error(
+        "Your session has expired. Please log in again."
+      );
     }
 
     const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -224,19 +259,35 @@ export default function ManagerPage() {
     return data;
   }, []);
 
-  // Load procurement requests and manager profile.
+  // ==========================================================
+  // LOAD DASHBOARD
+  // ==========================================================
+
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
-      const [requestResult, userResult] = await Promise.all([
-        apiRequest("/procurement/requests"),
-        apiRequest("/auth/me").catch(() => null),
-      ]);
+      const [requestResult, taskResult, userResult] =
+        await Promise.all([
+          apiRequest("/procurement/requests"),
 
-      // Controller returns:
-      // { success, message, data: requests, requests, pagination }
+          // A task endpoint failure should not prevent
+          // the procurement request list from loading.
+          apiRequest(
+            "/workflows/tasks/pending?limit=100&offset=0"
+          ).catch((err) => ({
+            __taskError: err.message,
+            data: [],
+          })),
+
+          apiRequest("/auth/me").catch(() => null),
+        ]);
+
+      // ------------------------------------------------------
+      // PROCUREMENT REQUESTS
+      // ------------------------------------------------------
+
       const requestList = getArray(requestResult, [
         "requests",
         "items",
@@ -244,6 +295,54 @@ export default function ManagerPage() {
       ]);
 
       setRequests(requestList);
+
+      // ------------------------------------------------------
+      // PENDING WORKFLOW TASKS
+      //
+      // Backend response:
+      // {
+      //   data: [...],
+      //   total: number,
+      //   pagination: {...}
+      // }
+      // ------------------------------------------------------
+
+      const taskList = getArray(taskResult, [
+        "tasks",
+        "items",
+        "results",
+      ]);
+
+      const validTasks = taskList.filter((task) => {
+        const status = String(
+          task.status || ""
+        ).toUpperCase();
+
+        const resourceType = String(
+          task.resource_type ||
+            task.resourceType ||
+            ""
+        ).toLowerCase();
+
+        return (
+          status === "PENDING" &&
+          resourceType === "purchase_request" &&
+          Boolean(task.id) &&
+          Boolean(task.resource_id)
+        );
+      });
+
+      setPendingTasks(validTasks);
+
+      if (taskResult?.__taskError) {
+        setError(
+          `Unable to load approval tasks: ${taskResult.__taskError}`
+        );
+      }
+
+      // ------------------------------------------------------
+      // MANAGER PROFILE
+      // ------------------------------------------------------
 
       const user =
         userResult?.user ||
@@ -256,7 +355,10 @@ export default function ManagerPage() {
           user.name ||
           user.fullName ||
           user.full_name ||
-          [user.firstName || user.first_name, user.lastName || user.last_name]
+          [
+            user.firstName || user.first_name,
+            user.lastName || user.last_name,
+          ]
             .filter(Boolean)
             .join(" ");
 
@@ -265,7 +367,9 @@ export default function ManagerPage() {
         }
       }
     } catch (err) {
-      const message = err.message || "Unable to load manager dashboard.";
+      const message =
+        err.message ||
+        "Unable to load manager dashboard.";
 
       setError(message);
 
@@ -281,6 +385,7 @@ export default function ManagerPage() {
         sessionStorage.removeItem("token");
         sessionStorage.removeItem("accessToken");
         sessionStorage.removeItem("authToken");
+        sessionStorage.removeItem("user");
 
         navigate("/login");
       }
@@ -288,6 +393,10 @@ export default function ManagerPage() {
       setLoading(false);
     }
   }, [apiRequest, navigate]);
+
+  // ==========================================================
+  // INITIAL LOAD
+  // ==========================================================
 
   useEffect(() => {
     if (!getToken()) {
@@ -298,20 +407,109 @@ export default function ManagerPage() {
     loadDashboard();
   }, [loadDashboard, navigate]);
 
-  // Requests awaiting manager approval.
-  const managerPending = useMemo(
-    () =>
-      requests.filter((request) =>
-        MANAGER_PENDING_STATUSES.includes(getStatus(request))
-      ),
-    [requests]
-  );
+  // ==========================================================
+  // MATCH WORKFLOW TASKS WITH PROCUREMENT REQUESTS
+  // ==========================================================
 
-  // Requests approved by manager and awaiting finance.
+  const managerPending = useMemo(() => {
+    const requestMap = new Map(
+      requests
+        .filter((request) => getRequestId(request))
+        .map((request) => [
+          String(getRequestId(request)),
+          request,
+        ])
+    );
+
+    return pendingTasks.map((task) => {
+      const requestId = String(task.resource_id);
+      const existingRequest = requestMap.get(requestId);
+
+      if (existingRequest) {
+        return {
+          ...existingRequest,
+          workflowTaskId: task.id,
+          workflowTask: task,
+        };
+      }
+
+      // Fallback if the procurement list does not contain
+      // the request associated with this workflow task.
+      return {
+        id: task.resource_id,
+        request_number: task.request_number,
+        total_amount: task.total_amount,
+        currency: task.currency,
+        requester_id: task.requester_id,
+        status: "IN_APPROVAL",
+        workflowTaskId: task.id,
+        workflowTask: task,
+      };
+    });
+  }, [requests, pendingTasks]);
+
+  // ==========================================================
+  // ATTACH TASK INFORMATION TO THE REQUEST LIST
+  // ==========================================================
+
+  const requestsWithTasks = useMemo(() => {
+    const taskByRequestId = new Map();
+
+    for (const task of pendingTasks) {
+      const key = String(task.resource_id);
+
+      if (!taskByRequestId.has(key)) {
+        taskByRequestId.set(key, task);
+      }
+    }
+
+    const enrichedRequests = requests.map((request) => {
+      const requestId = getRequestId(request);
+
+      const task = taskByRequestId.get(
+        String(requestId)
+      );
+
+      if (!task) return request;
+
+      return {
+        ...request,
+        workflowTaskId: task.id,
+        workflowTask: task,
+      };
+    });
+
+    // Include task-associated requests not returned
+    // by the procurement requests endpoint.
+    const existingIds = new Set(
+      enrichedRequests.map((request) =>
+        String(getRequestId(request))
+      )
+    );
+
+    const missingRequests = managerPending.filter(
+      (request) =>
+        !existingIds.has(
+          String(getRequestId(request))
+        )
+    );
+
+    return [
+      ...enrichedRequests,
+      ...missingRequests,
+    ];
+  }, [requests, pendingTasks, managerPending]);
+
+  // ==========================================================
+  // DASHBOARD STATISTICS
+  // ==========================================================
+
   const financePending = useMemo(
     () =>
       requests.filter((request) =>
-        FINANCE_PENDING_STATUSES.includes(getStatus(request))
+        FINANCE_PENDING_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
@@ -319,7 +517,9 @@ export default function ManagerPage() {
   const approvedRequests = useMemo(
     () =>
       requests.filter((request) =>
-        APPROVED_STATUSES.includes(getStatus(request))
+        APPROVED_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
@@ -327,19 +527,24 @@ export default function ManagerPage() {
   const rejectedRequests = useMemo(
     () =>
       requests.filter((request) =>
-        REJECTED_STATUSES.includes(getStatus(request))
+        REJECTED_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
 
-  // Search and status filters.
+  // ==========================================================
+  // SEARCH AND FILTERS
+  // ==========================================================
+
   const filteredRequests = useMemo(() => {
-    let list = requests;
+    let list = requestsWithTasks;
 
     if (activeTab === "Pending Requests") {
       list = managerPending;
     } else if (activeTab === "Approval History") {
-      list = requests.filter((request) =>
+      list = requestsWithTasks.filter((request) =>
         [
           ...APPROVED_STATUSES,
           ...REJECTED_STATUSES,
@@ -349,7 +554,8 @@ export default function ManagerPage() {
 
     if (statusFilter !== "ALL") {
       list = list.filter(
-        (request) => getStatus(request) === statusFilter
+        (request) =>
+          getStatus(request) === statusFilter
       );
     }
 
@@ -363,6 +569,7 @@ export default function ManagerPage() {
           getSupplier(request),
           getDepartment(request),
           getRequestId(request),
+          request.request_number,
           request.employeeEmail,
           request.employee_email,
           request.requester?.email,
@@ -378,10 +585,26 @@ export default function ManagerPage() {
     }
 
     return list;
-  }, [requests, activeTab, statusFilter, search, managerPending]);
+  }, [
+    requestsWithTasks,
+    activeTab,
+    statusFilter,
+    search,
+    managerPending,
+  ]);
 
-  // Open approval/rejection modal.
+  // ==========================================================
+  // OPEN DECISION MODAL
+  // ==========================================================
+
   const openDecision = (request, action) => {
+    if (!request.workflowTaskId) {
+      setError(
+        "No pending workflow task is assigned to this request."
+      );
+      return;
+    }
+
     setSelectedRequest(request);
     setDecision(action);
     setReason("");
@@ -389,19 +612,38 @@ export default function ManagerPage() {
     setSuccess("");
   };
 
-  // Submit manager decision.
-  const submitDecision = async () => {
-    if (!selectedRequest || !decision || submitting) return;
+  // ==========================================================
+  // SUBMIT WORKFLOW DECISION
+  //
+  // Backend route:
+  // POST /workflows/tasks/:taskId/actions
+  //
+  // Accepted body:
+  // {
+  //   action: "approve" | "reject" | "request_changes",
+  //   comment?: string
+  // }
+  // ==========================================================
 
-    if (decision === "reject" && !reason.trim()) {
+  const submitDecision = async () => {
+    if (!selectedRequest || !decision || submitting) {
+      return;
+    }
+
+    if (
+      decision === "reject" &&
+      !reason.trim()
+    ) {
       setError("Please enter a rejection reason.");
       return;
     }
 
-    const id = getRequestId(selectedRequest);
+    const taskId = selectedRequest.workflowTaskId;
 
-    if (!id) {
-      setError("Request ID is missing.");
+    if (!taskId) {
+      setError(
+        "Workflow task ID is missing. Refresh the dashboard and try again."
+      );
       return;
     }
 
@@ -412,20 +654,14 @@ export default function ManagerPage() {
     try {
       const approved = decision === "approve";
 
-      // IMPORTANT:
-      // Your procurement.controller.js reads only:
-      // req.body.decision
-      // req.body.comment
-      //
-      // Do not send status or reason as separate fields.
       await apiRequest(
-        `/procurement/requests/${encodeURIComponent(
-          id
-        )}/manager-decision`,
+        `/workflows/tasks/${encodeURIComponent(
+          taskId
+        )}/actions`,
         {
-          method: "PATCH",
+          method: "POST",
           body: JSON.stringify({
-            decision: approved ? "approve" : "reject",
+            action: approved ? "approve" : "reject",
             comment: reason.trim(),
           }),
         }
@@ -437,17 +673,24 @@ export default function ManagerPage() {
 
       setSuccess(
         approved
-          ? "Request approved and forwarded to Finance."
+          ? "Request approved successfully. The workflow has advanced."
           : "Request rejected successfully."
       );
 
       await loadDashboard();
     } catch (err) {
-      setError(err.message || "Unable to submit manager decision.");
+      setError(
+        err.message ||
+          "Unable to submit manager decision."
+      );
     } finally {
       setSubmitting(false);
     }
   };
+
+  // ==========================================================
+  // CLOSE MODAL
+  // ==========================================================
 
   const closeModal = () => {
     if (submitting) return;
@@ -456,6 +699,10 @@ export default function ManagerPage() {
     setDecision("");
     setReason("");
   };
+
+  // ==========================================================
+  // LOGOUT
+  // ==========================================================
 
   const logout = () => {
     localStorage.removeItem("token");
@@ -471,24 +718,42 @@ export default function ManagerPage() {
     navigate("/login");
   };
 
+  // ==========================================================
+  // NAVIGATION
+  // ==========================================================
+
   const navItems = [
     { name: "Overview", icon: LayoutDashboard },
     { name: "Pending Requests", icon: ClipboardList },
     { name: "Approval History", icon: CheckCircle2 },
   ];
 
+  // ==========================================================
+  // STATUS HELPERS
+  // ==========================================================
+
   const statusStyle = (status) => {
-    if (APPROVED_STATUSES.includes(status)) return "approved";
+    if (APPROVED_STATUSES.includes(status)) {
+      return "approved";
+    }
 
-    if (REJECTED_STATUSES.includes(status)) return "rejected";
+    if (REJECTED_STATUSES.includes(status)) {
+      return "rejected";
+    }
 
-    if (FINANCE_PENDING_STATUSES.includes(status)) return "finance";
+    if (FINANCE_PENDING_STATUSES.includes(status)) {
+      return "finance";
+    }
 
     return "pending";
   };
 
   const isManagerPending = (request) =>
-    MANAGER_PENDING_STATUSES.includes(getStatus(request));
+    Boolean(request.workflowTaskId);
+
+  // ==========================================================
+  // UI
+  // ==========================================================
 
   return (
     <div className="manager-app">
@@ -1128,8 +1393,15 @@ export default function ManagerPage() {
         }
       `}</style>
 
-      {/* Sidebar */}
-      <aside className={`manager-sidebar ${sidebarOpen ? "open" : ""}`}>
+      {/* ======================================================
+          SIDEBAR
+      ====================================================== */}
+
+      <aside
+        className={`manager-sidebar ${
+          sidebarOpen ? "open" : ""
+        }`}
+      >
         <div className="manager-brand">
           <div className="manager-brand-icon">
             <Building2 size={21} />
@@ -1137,7 +1409,9 @@ export default function ManagerPage() {
           ETDOX
         </div>
 
-        <div className="manager-nav-label">WORKSPACE</div>
+        <div className="manager-nav-label">
+          WORKSPACE
+        </div>
 
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -1169,14 +1443,20 @@ export default function ManagerPage() {
         })}
 
         <div className="manager-sidebar-bottom">
-          <button className="manager-nav" onClick={logout}>
+          <button
+            className="manager-nav"
+            onClick={logout}
+          >
             <LogOut size={17} />
             Logout
           </button>
         </div>
       </aside>
 
-      {/* Main dashboard */}
+      {/* ======================================================
+          MAIN DASHBOARD
+      ====================================================== */}
+
       <main className="manager-main">
         <header className="manager-topbar">
           <div
@@ -1188,10 +1468,16 @@ export default function ManagerPage() {
           >
             <button
               className="manager-icon-btn manager-mobile-menu"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={() =>
+                setSidebarOpen(!sidebarOpen)
+              }
               aria-label="Toggle navigation"
             >
-              {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
+              {sidebarOpen ? (
+                <X size={18} />
+              ) : (
+                <Menu size={18} />
+              )}
             </button>
 
             <div className="manager-heading">
@@ -1216,7 +1502,9 @@ export default function ManagerPage() {
             >
               <RefreshCw
                 size={16}
-                className={loading ? "manager-spin" : ""}
+                className={
+                  loading ? "manager-spin" : ""
+                }
               />
             </button>
 
@@ -1238,12 +1526,16 @@ export default function ManagerPage() {
                 <small>Manager</small>
               </div>
 
-              <ChevronDown size={14} color="#8490a4" />
+              <ChevronDown
+                size={14}
+                color="#8490a4"
+              />
             </div>
           </div>
         </header>
 
-        {/* Error message */}
+        {/* ERROR MESSAGE */}
+
         {error && (
           <div className="manager-alert error">
             <AlertCircle size={16} />
@@ -1265,7 +1557,8 @@ export default function ManagerPage() {
           </div>
         )}
 
-        {/* Success message */}
+        {/* SUCCESS MESSAGE */}
+
         {success && (
           <div className="manager-alert success">
             <CheckCircle2 size={16} />
@@ -1287,7 +1580,10 @@ export default function ManagerPage() {
           </div>
         )}
 
-        {/* Overview statistics */}
+        {/* ====================================================
+            OVERVIEW STATISTICS
+        ==================================================== */}
+
         {activeTab === "Overview" && (
           <section className="manager-stats">
             <div className="manager-stat">
@@ -1301,7 +1597,9 @@ export default function ManagerPage() {
 
               <h2>{managerPending.length}</h2>
 
-              <small>Requests awaiting manager review</small>
+              <small>
+                Requests awaiting manager review
+              </small>
             </div>
 
             <div className="manager-stat">
@@ -1329,7 +1627,9 @@ export default function ManagerPage() {
 
               <h2>{approvedRequests.length}</h2>
 
-              <small>Manager-approved or completed</small>
+              <small>
+                Manager-approved or completed
+              </small>
             </div>
 
             <div className="manager-stat">
@@ -1348,7 +1648,10 @@ export default function ManagerPage() {
           </section>
         )}
 
-        {/* Procurement request table */}
+        {/* ====================================================
+            PROCUREMENT REQUEST TABLE
+        ==================================================== */}
+
         <section className="manager-panel">
           <div className="manager-panel-head">
             <div>
@@ -1369,30 +1672,58 @@ export default function ManagerPage() {
 
             <div className="manager-controls">
               <div className="manager-search">
-                <Search size={15} color="#8d98aa" />
+                <Search
+                  size={15}
+                  color="#8d98aa"
+                />
 
                 <input
                   placeholder="Search requests..."
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) =>
+                    setSearch(event.target.value)
+                  }
                 />
               </div>
 
               <select
                 className="manager-select"
                 value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value)
+                }
               >
                 <option value="ALL">All statuses</option>
-                <option value="PENDING_MANAGER">Pending Manager</option>
-                <option value="SUBMITTED">Submitted</option>
-                <option value="MANAGER_PENDING">Manager Pending</option>
-                <option value="MANAGER_APPROVED">Manager Approved</option>
-                <option value="MANAGER_REJECTED">Manager Rejected</option>
-                <option value="PENDING_FINANCE">Pending Finance</option>
-                <option value="FINANCE_APPROVED">Finance Approved</option>
-                <option value="FINANCE_REJECTED">Finance Rejected</option>
-                <option value="COMPLETED">Completed</option>
+                <option value="PENDING_MANAGER">
+                  Pending Manager
+                </option>
+                <option value="SUBMITTED">
+                  Submitted
+                </option>
+                <option value="MANAGER_PENDING">
+                  Manager Pending
+                </option>
+                <option value="IN_APPROVAL">
+                  In Approval
+                </option>
+                <option value="MANAGER_APPROVED">
+                  Manager Approved
+                </option>
+                <option value="MANAGER_REJECTED">
+                  Manager Rejected
+                </option>
+                <option value="PENDING_FINANCE">
+                  Pending Finance
+                </option>
+                <option value="FINANCE_APPROVED">
+                  Finance Approved
+                </option>
+                <option value="FINANCE_REJECTED">
+                  Finance Rejected
+                </option>
+                <option value="COMPLETED">
+                  Completed
+                </option>
               </select>
             </div>
           </div>
@@ -1432,10 +1763,17 @@ export default function ManagerPage() {
                 <tbody>
                   {filteredRequests.map((request, index) => {
                     const status = getStatus(request);
-                    const isPending = isManagerPending(request);
+
+                    const isPending =
+                      isManagerPending(request);
 
                     return (
-                      <tr key={getRequestId(request) || index}>
+                      <tr
+                        key={
+                          getRequestId(request) ||
+                          index
+                        }
+                      >
                         <td>
                           <div className="manager-person">
                             <div className="manager-person-avatar">
@@ -1445,7 +1783,9 @@ export default function ManagerPage() {
                             </div>
 
                             <div>
-                              <strong>{getEmployee(request)}</strong>
+                              <strong>
+                                {getEmployee(request)}
+                              </strong>
 
                               <small>
                                 {request.employeeId ||
@@ -1454,6 +1794,7 @@ export default function ManagerPage() {
                                   request.requester?.email ||
                                   request.employeeEmail ||
                                   request.employee_email ||
+                                  request.request_number ||
                                   "Employee"}
                               </small>
                             </div>
@@ -1462,7 +1803,9 @@ export default function ManagerPage() {
 
                         <td>
                           <div className="manager-product">
-                            <strong>{getProduct(request)}</strong>
+                            <strong>
+                              {getProduct(request)}
+                            </strong>
 
                             <small>
                               Qty: {request.quantity ?? "—"}
@@ -1475,12 +1818,20 @@ export default function ManagerPage() {
                         <td>{getDepartment(request)}</td>
 
                         <td>
-                          <strong style={{ color: "#27344a" }}>
-                            {formatCurrency(getAmount(request))}
+                          <strong
+                            style={{ color: "#27344a" }}
+                          >
+                            {formatCurrency(
+                              getAmount(request)
+                            )}
                           </strong>
                         </td>
 
-                        <td>{formatDate(getRequestDate(request))}</td>
+                        <td>
+                          {formatDate(
+                            getRequestDate(request)
+                          )}
+                        </td>
 
                         <td>
                           <span
@@ -1513,7 +1864,10 @@ export default function ManagerPage() {
                                   className="manager-action approve"
                                   title="Approve request"
                                   onClick={() =>
-                                    openDecision(request, "approve")
+                                    openDecision(
+                                      request,
+                                      "approve"
+                                    )
                                   }
                                 >
                                   <Check size={15} />
@@ -1523,7 +1877,10 @@ export default function ManagerPage() {
                                   className="manager-action reject"
                                   title="Reject request"
                                   onClick={() =>
-                                    openDecision(request, "reject")
+                                    openDecision(
+                                      request,
+                                      "reject"
+                                    )
                                   }
                                 >
                                   <Ban size={15} />
@@ -1542,7 +1899,10 @@ export default function ManagerPage() {
         </section>
       </main>
 
-      {/* Request details and decision modal */}
+      {/* ======================================================
+          REQUEST DETAILS AND DECISION MODAL
+      ====================================================== */}
+
       {selectedRequest && (
         <div
           className="manager-modal-backdrop"
@@ -1550,7 +1910,9 @@ export default function ManagerPage() {
         >
           <div
             className="manager-modal"
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) =>
+              event.stopPropagation()
+            }
           >
             <div className="manager-modal-head">
               <h2>
@@ -1574,27 +1936,37 @@ export default function ManagerPage() {
             <div className="manager-details">
               <div className="manager-detail">
                 <small>Employee</small>
-                <strong>{getEmployee(selectedRequest)}</strong>
+                <strong>
+                  {getEmployee(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Product</small>
-                <strong>{getProduct(selectedRequest)}</strong>
+                <strong>
+                  {getProduct(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Supplier</small>
-                <strong>{getSupplier(selectedRequest)}</strong>
+                <strong>
+                  {getSupplier(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Department</small>
-                <strong>{getDepartment(selectedRequest)}</strong>
+                <strong>
+                  {getDepartment(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Quantity</small>
-                <strong>{selectedRequest.quantity ?? "—"}</strong>
+                <strong>
+                  {selectedRequest.quantity ?? "—"}
+                </strong>
               </div>
 
               <div className="manager-detail">
@@ -1610,14 +1982,18 @@ export default function ManagerPage() {
               <div className="manager-detail">
                 <small>Total Amount</small>
                 <strong>
-                  {formatCurrency(getAmount(selectedRequest))}
+                  {formatCurrency(
+                    getAmount(selectedRequest)
+                  )}
                 </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Submitted Date</small>
                 <strong>
-                  {formatDate(getRequestDate(selectedRequest))}
+                  {formatDate(
+                    getRequestDate(selectedRequest)
+                  )}
                 </strong>
               </div>
             </div>
@@ -1626,7 +2002,9 @@ export default function ManagerPage() {
               className="manager-detail"
               style={{ marginTop: 13 }}
             >
-              <small>Justification / Description</small>
+              <small>
+                Justification / Description
+              </small>
 
               <strong>
                 {selectedRequest.justification ||
@@ -1654,13 +2032,16 @@ export default function ManagerPage() {
                 <textarea
                   className="manager-reason"
                   value={reason}
-                  onChange={(event) => setReason(event.target.value)}
+                  onChange={(event) =>
+                    setReason(event.target.value)
+                  }
                   placeholder={
                     decision === "reject"
                       ? "Enter why this request is being rejected..."
                       : "Add an optional note for Finance..."
                   }
                   disabled={submitting}
+                  maxLength={4000}
                 />
               </div>
             )}
@@ -1677,11 +2058,14 @@ export default function ManagerPage() {
               {decision && (
                 <button
                   className={`manager-btn ${
-                    decision === "approve" ? "green" : "red"
+                    decision === "approve"
+                      ? "green"
+                      : "red"
                   }`}
                   disabled={
                     submitting ||
-                    (decision === "reject" && !reason.trim())
+                    (decision === "reject" &&
+                      !reason.trim())
                   }
                   onClick={submitDecision}
                 >

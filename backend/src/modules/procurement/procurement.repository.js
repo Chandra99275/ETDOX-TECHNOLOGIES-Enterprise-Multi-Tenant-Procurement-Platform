@@ -142,13 +142,23 @@ function assertTenantAndRequest(tenantId, requestId) {
 // ============================================================
 
 function validateApprovalWorkflow(graph) {
-  const approvalNodes = Array.isArray(graph?.nodes)
-    ? graph.nodes.filter((node) => node.type === "approval")
+  if (!graph || typeof graph !== "object") {
+    throw new Error(
+      "The purchase-request workflow graph is missing or invalid."
+    );
+  }
+
+  const nodes = Array.isArray(graph.nodes)
+    ? graph.nodes
     : [];
+
+  const approvalNodes = nodes.filter(
+    (node) => node.type === "approval"
+  );
 
   if (!approvalNodes.length) {
     throw new Error(
-      "The active workflow does not contain any approval nodes."
+      "The workflow does not contain any approval nodes."
     );
   }
 
@@ -163,11 +173,31 @@ function validateApprovalWorkflow(graph) {
         .join(", ")}.`
     );
   }
+
+  const startNode = nodes.find(
+    (node) => node.type === "start"
+  );
+
+  const endNode = nodes.find(
+    (node) => node.type === "end"
+  );
+
+  if (!startNode || !endNode) {
+    throw new Error(
+      "The workflow must contain start and end nodes."
+    );
+  }
+
+  if (!Array.isArray(graph.edges) || !graph.edges.length) {
+    throw new Error(
+      "The workflow must contain valid edges."
+    );
+  }
 }
 
 // ============================================================
 // START APPROVAL WORKFLOW
-// Must be called inside an existing tenant transaction.
+// Must run inside an existing tenant transaction.
 // ============================================================
 
 async function startApprovalWorkflow(
@@ -176,14 +206,26 @@ async function startApprovalWorkflow(
   userId,
   request
 ) {
+  // Only use an active purchase-request workflow.
+  // The database contains is_active and created_at.
+
   const definitionResult = await client.query(
     `
-      SELECT id, graph, name
+      SELECT
+        id,
+        tenant_id,
+        name,
+        version,
+        resource_type,
+        is_active,
+        graph
       FROM public.workflow_definitions
       WHERE tenant_id = $1
         AND resource_type = 'purchase_request'
-        AND is_active = true
-      ORDER BY version DESC, created_at DESC
+        AND is_active = TRUE
+      ORDER BY
+        version DESC,
+        created_at DESC
       LIMIT 1
       FOR SHARE
     `,
@@ -194,20 +236,34 @@ async function startApprovalWorkflow(
 
   if (!definition) {
     throw new Error(
-      "No active purchase-request approval workflow exists for this tenant. Create and activate a workflow before submitting requests."
+      "No active purchase-request workflow definition exists for this tenant."
     );
   }
 
   validateApprovalWorkflow(definition.graph);
 
+  // Start the workflow using the existing transaction client.
+
   const workflowRun = await startWorkflowRun(
     client,
-    { tenantId, userId },
+    {
+      tenantId,
+      userId,
+    },
     definition.id,
     "purchase_request",
     request.id,
     definition.graph
   );
+
+  if (!workflowRun || !workflowRun.id) {
+    throw new Error(
+      "Workflow execution failed: no workflow run ID was returned."
+    );
+  }
+
+  // Attach the workflow run to the existing purchase request.
+  // Guard against overwriting an existing workflow.
 
   const updated = await client.query(
     `
@@ -219,14 +275,21 @@ async function startApprovalWorkflow(
         updated_at = NOW()
       WHERE id = $2
         AND tenant_id = $3
+        AND workflow_run_id IS NULL
+        AND status = $4
       RETURNING *
     `,
-    [workflowRun.id, request.id, tenantId]
+    [
+      workflowRun.id,
+      request.id,
+      tenantId,
+      request.status,
+    ]
   );
 
   if (!updated.rowCount) {
     throw new Error(
-      "Workflow started, but the purchase request could not be updated."
+      "Workflow was started, but the purchase request was not updated. Its status or workflow assignment may have changed."
     );
   }
 
@@ -262,12 +325,16 @@ export async function listRequests({
 
     if (!canViewAll) {
       values.push(userId);
-      conditions.push(`pr.requester_id = $${values.length}`);
+      conditions.push(
+        `pr.requester_id = $${values.length}`
+      );
     }
 
     if (status) {
       values.push(String(status).trim().toUpperCase());
-      conditions.push(`UPPER(pr.status) = $${values.length}`);
+      conditions.push(
+        `UPPER(pr.status) = $${values.length}`
+      );
     }
 
     if (search) {
@@ -336,7 +403,10 @@ export async function listRequests({
 // FIND REQUEST BY ID
 // ============================================================
 
-export async function findRequestById(tenantId, requestId) {
+export async function findRequestById(
+  tenantId,
+  requestId
+) {
   assertTenantAndRequest(tenantId, requestId);
 
   return withTenantTransaction(tenantId, async (client) => {
@@ -403,13 +473,19 @@ export async function createRequest({
   }
 
   const departmentId =
-    department && isUuid(department) ? department : null;
+    department && isUuid(department)
+      ? department
+      : null;
 
   const costCenterId =
-    budgetId && isUuid(budgetId) ? budgetId : null;
+    budgetId && isUuid(budgetId)
+      ? budgetId
+      : null;
 
   const supplierId =
-    supplier && isUuid(supplier) ? supplier : null;
+    supplier && isUuid(supplier)
+      ? supplier
+      : null;
 
   const justification = buildJustification(
     title,
@@ -783,14 +859,17 @@ async function recordApprovalDecision({
 
   const action = normalizeDecision(decision);
 
-  // Fetch the request and pending task without holding locks
-  // while the workflow engine opens its own transaction.
+  // Find the pending task.
+
   const taskId = await withTenantTransaction(
     tenantId,
     async (client) => {
       const requestResult = await client.query(
         `
-          SELECT id, status, workflow_run_id
+          SELECT
+            id,
+            status,
+            workflow_run_id
           FROM ${TABLE}
           WHERE id = $1
             AND tenant_id = $2
@@ -809,7 +888,7 @@ async function recordApprovalDecision({
 
       if (!request.workflow_run_id) {
         throw new Error(
-          "This request has no workflow run. Recover the submitted request after configuring an active workflow."
+          "This request has no workflow run. Recover the submitted request after configuring its workflow."
         );
       }
 
@@ -852,9 +931,13 @@ async function recordApprovalDecision({
     }
   );
 
-  // The workflow engine owns approval task and request updates.
+  // Workflow engine handles the approval action.
+
   const workflowResult = await actOnTask(
-    { tenantId, userId: actorId },
+    {
+      tenantId,
+      userId: actorId,
+    },
     taskId,
     {
       action,
