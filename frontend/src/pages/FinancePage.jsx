@@ -3,7 +3,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useState
+  useState,
 } from "react";
 
 import {
@@ -29,15 +29,13 @@ import {
   Plus,
   Pencil,
   FileText,
-  CalendarDays,
   User,
-  Hash,
   History,
-  ShieldCheck,
-  TrendingUp
+  TrendingUp,
 } from "lucide-react";
 
 import { useNavigate } from "react-router-dom";
+import "./FinancePage.css";
 
 // ============================================================
 // API CONFIGURATION
@@ -48,26 +46,31 @@ const API_BASE = (
   "http://localhost:5000/api/v1"
 ).replace(/\/$/, "");
 
-// Actual procurement workflow statuses
-const FINANCE_REVIEW_STATUSES = ["PENDING_FINANCE"];
+const WORKFLOW_BASE = `${API_BASE}/workflows`;
 
-const WAITING_STATUSES = [
-  "SUBMITTED",
-  "PENDING",
-  "IN_REVIEW",
-  "PENDING_MANAGER"
+const FINANCE_NODE_NAMES = [
+  "finance_approval",
+  "finance-approval",
 ];
 
 const APPROVED_STATUSES = [
   "APPROVED",
   "FINANCE_APPROVED",
-  "COMPLETED"
+  "COMPLETED",
 ];
 
 const REJECTED_STATUSES = [
   "REJECTED",
   "FINANCE_REJECTED",
-  "REJECTED_FINANCE"
+  "REJECTED_FINANCE",
+];
+
+const WAITING_STATUSES = [
+  "SUBMITTED",
+  "PENDING",
+  "IN_REVIEW",
+  "PENDING_MANAGER",
+  "IN_APPROVAL",
 ];
 
 // ============================================================
@@ -93,7 +96,9 @@ const getRequestId = (request) =>
   request?.request_id ??
   request?.requestId ??
   request?.purchase_request_id ??
-  request?.purchaseRequestId;
+  request?.purchaseRequestId ??
+  request?.resource_id ??
+  request?.resourceId;
 
 const getRequestNumber = (request) =>
   request?.requestNumber ??
@@ -112,18 +117,18 @@ const getEmployeeName = (request) => {
     request?.requested_by_name ??
     request?.created_by_name ??
     request?.user?.name ??
-    request?.employee?.name;
+    request?.employee?.name ??
+    request?.requester?.name;
 
   if (directName) return directName;
 
   const firstLast = [
     request?.first_name ?? request?.firstName,
-    request?.last_name ?? request?.lastName
+    request?.last_name ?? request?.lastName,
   ].filter(Boolean).join(" ");
 
   return (
     firstLast ||
-    request?.requester?.name ||
     request?.user?.full_name ||
     request?.requester_email ||
     request?.email ||
@@ -186,9 +191,11 @@ const getUnitPrice = (request) =>
   0;
 
 const getCurrency = (request) =>
-  request?.currency ??
-  request?.currency_code ??
-  "INR";
+  String(
+    request?.currency ??
+    request?.currency_code ??
+    "INR"
+  ).toUpperCase();
 
 const getAmount = (request) => {
   const amount =
@@ -198,7 +205,11 @@ const getAmount = (request) => {
     request?.amount ??
     request?.grand_total;
 
-  if (amount !== undefined && amount !== null && amount !== "") {
+  if (
+    amount !== undefined &&
+    amount !== null &&
+    amount !== ""
+  ) {
     return Number(amount) || 0;
   }
 
@@ -215,11 +226,34 @@ const money = (value, currency = "INR") => {
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
       currency: currency || "INR",
-      maximumFractionDigits: 2
+      maximumFractionDigits: 2,
     }).format(amount);
   } catch {
     return `${currency} ${amount.toLocaleString("en-IN")}`;
   }
+};
+
+const formatCurrencyTotals = (items, amountGetter) => {
+  const totals = {};
+
+  items.forEach((item) => {
+    const currency = String(
+      item?.currency ??
+      item?.currency_code ??
+      "INR"
+    ).toUpperCase();
+
+    totals[currency] =
+      (totals[currency] || 0) + amountGetter(item);
+  });
+
+  const entries = Object.entries(totals);
+
+  if (!entries.length) return money(0, "INR");
+
+  return entries
+    .map(([currency, amount]) => money(amount, currency))
+    .join(" / ");
 };
 
 const formatDate = (value) => {
@@ -233,7 +267,7 @@ const formatDate = (value) => {
 
   return date.toLocaleString("en-IN", {
     dateStyle: "medium",
-    timeStyle: "short"
+    timeStyle: "short",
   });
 };
 
@@ -246,7 +280,11 @@ const formatLabel = (key) =>
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
 const displayValue = (value) => {
-  if (value === null || value === undefined || value === "") {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
     return "Not provided";
   }
 
@@ -267,7 +305,6 @@ const displayValue = (value) => {
   return String(value);
 };
 
-// Handles different API response structures.
 const getArray = (result) => {
   if (Array.isArray(result)) return result;
 
@@ -281,15 +318,65 @@ const getArray = (result) => {
     result.items,
     result.rows,
     result.results,
+    result.data,
     result.data?.requests,
     result.data?.budgets,
     result.data?.items,
     result.data?.rows,
     result.data?.results,
-    result.data?.data
+    result.data?.data,
   ];
 
   return candidates.find(Array.isArray) || [];
+};
+
+// ============================================================
+// WORKFLOW TASK HELPERS
+// ============================================================
+
+const getTaskId = (task) =>
+  task?.id ??
+  task?.task_id ??
+  task?.taskId;
+
+const getTaskRequestId = (task) =>
+  task?.resource_id ??
+  task?.resourceId ??
+  task?.purchase_request_id ??
+  task?.purchaseRequestId;
+
+const getTaskNode = (task) =>
+  String(
+    task?.node_id ??
+    task?.nodeId ??
+    task?.active_node ??
+    ""
+  ).toLowerCase();
+
+const isFinanceTask = (task) => {
+  const node = getTaskNode(task);
+
+  return (
+    FINANCE_NODE_NAMES.includes(node) ||
+    node.includes("finance")
+  );
+};
+
+const isPurchaseRequestTask = (task) =>
+  !task?.resource_type ||
+  task.resource_type === "purchase_request";
+
+const getTaskRequest = (task, requests) => {
+  const resourceId = getTaskRequestId(task);
+
+  if (!resourceId) return null;
+
+  return (
+    requests.find(
+      (request) =>
+        String(getRequestId(request)) === String(resourceId)
+    ) || null
+  );
 };
 
 // ============================================================
@@ -304,8 +391,6 @@ const getBudgetAllocated = (budget) =>
     budget?.allocatedAmount ??
     budget?.allocated_amount ??
     budget?.allocated ??
-    budget?.total_amount ??
-    budget?.amount ??
     0
   );
 
@@ -337,7 +422,7 @@ const getBudgetAvailable = (budget) => {
   const explicit =
     budget?.availableAmount ??
     budget?.available_amount ??
-    budget?.available ??
+    budget?.remainingAmount ??
     budget?.remaining_amount;
 
   if (explicit !== undefined && explicit !== null) {
@@ -353,43 +438,72 @@ const getBudgetAvailable = (budget) => {
   );
 };
 
-const getBudgetTitle = (budget, index) =>
-  budget?.name ??
-  budget?.budget_name ??
-  budget?.department_name ??
-  budget?.department ??
-  `Budget ${index + 1}`;
+const getBudgetTitle = (budget, index) => {
+  const department =
+    budget?.departmentName ??
+    budget?.department_name ??
+    budget?.departmentId ??
+    budget?.department_id;
+
+  const year =
+    budget?.fiscalYear ??
+    budget?.fiscal_year ??
+    "Unknown year";
+
+  return (
+    department
+      ? `${department} Budget`
+      : `Organization Budget ${index + 1}`
+  ) + ` · ${year}`;
+};
+
+const getBudgetUtilization = (budget) => {
+  if (budget?.utilizationPercentage !== undefined) {
+    return Math.min(
+      100,
+      Math.max(0, Number(budget.utilizationPercentage) || 0)
+    );
+  }
+
+  const allocated = getBudgetAllocated(budget);
+
+  if (!allocated) return 0;
+
+  const used =
+    getBudgetCommitted(budget) +
+    getBudgetReserved(budget) +
+    getBudgetSpent(budget);
+
+  return Math.min(100, Math.max(0, (used / allocated) * 100));
+};
 
 const getStatusClass = (status) => {
   const value = normalizeStatus(status);
 
   if (APPROVED_STATUSES.includes(value)) return "approved";
   if (REJECTED_STATUSES.includes(value)) return "rejected";
-  if (FINANCE_REVIEW_STATUSES.includes(value)) return "pending";
+  if (value === "PENDING_FINANCE") return "pending";
   if (WAITING_STATUSES.includes(value)) return "waiting";
 
   return "default";
 };
 
 // ============================================================
-// BUDGET FORM
+// INITIAL STATE
 // ============================================================
 
 const emptyBudgetForm = {
   name: "",
-  description: "",
-  department: "",
-  category: "",
   allocatedAmount: "",
   currency: "INR",
   fiscalYear: String(new Date().getFullYear()),
-  status: "active"
 };
 
 const initialDecision = {
+  task: null,
   request: null,
   decision: "",
-  reason: ""
+  reason: "",
 };
 
 // ============================================================
@@ -404,6 +518,7 @@ export default function FinancePage() {
 
   const [requests, setRequests] = useState([]);
   const [budgets, setBudgets] = useState([]);
+  const [pendingTasks, setPendingTasks] = useState([]);
 
   const [user, setUser] = useState(() => {
     try {
@@ -432,15 +547,18 @@ export default function FinancePage() {
   const [editingBudget, setEditingBudget] = useState(null);
   const [budgetForm, setBudgetForm] = useState(emptyBudgetForm);
 
-  const token = localStorage.getItem("token");
+  const token =
+    localStorage.getItem("token") ||
+    localStorage.getItem("accessToken") ||
+    localStorage.getItem("authToken");
 
   // ==========================================================
   // API REQUEST
   // ==========================================================
 
   const apiRequest = useCallback(
-    async (path, options = {}) => {
-      const response = await fetch(`${API_BASE}${path}`, {
+    async (url, options = {}) => {
+      const response = await fetch(url, {
         ...options,
         headers: {
           ...(options.body
@@ -449,8 +567,8 @@ export default function FinancePage() {
           ...(token
             ? { Authorization: `Bearer ${token}` }
             : {}),
-          ...options.headers
-        }
+          ...options.headers,
+        },
       });
 
       const data = await response.json().catch(() => ({}));
@@ -476,8 +594,13 @@ export default function FinancePage() {
     [token]
   );
 
+  const apiGet = useCallback(
+    (path) => apiRequest(`${API_BASE}${path}`),
+    [apiRequest]
+  );
+
   // ==========================================================
-  // LOAD REAL FINANCE DATA
+  // LOAD FINANCE DATA
   // ==========================================================
 
   const loadFinanceData = useCallback(
@@ -491,72 +614,96 @@ export default function FinancePage() {
       setError("");
       setBudgetError("");
 
-      try {
-        const [
-          requestResult,
-          budgetResult,
-          userResult
-        ] = await Promise.allSettled([
-          apiRequest("/procurement/requests"),
-          apiRequest("/budgets?page=1&limit=100"),
-          apiRequest("/auth/me")
-        ]);
+      const [
+        requestResult,
+        budgetResult,
+        taskResult,
+        userResult,
+      ] = await Promise.allSettled([
+        apiGet("/procurement/requests"),
+        apiGet("/budgets?page=1&limit=100"),
+        apiRequest(
+          `${WORKFLOW_BASE}/tasks/pending?limit=100&offset=0`
+        ),
+        apiGet("/auth/me"),
+      ]);
 
-        // Real employee requests
-        if (requestResult.status === "fulfilled") {
-          setRequests(getArray(requestResult.value));
-        } else {
-          setRequests([]);
+      let requestLoadError = "";
+      let taskLoadError = "";
 
-          setError(
-            `Unable to load employee requests: ${
-              requestResult.reason?.message || "Unknown error"
-            }`
-          );
-        }
-
-        // Real organization budgets
-        if (budgetResult.status === "fulfilled") {
-          setBudgets(getArray(budgetResult.value));
-        } else {
-          setBudgets([]);
-
-          setBudgetError(
-            budgetResult.reason?.message ||
-            "Unable to load budgets."
-          );
-        }
-
-        // Authenticated finance user
-        if (userResult.status === "fulfilled") {
-          const currentUser =
-            userResult.value?.user ??
-            userResult.value?.data?.user ??
-            userResult.value?.data ??
-            userResult.value;
-
-          if (currentUser && typeof currentUser === "object") {
-            setUser((previous) => ({
-              ...previous,
-              ...currentUser
-            }));
-
-            localStorage.setItem(
-              "user",
-              JSON.stringify(currentUser)
-            );
-          }
-        }
-      } catch (err) {
-        setError(
-          err.message || "Unable to load Finance workspace."
-        );
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
+      if (requestResult.status === "fulfilled") {
+        setRequests(getArray(requestResult.value));
+      } else {
+        setRequests([]);
+        requestLoadError =
+          requestResult.reason?.message ||
+          "Unable to load procurement requests.";
       }
+
+      if (budgetResult.status === "fulfilled") {
+        setBudgets(getArray(budgetResult.value));
+      } else {
+        setBudgets([]);
+        setBudgetError(
+          budgetResult.reason?.message ||
+          "Unable to load budgets."
+        );
+      }
+
+      if (taskResult.status === "fulfilled") {
+        const tasks = getArray(taskResult.value);
+
+        setPendingTasks(
+          tasks.filter(
+            (task) =>
+              isFinanceTask(task) &&
+              isPurchaseRequestTask(task) &&
+              normalizeStatus(task.status) === "PENDING"
+          )
+        );
+      } else {
+        setPendingTasks([]);
+        taskLoadError =
+          taskResult.reason?.message ||
+          "Unable to load Finance approval tasks.";
+      }
+
+      if (userResult.status === "fulfilled") {
+        const currentUser =
+          userResult.value?.user ??
+          userResult.value?.data?.user ??
+          userResult.value?.data ??
+          userResult.value;
+
+        if (
+          currentUser &&
+          typeof currentUser === "object"
+        ) {
+          setUser((previous) => ({
+            ...previous,
+            ...currentUser,
+          }));
+
+          localStorage.setItem(
+            "user",
+            JSON.stringify(currentUser)
+          );
+        }
+      }
+
+      const errors = [
+        requestLoadError,
+        taskLoadError,
+      ].filter(Boolean);
+
+      if (errors.length) {
+        setError(errors.join(" "));
+      }
+
+      setLoading(false);
+      setRefreshing(false);
     },
-    [apiRequest]
+    [apiGet, apiRequest]
   );
 
   useEffect(() => {
@@ -573,21 +720,39 @@ export default function FinancePage() {
     user?.fullName ||
     [
       user?.first_name,
-      user?.last_name
+      user?.last_name,
     ].filter(Boolean).join(" ") ||
     user?.email?.split("@")[0] ||
     "Finance Manager";
 
   // ==========================================================
-  // REAL REQUEST CALCULATIONS
+  // TASK / REQUEST RELATIONSHIP
   // ==========================================================
 
+  const financeTaskRows = useMemo(() => {
+    return pendingTasks.map((task) => {
+      const request = getTaskRequest(task, requests);
+
+      const taskRequestFallback = {
+        id: getTaskRequestId(task),
+        request_number: task.request_number,
+        total_amount: task.total_amount,
+        currency: task.currency,
+        requester_id: task.requester_id,
+        status: "PENDING_FINANCE",
+      };
+
+      return {
+        task,
+        request: request || taskRequestFallback,
+        requestFound: Boolean(request),
+      };
+    });
+  }, [pendingTasks, requests]);
+
   const pendingFinanceRequests = useMemo(
-    () =>
-      requests.filter((request) =>
-        FINANCE_REVIEW_STATUSES.includes(getStatus(request))
-      ),
-    [requests]
+    () => financeTaskRows.map((row) => row.request),
+    [financeTaskRows]
   );
 
   const waitingForManagerRequests = useMemo(
@@ -614,39 +779,43 @@ export default function FinancePage() {
     [requests]
   );
 
-  const pendingAmount = pendingFinanceRequests.reduce(
-    (sum, request) => sum + getAmount(request),
-    0
+  const pendingAmount = formatCurrencyTotals(
+    pendingFinanceRequests,
+    getAmount
   );
 
-  const approvedAmount = approvedRequests.reduce(
-    (sum, request) => sum + getAmount(request),
-    0
+  const approvedAmount = formatCurrencyTotals(
+    approvedRequests,
+    getAmount
   );
 
-  const rejectedAmount = rejectedRequests.reduce(
-    (sum, request) => sum + getAmount(request),
-    0
+  const rejectedAmount = formatCurrencyTotals(
+    rejectedRequests,
+    getAmount
   );
 
-  const totalAllocatedBudget = budgets.reduce(
-    (sum, budget) => sum + getBudgetAllocated(budget),
-    0
+  // ==========================================================
+  // BUDGET TOTALS BY CURRENCY
+  // ==========================================================
+
+  const totalAllocatedBudget = formatCurrencyTotals(
+    budgets,
+    getBudgetAllocated
   );
 
-  const totalCommittedBudget = budgets.reduce(
-    (sum, budget) => sum + getBudgetCommitted(budget),
-    0
+  const totalCommittedBudget = formatCurrencyTotals(
+    budgets,
+    getBudgetCommitted
   );
 
-  const totalSpentBudget = budgets.reduce(
-    (sum, budget) => sum + getBudgetSpent(budget),
-    0
+  const totalSpentBudget = formatCurrencyTotals(
+    budgets,
+    getBudgetSpent
   );
 
-  const totalAvailableBudget = budgets.reduce(
-    (sum, budget) => sum + getBudgetAvailable(budget),
-    0
+  const totalAvailableBudget = formatCurrencyTotals(
+    budgets,
+    getBudgetAvailable
   );
 
   // ==========================================================
@@ -656,11 +825,7 @@ export default function FinancePage() {
   const filteredRequests = useMemo(() => {
     let result = [...requests];
 
-    if (statusFilter === "pending") {
-      result = result.filter((request) =>
-        FINANCE_REVIEW_STATUSES.includes(getStatus(request))
-      );
-    } else if (statusFilter === "waiting") {
+    if (statusFilter === "waiting") {
       result = result.filter((request) =>
         WAITING_STATUSES.includes(getStatus(request))
       );
@@ -671,6 +836,16 @@ export default function FinancePage() {
     } else if (statusFilter === "rejected") {
       result = result.filter((request) =>
         REJECTED_STATUSES.includes(getStatus(request))
+      );
+    } else if (statusFilter === "pending") {
+      const pendingIds = new Set(
+        pendingFinanceRequests.map((request) =>
+          String(getRequestId(request))
+        )
+      );
+
+      result = result.filter((request) =>
+        pendingIds.has(String(getRequestId(request)))
       );
     }
 
@@ -690,7 +865,7 @@ export default function FinancePage() {
           request?.description,
           request?.justification,
           request?.budgetId,
-          request?.budget_id
+          request?.budget_id,
         ]
           .filter(Boolean)
           .join(" ")
@@ -701,7 +876,12 @@ export default function FinancePage() {
     }
 
     return result;
-  }, [requests, statusFilter, searchTerm]);
+  }, [
+    requests,
+    statusFilter,
+    searchTerm,
+    pendingFinanceRequests,
+  ]);
 
   // ==========================================================
   // LOGOUT
@@ -709,6 +889,8 @@ export default function FinancePage() {
 
   const handleLogout = () => {
     localStorage.removeItem("token");
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("authToken");
     localStorage.removeItem("user");
     localStorage.removeItem("userRole");
 
@@ -719,14 +901,15 @@ export default function FinancePage() {
   // FINANCE APPROVAL
   // ==========================================================
 
-  const openDecisionModal = (request, decision) => {
+  const openDecisionModal = (task, request, decision) => {
     setError("");
     setSuccess("");
 
     setDecisionModal({
+      task,
       request,
       decision,
-      reason: ""
+      reason: "",
     });
   };
 
@@ -734,27 +917,21 @@ export default function FinancePage() {
     event.preventDefault();
 
     const {
+      task,
       request,
       decision,
-      reason
+      reason,
     } = decisionModal;
 
-    const requestId = getRequestId(request);
+    const taskId = getTaskId(task);
 
-    if (!requestId) {
-      setError("Request ID is missing.");
-      return;
-    }
-
-    if (!FINANCE_REVIEW_STATUSES.includes(getStatus(request))) {
-      setError(
-        "This request has not received manager approval. Finance cannot process it yet."
-      );
+    if (!taskId) {
+      setError("Approval task ID is missing.");
       return;
     }
 
     if (!reason.trim()) {
-      setError("Please enter your finance remarks.");
+      setError("Please enter your Finance remarks.");
       return;
     }
 
@@ -768,39 +945,33 @@ export default function FinancePage() {
     setSuccess("");
 
     try {
-      // IMPORTANT:
-      // Backend expects APPROVE or REJECT.
       await apiRequest(
-        `/procurement/requests/${encodeURIComponent(requestId)}/finance-decision`,
+        `${WORKFLOW_BASE}/tasks/${encodeURIComponent(taskId)}/actions`,
         {
-          method: "PATCH",
+          method: "POST",
           body: JSON.stringify({
-            decision: decision === "approve"
-              ? "APPROVE"
-              : "REJECT",
-            comment: reason.trim()
-          })
+            action: decision === "approve"
+              ? "approve"
+              : "reject",
+            comment: reason.trim(),
+          }),
         }
       );
 
       setSuccess(
         decision === "approve"
-          ? "Employee procurement request approved successfully."
-          : "Employee procurement request rejected successfully."
+          ? "Finance approval completed successfully."
+          : "The procurement request has been rejected."
       );
 
       setDecisionModal(initialDecision);
+      setSelectedRequest(null);
 
-      if (selectedRequest) {
-        setSelectedRequest(null);
-      }
-
-      // Reload actual backend values after processing.
       await loadFinanceData(true);
-
     } catch (err) {
       setError(
-        err.message || "Unable to process finance decision."
+        err.message ||
+        "Unable to process the Finance approval."
       );
     } finally {
       setProcessing(false);
@@ -813,7 +984,12 @@ export default function FinancePage() {
 
   const openCreateBudget = () => {
     setEditingBudget(null);
-    setBudgetForm(emptyBudgetForm);
+
+    setBudgetForm({
+      ...emptyBudgetForm,
+      fiscalYear: String(new Date().getFullYear()),
+    });
+
     setBudgetError("");
     setBudgetModalOpen(true);
   };
@@ -822,22 +998,16 @@ export default function FinancePage() {
     setEditingBudget(budget);
 
     setBudgetForm({
-      ...emptyBudgetForm,
-      name: budget.name || budget.budget_name || "",
-      description: budget.description || "",
-      department:
-        budget.department ||
-        budget.department_name ||
-        "",
-      category: budget.category || "",
-      allocatedAmount: String(getBudgetAllocated(budget)),
+      name: getBudgetTitle(budget, 0),
+      allocatedAmount: String(
+        getBudgetAllocated(budget)
+      ),
       currency: budget.currency || "INR",
       fiscalYear: String(
-        budget.fiscalYear ||
-        budget.fiscal_year ||
+        budget.fiscalYear ??
+        budget.fiscal_year ??
         new Date().getFullYear()
       ),
-      status: budget.status || "active"
     });
 
     setBudgetError("");
@@ -849,7 +1019,7 @@ export default function FinancePage() {
 
     setBudgetForm((previous) => ({
       ...previous,
-      [name]: value
+      [name]: value,
     }));
   };
 
@@ -860,7 +1030,9 @@ export default function FinancePage() {
       budgetForm.allocatedAmount
     );
 
-    const fiscalYear = Number(budgetForm.fiscalYear);
+    const fiscalYear = Number(
+      budgetForm.fiscalYear
+    );
 
     if (!budgetForm.name.trim()) {
       setBudgetError("Enter a budget name.");
@@ -877,21 +1049,22 @@ export default function FinancePage() {
       return;
     }
 
-    if (!Number.isInteger(fiscalYear)) {
-      setBudgetError("Enter a valid fiscal year.");
+    if (
+      !Number.isInteger(fiscalYear) ||
+      fiscalYear < 2000 ||
+      fiscalYear > 2100
+    ) {
+      setBudgetError("Enter a valid fiscal year between 2000 and 2100.");
       return;
     }
 
     const payload = {
+      // The current route schema requires name.
+      // The current repository does not persist it.
       name: budgetForm.name.trim(),
-      description: budgetForm.description.trim(),
-      department: budgetForm.department.trim(),
-      category: budgetForm.category.trim(),
       allocatedAmount,
-      allocated: allocatedAmount,
-      currency: budgetForm.currency,
+      currency: budgetForm.currency.toUpperCase(),
       fiscalYear,
-      status: budgetForm.status
     };
 
     setSavingBudget(true);
@@ -905,19 +1078,22 @@ export default function FinancePage() {
           throw new Error("Budget ID is missing.");
         }
 
-        await apiRequest(`/budgets/${budgetId}`, {
-          method: "PATCH",
-          body: JSON.stringify(payload)
-        });
+        await apiRequest(
+          `${API_BASE}/budgets/${encodeURIComponent(budgetId)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          }
+        );
 
         setSuccess("Budget updated successfully.");
       } else {
-        await apiRequest("/budgets", {
+        await apiRequest(`${API_BASE}/budgets`, {
           method: "POST",
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
         });
 
-        setSuccess("Budget created successfully.");
+        setSuccess("Budget created or existing allocation updated successfully.");
       }
 
       setBudgetModalOpen(false);
@@ -925,9 +1101,7 @@ export default function FinancePage() {
       setBudgetForm(emptyBudgetForm);
 
       await loadFinanceData(true);
-
       setActiveTab("budgets");
-
     } catch (err) {
       setBudgetError(
         err.message || "Unable to save budget."
@@ -938,10 +1112,12 @@ export default function FinancePage() {
   };
 
   // ==========================================================
-  // COMPLETE EMPLOYEE REQUEST DETAILS
+  // COMPLETE REQUEST DETAILS
   // ==========================================================
 
   const getRealRequestDetails = (request) => {
+    if (!request) return [];
+
     const raw =
       request?.raw &&
       typeof request.raw === "object"
@@ -950,63 +1126,12 @@ export default function FinancePage() {
 
     const combined = {
       ...raw,
-      ...request
+      ...request,
     };
 
     delete combined.raw;
 
-    const preferredKeys = [
-      "id",
-      "requestNumber",
-      "request_number",
-      "requesterId",
-      "requester_id",
-      "employee_name",
-      "employeeName",
-      "requester_name",
-      "requester_email",
-      "productName",
-      "product_name",
-      "title",
-      "description",
-      "justification",
-      "supplier",
-      "supplier_name",
-      "quantity",
-      "unitPrice",
-      "unit_price",
-      "subtotal",
-      "tax_total",
-      "total",
-      "total_amount",
-      "currency",
-      "department",
-      "department_name",
-      "budgetId",
-      "budget_id",
-      "status",
-      "managerDecision",
-      "financeDecision",
-      "workflowRunId",
-      "workflow_run_id",
-      "submitted_at",
-      "submittedAt",
-      "created_at",
-      "createdAt",
-      "updated_at",
-      "updatedAt"
-    ];
-
-    const keys = [
-      ...preferredKeys.filter(
-        (key) => Object.prototype.hasOwnProperty.call(combined, key)
-      ),
-      ...Object.keys(combined).filter(
-        (key) => !preferredKeys.includes(key)
-      )
-    ];
-
-    return [...new Set(keys)]
+    return Object.keys(combined)
       .filter((key) => {
         const value = combined[key];
 
@@ -1019,7 +1144,7 @@ export default function FinancePage() {
       .map((key) => ({
         key,
         label: formatLabel(key),
-        value: combined[key]
+        value: combined[key],
       }));
   };
 
@@ -1031,30 +1156,30 @@ export default function FinancePage() {
     {
       id: "overview",
       label: "Overview",
-      icon: LayoutDashboard
+      icon: LayoutDashboard,
     },
     {
       id: "requests",
       label: "Employee Requests",
-      icon: ClipboardList
+      icon: ClipboardList,
     },
     {
       id: "budgets",
       label: "Budgets",
-      icon: Wallet
+      icon: Wallet,
     },
     {
       id: "approvals",
       label: "Approval History",
-      icon: CheckCircle2
-    }
+      icon: CheckCircle2,
+    },
   ];
 
   // ==========================================================
   // REQUEST TABLE
   // ==========================================================
 
-  const renderRequestsTable = (items) => (
+  const renderRequestsTable = (items, taskRows = []) => (
     <div className="finance-table-wrapper">
       <table className="finance-table">
         <thead>
@@ -1074,10 +1199,16 @@ export default function FinancePage() {
           {items.length ? (
             items.map((request, index) => {
               const id = getRequestId(request) || index;
-              const status = getStatus(request);
 
-              const canReview =
-                FINANCE_REVIEW_STATUSES.includes(status);
+              const taskRow = taskRows.find(
+                (row) =>
+                  String(getRequestId(row.request)) ===
+                  String(getRequestId(request))
+              );
+
+              const status = taskRow
+                ? "PENDING_FINANCE"
+                : getStatus(request);
 
               const employee = getEmployeeName(request);
               const product = getProductName(request);
@@ -1102,7 +1233,6 @@ export default function FinancePage() {
 
                       <div>
                         <strong>{employee}</strong>
-
                         <small>
                           {getEmployeeEmail(request)}
                         </small>
@@ -1118,7 +1248,6 @@ export default function FinancePage() {
                   </td>
 
                   <td>{getSupplier(request)}</td>
-
                   <td>{getDepartment(request)}</td>
 
                   <td className="finance-amount">
@@ -1148,13 +1277,14 @@ export default function FinancePage() {
                         <Eye size={15} />
                       </button>
 
-                      {canReview && (
+                      {taskRow && (
                         <>
                           <button
                             className="finance-approve-button"
-                            title="Approve request"
+                            title="Approve Finance task"
                             onClick={() =>
                               openDecisionModal(
+                                taskRow.task,
                                 request,
                                 "approve"
                               )
@@ -1165,9 +1295,10 @@ export default function FinancePage() {
 
                           <button
                             className="finance-reject-button"
-                            title="Reject request"
+                            title="Reject Finance task"
                             onClick={() =>
                               openDecisionModal(
+                                taskRow.task,
                                 request,
                                 "reject"
                               )
@@ -1188,7 +1319,7 @@ export default function FinancePage() {
                 <ClipboardList size={28} />
                 <strong>No requests found</strong>
                 <span>
-                  Employee requests will appear here when submitted.
+                  Requests will appear here when available.
                 </span>
               </td>
             </tr>
@@ -1235,19 +1366,7 @@ export default function FinancePage() {
             const committed = getBudgetCommitted(budget);
             const spent = getBudgetSpent(budget);
             const reserved = getBudgetReserved(budget);
-
-            const used = Math.max(
-              0,
-              allocated - available
-            );
-
-            const percentage =
-              allocated > 0
-                ? Math.min(
-                    (used / allocated) * 100,
-                    100
-                  )
-                : 0;
+            const percentage = getBudgetUtilization(budget);
 
             return (
               <div
@@ -1261,8 +1380,8 @@ export default function FinancePage() {
                     </h4>
 
                     <p>
-                      {budget.department_name ||
-                        budget.department ||
+                      {budget.costCenterId ||
+                        budget.cost_center_id ||
                         "Organization budget"}
                     </p>
                   </div>
@@ -1320,8 +1439,8 @@ export default function FinancePage() {
                 <div className="finance-budget-meta">
                   <span>
                     Fiscal year:{" "}
-                    {budget.fiscalYear ||
-                      budget.fiscal_year ||
+                    {budget.fiscalYear ??
+                      budget.fiscal_year ??
                       "—"}
                   </span>
 
@@ -1360,963 +1479,7 @@ export default function FinancePage() {
   return (
     <div className="finance-app">
 
-      <style>{`
-        .finance-app {
-          --primary: #2864d9;
-          --dark: #17243b;
-          --muted: #8290a5;
-          --border: #e8edf4;
-          min-height: 100vh;
-          display: flex;
-          color: var(--dark);
-          background: #f5f7fb;
-          font-family: Inter, Arial, sans-serif;
-        }
-
-        .finance-sidebar {
-          width: 245px;
-          min-width: 245px;
-          min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          padding: 24px 16px;
-          background: #fff;
-          border-right: 1px solid var(--border);
-          z-index: 20;
-        }
-
-        .finance-brand {
-          display: flex;
-          align-items: center;
-          gap: 11px;
-          padding: 0 10px 30px;
-          font-size: 23px;
-          font-weight: 800;
-        }
-
-        .finance-brand-icon {
-          width: 39px;
-          height: 39px;
-          display: grid;
-          place-items: center;
-          color: white;
-          background: linear-gradient(145deg,#3679ed,#194ba9);
-          border-radius: 11px;
-        }
-
-        .finance-brand span:last-child span {
-          color: var(--primary);
-        }
-
-        .finance-workspace-label {
-          padding: 0 11px;
-          color: #a0aabd;
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 1.5px;
-        }
-
-        .finance-nav {
-          display: grid;
-          gap: 6px;
-        }
-
-        .finance-nav button {
-          width: 100%;
-          min-height: 45px;
-          padding: 0 12px;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          color: #738198;
-          background: transparent;
-          border: 0;
-          border-radius: 9px;
-          text-align: left;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-        }
-
-        .finance-nav button:hover,
-        .finance-nav button.active {
-          color: var(--primary);
-          background: #edf3ff;
-        }
-
-        .finance-sidebar-bottom {
-          margin-top: auto;
-          padding-top: 20px;
-          border-top: 1px solid var(--border);
-        }
-
-        .finance-user-mini {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 10px 5px 16px;
-        }
-
-        .finance-avatar,
-        .finance-mini-avatar {
-          display: grid;
-          place-items: center;
-          flex-shrink: 0;
-          color: #2d67ce;
-          background: #eaf1ff;
-          border-radius: 50%;
-          font-weight: 800;
-        }
-
-        .finance-avatar {
-          width: 36px;
-          height: 36px;
-        }
-
-        .finance-user-mini strong,
-        .finance-user-mini small {
-          display: block;
-          max-width: 150px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .finance-user-mini strong {
-          font-size: 11px;
-        }
-
-        .finance-user-mini small {
-          margin-top: 4px;
-          color: var(--muted);
-          font-size: 9px;
-        }
-
-        .finance-logout {
-          width: 100%;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 11px 12px;
-          color: #d14d5b;
-          background: #fff5f5;
-          border: 0;
-          border-radius: 8px;
-          font-weight: 700;
-          cursor: pointer;
-        }
-
-        .finance-main {
-          min-width: 0;
-          flex: 1;
-        }
-
-        .finance-topbar {
-          min-height: 72px;
-          padding: 0 30px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          background: #fff;
-          border-bottom: 1px solid var(--border);
-        }
-
-        .finance-topbar-left,
-        .finance-topbar-right {
-          display: flex;
-          align-items: center;
-          gap: 13px;
-        }
-
-        .finance-topbar h1 {
-          margin: 0;
-          font-size: 17px;
-          font-weight: 800;
-        }
-
-        .finance-topbar p {
-          margin: 4px 0 0;
-          color: var(--muted);
-          font-size: 10px;
-        }
-
-        .finance-topbar-user {
-          display: flex;
-          align-items: center;
-          gap: 9px;
-          padding-left: 13px;
-          border-left: 1px solid var(--border);
-        }
-
-        .finance-topbar-user strong,
-        .finance-topbar-user small {
-          display: block;
-        }
-
-        .finance-topbar-user strong {
-          font-size: 11px;
-        }
-
-        .finance-topbar-user small {
-          margin-top: 3px;
-          color: var(--muted);
-          font-size: 9px;
-        }
-
-        .finance-content {
-          max-width: 1500px;
-          margin: auto;
-          padding: 30px 32px 45px;
-        }
-
-        .finance-welcome {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 15px;
-          margin-bottom: 25px;
-        }
-
-        .finance-welcome h2 {
-          margin: 0;
-          font-size: 22px;
-          font-weight: 800;
-        }
-
-        .finance-welcome p {
-          margin: 7px 0 0;
-          color: var(--muted);
-          font-size: 11px;
-        }
-
-        .finance-button {
-          min-height: 38px;
-          padding: 0 12px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 7px;
-          color: #52627a;
-          background: #fff;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          font-size: 10px;
-          font-weight: 700;
-          cursor: pointer;
-        }
-
-        .finance-button:disabled {
-          opacity: .6;
-          cursor: not-allowed;
-        }
-
-        .finance-button.primary {
-          min-height: 41px;
-          padding: 0 16px;
-          color: #fff;
-          background: var(--primary);
-          border-color: var(--primary);
-          font-size: 11px;
-        }
-
-        .finance-stats {
-          display: grid;
-          grid-template-columns: repeat(4,minmax(0,1fr));
-          gap: 15px;
-          margin-bottom: 24px;
-        }
-
-        .finance-stat-card {
-          min-width: 0;
-          padding: 19px;
-          background: #fff;
-          border: 1px solid var(--border);
-          border-radius: 12px;
-        }
-
-        .finance-stat-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-
-        .finance-stat-top small {
-          color: var(--muted);
-          font-size: 10px;
-          font-weight: 600;
-        }
-
-        .finance-stat-icon {
-          width: 36px;
-          height: 36px;
-          display: grid;
-          place-items: center;
-          color: var(--primary);
-          background: #edf3ff;
-          border-radius: 9px;
-        }
-
-        .finance-stat-card h3 {
-          margin: 14px 0 4px;
-          font-size: 22px;
-          font-weight: 800;
-          overflow-wrap: anywhere;
-        }
-
-        .finance-stat-card p {
-          margin: 0;
-          color: #9aa5b5;
-          font-size: 9px;
-        }
-
-        .finance-panel {
-          margin-bottom: 22px;
-          padding: 21px;
-          background: #fff;
-          border: 1px solid var(--border);
-          border-radius: 12px;
-        }
-
-        .finance-panel-heading {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 18px;
-        }
-
-        .finance-panel-heading h3 {
-          margin: 0;
-          font-size: 14px;
-          font-weight: 800;
-        }
-
-        .finance-panel-heading p {
-          margin: 5px 0 0;
-          color: var(--muted);
-          font-size: 10px;
-        }
-
-        .finance-table-wrapper {
-          width: 100%;
-          overflow-x: auto;
-        }
-
-        .finance-table {
-          width: 100%;
-          min-width: 1050px;
-          border-collapse: collapse;
-          text-align: left;
-        }
-
-        .finance-table th {
-          padding: 12px 10px;
-          color: #8996a9;
-          background: #f8faff;
-          border-bottom: 1px solid var(--border);
-          font-size: 9px;
-          font-weight: 800;
-          text-transform: uppercase;
-        }
-
-        .finance-table td {
-          padding: 13px 10px;
-          color: #627087;
-          border-bottom: 1px solid #f0f2f6;
-          font-size: 10px;
-          white-space: nowrap;
-          vertical-align: middle;
-        }
-
-        .finance-table td strong {
-          color: #2b3b54;
-          font-size: 10px;
-        }
-
-        .sub-value {
-          display: block;
-          max-width: 150px;
-          margin-top: 4px;
-          color: #9aa5b5;
-          font-size: 8px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .finance-employee-cell {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .finance-mini-avatar {
-          width: 29px;
-          height: 29px;
-          font-size: 10px;
-        }
-
-        .finance-employee-cell strong,
-        .finance-employee-cell small {
-          display: block;
-        }
-
-        .finance-employee-cell small {
-          max-width: 150px;
-          margin-top: 4px;
-          color: #96a2b3;
-          font-size: 8px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .finance-product-cell {
-          display: flex;
-          align-items: center;
-          gap: 7px;
-          color: #34445c;
-          font-weight: 600;
-        }
-
-        .finance-product-cell svg {
-          color: var(--primary);
-          flex-shrink: 0;
-        }
-
-        .finance-amount {
-          color: #243651 !important;
-          font-weight: 800;
-        }
-
-        .finance-status {
-          display: inline-flex;
-          padding: 5px 8px;
-          border-radius: 20px;
-          font-size: 8px;
-          font-weight: 800;
-        }
-
-        .finance-status.pending {
-          color: #a76b0b;
-          background: #fff5dc;
-        }
-
-        .finance-status.waiting {
-          color: #3569bf;
-          background: #edf3ff;
-        }
-
-        .finance-status.approved {
-          color: #13834c;
-          background: #e9f9f0;
-        }
-
-        .finance-status.rejected {
-          color: #bd3445;
-          background: #fff0f1;
-        }
-
-        .finance-status.default {
-          color: #59677c;
-          background: #edf0f5;
-        }
-
-        .finance-row-actions {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-        }
-
-        .finance-icon-button,
-        .finance-approve-button,
-        .finance-reject-button {
-          width: 29px;
-          height: 29px;
-          display: grid;
-          place-items: center;
-          border: 0;
-          border-radius: 7px;
-          cursor: pointer;
-        }
-
-        .finance-icon-button {
-          color: #53647d;
-          background: #eef2f7;
-        }
-
-        .finance-approve-button {
-          color: #13834c;
-          background: #e9f9f0;
-        }
-
-        .finance-reject-button {
-          color: #bd3445;
-          background: #fff0f1;
-        }
-
-        .finance-empty {
-          min-height: 145px;
-          text-align: center !important;
-          color: #9aa6b7 !important;
-        }
-
-        .finance-empty svg,
-        .finance-empty strong,
-        .finance-empty span {
-          display: block;
-          margin: 0 auto 7px;
-        }
-
-        .finance-empty strong {
-          color: #53627a !important;
-        }
-
-        .finance-empty span {
-          font-size: 10px;
-          white-space: normal;
-        }
-
-        .finance-toolbar {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 17px;
-          flex-wrap: wrap;
-        }
-
-        .finance-search {
-          width: min(350px,100%);
-          height: 38px;
-          padding: 0 10px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          color: #8795a9;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-        }
-
-        .finance-search input {
-          width: 100%;
-          min-width: 0;
-          border: 0;
-          outline: 0;
-          font-size: 11px;
-        }
-
-        .finance-filter {
-          height: 38px;
-          padding: 0 10px;
-          color: #52627a;
-          background: #fff;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          outline: 0;
-          font-size: 10px;
-        }
-
-        .finance-budget-grid {
-          display: grid;
-          grid-template-columns: repeat(2,minmax(0,1fr));
-          gap: 13px;
-        }
-
-        .finance-budget-card {
-          padding: 17px;
-          border: 1px solid var(--border);
-          border-radius: 9px;
-        }
-
-        .finance-budget-card-heading {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          gap: 10px;
-          margin-bottom: 15px;
-        }
-
-        .finance-budget-card h4 {
-          margin: 0 0 7px;
-          font-size: 12px;
-        }
-
-        .finance-budget-card p {
-          margin: 0;
-          color: var(--muted);
-          font-size: 10px;
-        }
-
-        .finance-budget-line {
-          display: flex;
-          justify-content: space-between;
-          gap: 8px;
-          margin-top: 9px;
-          color: #6f7d91;
-          font-size: 9px;
-        }
-
-        .finance-budget-line strong {
-          color: #273951;
-        }
-
-        .finance-available {
-          color: #13834c !important;
-        }
-
-        .finance-progress {
-          height: 6px;
-          margin-top: 10px;
-          overflow: hidden;
-          background: #edf1f7;
-          border-radius: 10px;
-        }
-
-        .finance-progress span {
-          display: block;
-          height: 100%;
-          background: #3476e5;
-          border-radius: inherit;
-        }
-
-        .finance-budget-meta {
-          display: flex;
-          justify-content: space-between;
-          gap: 8px;
-          margin-top: 14px;
-          padding-top: 10px;
-          border-top: 1px solid #f0f2f6;
-          color: #8a97a9;
-          font-size: 9px;
-        }
-
-        .finance-budget-empty {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 7px;
-          padding: 30px;
-        }
-
-        .finance-alert {
-          margin-bottom: 17px;
-          padding: 12px 14px;
-          display: flex;
-          align-items: flex-start;
-          gap: 9px;
-          border-radius: 8px;
-          font-size: 10px;
-          line-height: 1.5;
-        }
-
-        .finance-alert.error {
-          color: #b42332;
-          background: #fff0f1;
-          border: 1px solid #ffdadd;
-        }
-
-        .finance-alert.success {
-          color: #16804b;
-          background: #edfff5;
-          border: 1px solid #c9f1db;
-        }
-
-        .finance-modal-overlay {
-          position: fixed;
-          inset: 0;
-          z-index: 100;
-          display: grid;
-          place-items: center;
-          padding: 18px;
-          background: rgba(15,28,49,.48);
-        }
-
-        .finance-modal {
-          width: min(760px,100%);
-          max-height: 92vh;
-          overflow-y: auto;
-          padding: 24px;
-          background: #fff;
-          border-radius: 14px;
-          box-shadow: 0 20px 70px rgba(0,0,0,.2);
-        }
-
-        .finance-modal-heading {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          margin-bottom: 19px;
-        }
-
-        .finance-modal-heading h3 {
-          margin: 0;
-          font-size: 16px;
-          font-weight: 800;
-        }
-
-        .finance-modal-close {
-          width: 30px;
-          height: 30px;
-          display: grid;
-          place-items: center;
-          color: #64748b;
-          background: #f1f4f8;
-          border: 0;
-          border-radius: 7px;
-          cursor: pointer;
-        }
-
-        .finance-modal-close:disabled {
-          opacity: .5;
-          cursor: not-allowed;
-        }
-
-        .finance-detail-grid {
-          display: grid;
-          grid-template-columns: repeat(2,minmax(0,1fr));
-          gap: 10px;
-          margin-bottom: 15px;
-        }
-
-        .finance-detail {
-          min-width: 0;
-          padding: 12px;
-          background: #f7f9fc;
-          border: 1px solid #edf0f5;
-          border-radius: 8px;
-        }
-
-        .finance-detail small {
-          display: block;
-          margin-bottom: 6px;
-          color: #8795a9;
-          font-size: 9px;
-        }
-
-        .finance-detail strong {
-          display: block;
-          color: #293951;
-          font-size: 11px;
-          overflow-wrap: anywhere;
-          white-space: pre-wrap;
-        }
-
-        .finance-all-fields {
-          display: grid;
-          grid-template-columns: repeat(2,minmax(0,1fr));
-          gap: 9px;
-          margin-top: 15px;
-        }
-
-        .finance-history {
-          margin-top: 20px;
-          padding-top: 15px;
-          border-top: 1px solid var(--border);
-        }
-
-        .finance-history h4 {
-          margin: 0 0 12px;
-          font-size: 12px;
-        }
-
-        .finance-history-item {
-          padding: 11px;
-          margin-bottom: 8px;
-          background: #f7f9fc;
-          border-radius: 8px;
-          font-size: 10px;
-          overflow-wrap: anywhere;
-        }
-
-        .finance-form-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 13px;
-        }
-
-        .finance-form-field {
-          min-width: 0;
-          margin-bottom: 13px;
-        }
-
-        .finance-form-field.full {
-          grid-column: 1/-1;
-        }
-
-        .finance-form-field label,
-        .finance-modal-field label {
-          display: block;
-          margin-bottom: 7px;
-          color: #47566d;
-          font-size: 10px;
-          font-weight: 700;
-        }
-
-        .finance-form-field input,
-        .finance-form-field select,
-        .finance-form-field textarea,
-        .finance-modal-field textarea {
-          width: 100%;
-          min-height: 39px;
-          padding: 9px 10px;
-          color: #293951;
-          background: #fff;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          outline: 0;
-          font-size: 11px;
-        }
-
-        .finance-form-field textarea,
-        .finance-modal-field textarea {
-          min-height: 75px;
-          resize: vertical;
-        }
-
-        .finance-modal-field {
-          margin-top: 16px;
-        }
-
-        .finance-modal-actions {
-          display: flex;
-          justify-content: flex-end;
-          gap: 9px;
-          margin-top: 20px;
-        }
-
-        .finance-mobile-menu {
-          display: none;
-          width: 35px;
-          height: 35px;
-          place-items: center;
-          color: #52627a;
-          background: #f5f7fb;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          cursor: pointer;
-        }
-
-        .finance-loading {
-          min-height: 250px;
-          display: grid;
-          place-items: center;
-          color: #8290a5;
-          font-size: 11px;
-        }
-
-        .finance-loading svg {
-          animation: finance-spin 1s linear infinite;
-        }
-
-        @keyframes finance-spin {
-          to { transform: rotate(360deg); }
-        }
-
-        @media(max-width:1050px) {
-          .finance-sidebar {
-            width: 220px;
-            min-width: 220px;
-          }
-
-          .finance-content {
-            padding: 25px 20px;
-          }
-
-          .finance-stats {
-            grid-template-columns: repeat(2,minmax(0,1fr));
-          }
-        }
-
-        @media(max-width:760px) {
-          .finance-sidebar {
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            transform: translateX(-105%);
-            transition: transform .25s;
-            box-shadow: 10px 0 30px rgba(20,35,60,.08);
-          }
-
-          .finance-sidebar.open {
-            transform: translateX(0);
-          }
-
-          .finance-mobile-menu {
-            display: grid;
-          }
-
-          .finance-topbar {
-            padding: 0 16px;
-          }
-
-          .finance-content {
-            padding: 22px 15px;
-          }
-
-          .finance-welcome {
-            align-items: flex-start;
-            flex-direction: column;
-          }
-
-          .finance-panel {
-            padding: 15px;
-          }
-        }
-
-        @media(max-width:480px) {
-          .finance-topbar-user > div:last-child {
-            display: none;
-          }
-
-          .finance-stats {
-            gap: 10px;
-          }
-
-          .finance-stat-card {
-            padding: 14px;
-          }
-
-          .finance-stat-card h3 {
-            font-size: 19px;
-          }
-
-          .finance-budget-grid,
-          .finance-detail-grid,
-          .finance-all-fields,
-          .finance-form-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .finance-form-field.full {
-            grid-column: auto;
-          }
-
-          .finance-toolbar {
-            align-items: stretch;
-            flex-direction: column;
-          }
-
-          .finance-search {
-            width: 100%;
-          }
-
-          .finance-modal-actions {
-            flex-direction: column-reverse;
-          }
-
-          .finance-modal-actions button {
-            width: 100%;
-          }
-        }
-      `}</style>
-
-      {/* ====================================================
-          SIDEBAR
-      ==================================================== */}
+      {/* SIDEBAR */}
 
       <aside
         className={`finance-sidebar ${
@@ -2393,12 +1556,9 @@ export default function FinancePage() {
         </div>
       </aside>
 
-      {/* ====================================================
-          MAIN CONTENT
-      ==================================================== */}
+      {/* MAIN CONTENT */}
 
       <main className="finance-main">
-
         <header className="finance-topbar">
           <div className="finance-topbar-left">
             <button
@@ -2416,10 +1576,10 @@ export default function FinancePage() {
                 {activeTab === "overview"
                   ? "Finance Dashboard"
                   : activeTab === "requests"
-                  ? "Employee Requests"
-                  : activeTab === "budgets"
-                  ? "Budget Management"
-                  : "Approval History"}
+                    ? "Employee Requests"
+                    : activeTab === "budgets"
+                      ? "Budget Management"
+                      : "Approval History"}
               </h1>
 
               <p>
@@ -2455,7 +1615,6 @@ export default function FinancePage() {
         </header>
 
         <div className="finance-content">
-
           {error && (
             <div className="finance-alert error" role="alert">
               <AlertCircle size={16} />
@@ -2479,10 +1638,7 @@ export default function FinancePage() {
             </div>
           ) : (
             <>
-
-              {/* ============================================
-                  OVERVIEW
-              ============================================ */}
+              {/* OVERVIEW */}
 
               {activeTab === "overview" && (
                 <>
@@ -2508,7 +1664,6 @@ export default function FinancePage() {
                   </section>
 
                   <section className="finance-stats">
-
                     <div className="finance-stat-card">
                       <div className="finance-stat-top">
                         <small>Awaiting Finance</small>
@@ -2517,13 +1672,8 @@ export default function FinancePage() {
                         </span>
                       </div>
 
-                      <h3>
-                        {pendingFinanceRequests.length}
-                      </h3>
-
-                      <p>
-                        Manager-approved requests
-                      </p>
+                      <h3>{pendingTasks.length}</h3>
+                      <p>Tasks assigned to your Finance account</p>
                     </div>
 
                     <div className="finance-stat-card">
@@ -2534,13 +1684,8 @@ export default function FinancePage() {
                         </span>
                       </div>
 
-                      <h3>
-                        {waitingForManagerRequests.length}
-                      </h3>
-
-                      <p>
-                        Requests not yet forwarded to Finance
-                      </p>
+                      <h3>{waitingForManagerRequests.length}</h3>
+                      <p>Requests not yet forwarded to Finance</p>
                     </div>
 
                     <div className="finance-stat-card">
@@ -2551,13 +1696,8 @@ export default function FinancePage() {
                         </span>
                       </div>
 
-                      <h3>
-                        {approvedRequests.length}
-                      </h3>
-
-                      <p>
-                        Total approved requests
-                      </p>
+                      <h3>{approvedRequests.length}</h3>
+                      <p>Total approved requests</p>
                     </div>
 
                     <div className="finance-stat-card">
@@ -2569,20 +1709,14 @@ export default function FinancePage() {
                       </div>
 
                       <h3 style={{ fontSize: 18 }}>
-                        {money(pendingAmount)}
+                        {pendingAmount}
                       </h3>
 
-                      <p>
-                        Awaiting Finance review
-                      </p>
+                      <p>Awaiting Finance review</p>
                     </div>
-
                   </section>
 
-                  {/* FINANCIAL SUMMARY */}
-
                   <section className="finance-stats">
-
                     <div className="finance-stat-card">
                       <div className="finance-stat-top">
                         <small>Total Allocated</small>
@@ -2592,7 +1726,7 @@ export default function FinancePage() {
                       </div>
 
                       <h3 style={{ fontSize: 18 }}>
-                        {money(totalAllocatedBudget)}
+                        {totalAllocatedBudget}
                       </h3>
 
                       <p>Actual budget allocations</p>
@@ -2607,7 +1741,7 @@ export default function FinancePage() {
                       </div>
 
                       <h3 style={{ fontSize: 18 }}>
-                        {money(totalCommittedBudget)}
+                        {totalCommittedBudget}
                       </h3>
 
                       <p>Committed budget amount</p>
@@ -2622,7 +1756,7 @@ export default function FinancePage() {
                       </div>
 
                       <h3 style={{ fontSize: 18 }}>
-                        {money(totalSpentBudget)}
+                        {totalSpentBudget}
                       </h3>
 
                       <p>Recorded expenditure</p>
@@ -2637,23 +1771,19 @@ export default function FinancePage() {
                       </div>
 
                       <h3 style={{ fontSize: 18 }}>
-                        {money(totalAvailableBudget)}
+                        {totalAvailableBudget}
                       </h3>
 
                       <p>Remaining budget amount</p>
                     </div>
-
                   </section>
-
-                  {/* PENDING REQUESTS */}
 
                   <section className="finance-panel">
                     <div className="finance-panel-heading">
                       <div>
                         <h3>Requests Awaiting Finance</h3>
                         <p>
-                          Only manager-approved requests can
-                          be processed here.
+                          These tasks are assigned to your authenticated Finance account.
                         </p>
                       </div>
 
@@ -2667,20 +1797,17 @@ export default function FinancePage() {
                     </div>
 
                     {renderRequestsTable(
-                      pendingFinanceRequests
+                      pendingFinanceRequests,
+                      financeTaskRows
                     )}
                   </section>
-
-                  {/* BUDGET SUMMARY */}
 
                   <section className="finance-panel">
                     <div className="finance-panel-heading">
                       <div>
                         <h3>Budget Summary</h3>
-
                         <p>
-                          Total available:{" "}
-                          {money(totalAvailableBudget)}
+                          Available: {totalAvailableBudget}
                         </p>
                       </div>
 
@@ -2746,9 +1873,7 @@ export default function FinancePage() {
                 </>
               )}
 
-              {/* ============================================
-                  EMPLOYEE REQUESTS
-              ============================================ */}
+              {/* EMPLOYEE REQUESTS */}
 
               {activeTab === "requests" && (
                 <>
@@ -2769,11 +1894,9 @@ export default function FinancePage() {
                         <h3>All Employee Requests</h3>
 
                         <p>
-                          Finance pending:{" "}
-                          {pendingFinanceRequests.length}
+                          Finance pending: {pendingTasks.length}
                           {" | "}
-                          Waiting for manager:{" "}
-                          {waitingForManagerRequests.length}
+                          Waiting for manager: {waitingForManagerRequests.length}
                           {" | "}
                           Approved: {approvedRequests.length}
                           {" | "}
@@ -2802,36 +1925,23 @@ export default function FinancePage() {
                           setStatusFilter(event.target.value)
                         }
                       >
-                        <option value="all">
-                          All requests
-                        </option>
-
-                        <option value="pending">
-                          Awaiting Finance
-                        </option>
-
-                        <option value="waiting">
-                          Waiting for Manager
-                        </option>
-
-                        <option value="approved">
-                          Approved
-                        </option>
-
-                        <option value="rejected">
-                          Rejected
-                        </option>
+                        <option value="all">All requests</option>
+                        <option value="pending">Awaiting Finance</option>
+                        <option value="waiting">Waiting for Manager</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
                       </select>
                     </div>
 
-                    {renderRequestsTable(filteredRequests)}
+                    {renderRequestsTable(
+                      filteredRequests,
+                      financeTaskRows
+                    )}
                   </section>
                 </>
               )}
 
-              {/* ============================================
-                  BUDGETS
-              ============================================ */}
+              {/* BUDGETS */}
 
               {activeTab === "budgets" && (
                 <>
@@ -2840,8 +1950,8 @@ export default function FinancePage() {
                       <h2>Budget Management</h2>
 
                       <p>
-                        Manage department and organization
-                        budget allocations.
+                        Manage organization budget allocations and
+                        monitor available funds.
                       </p>
                     </div>
 
@@ -2858,9 +1968,7 @@ export default function FinancePage() {
                 </>
               )}
 
-              {/* ============================================
-                  APPROVAL HISTORY
-              ============================================ */}
+              {/* APPROVAL HISTORY */}
 
               {activeTab === "approvals" && (
                 <>
@@ -2869,8 +1977,7 @@ export default function FinancePage() {
                       <h2>Finance Approval History</h2>
 
                       <p>
-                        Review approved and rejected employee
-                        procurement requests.
+                        Review approved and rejected procurement requests.
                       </p>
                     </div>
                   </section>
@@ -2883,10 +1990,7 @@ export default function FinancePage() {
                       </div>
 
                       <h3>{approvedRequests.length}</h3>
-
-                      <p>
-                        {money(approvedAmount)} total approved
-                      </p>
+                      <p>{approvedAmount} total approved</p>
                     </div>
 
                     <div className="finance-stat-card">
@@ -2896,10 +2000,7 @@ export default function FinancePage() {
                       </div>
 
                       <h3>{rejectedRequests.length}</h3>
-
-                      <p>
-                        {money(rejectedAmount)} total rejected
-                      </p>
+                      <p>{rejectedAmount} total rejected</p>
                     </div>
                   </section>
 
@@ -2909,29 +2010,25 @@ export default function FinancePage() {
                         <h3>Processed Requests</h3>
 
                         <p>
-                          {approvedRequests.length +
-                            rejectedRequests.length}{" "}
-                          processed requests
+                          {approvedRequests.length + rejectedRequests.length}
+                          {" "}processed requests
                         </p>
                       </div>
                     </div>
 
                     {renderRequestsTable([
                       ...approvedRequests,
-                      ...rejectedRequests
+                      ...rejectedRequests,
                     ])}
                   </section>
                 </>
               )}
-
             </>
           )}
         </div>
       </main>
 
-      {/* ====================================================
-          COMPLETE EMPLOYEE REQUEST DETAILS MODAL
-      ==================================================== */}
+      {/* REQUEST DETAILS MODAL */}
 
       {selectedRequest && (
         <div
@@ -2943,7 +2040,6 @@ export default function FinancePage() {
           }}
         >
           <div className="finance-modal">
-
             <div className="finance-modal-heading">
               <div>
                 <h3>Complete Procurement Request</h3>
@@ -2951,7 +2047,7 @@ export default function FinancePage() {
                 <p style={{
                   color: "#8290a5",
                   fontSize: 10,
-                  marginTop: 5
+                  marginTop: 5,
                 }}>
                   {getRequestNumber(selectedRequest)}
                 </p>
@@ -2965,16 +2061,10 @@ export default function FinancePage() {
               </button>
             </div>
 
-            <h4 style={{
-              margin: "0 0 12px",
-              fontSize: 12
-            }}>
+            <h4 style={{ margin: "0 0 12px", fontSize: 12 }}>
               <User
                 size={14}
-                style={{
-                  display: "inline",
-                  marginRight: 6
-                }}
+                style={{ display: "inline", marginRight: 6 }}
               />
               Employee Information
             </h4>
@@ -2982,9 +2072,7 @@ export default function FinancePage() {
             <div className="finance-detail-grid">
               <div className="finance-detail">
                 <small>Employee Name</small>
-                <strong>
-                  {getEmployeeName(selectedRequest)}
-                </strong>
+                <strong>{getEmployeeName(selectedRequest)}</strong>
               </div>
 
               <div className="finance-detail">
@@ -2996,29 +2084,19 @@ export default function FinancePage() {
 
               <div className="finance-detail">
                 <small>Email Address</small>
-                <strong>
-                  {getEmployeeEmail(selectedRequest)}
-                </strong>
+                <strong>{getEmployeeEmail(selectedRequest)}</strong>
               </div>
 
               <div className="finance-detail">
                 <small>Department</small>
-                <strong>
-                  {getDepartment(selectedRequest)}
-                </strong>
+                <strong>{getDepartment(selectedRequest)}</strong>
               </div>
             </div>
 
-            <h4 style={{
-              margin: "18px 0 12px",
-              fontSize: 12
-            }}>
+            <h4 style={{ margin: "18px 0 12px", fontSize: 12 }}>
               <Package
                 size={14}
-                style={{
-                  display: "inline",
-                  marginRight: 6
-                }}
+                style={{ display: "inline", marginRight: 6 }}
               />
               Product Information
             </h4>
@@ -3026,23 +2104,17 @@ export default function FinancePage() {
             <div className="finance-detail-grid">
               <div className="finance-detail">
                 <small>Product Name</small>
-                <strong>
-                  {getProductName(selectedRequest)}
-                </strong>
+                <strong>{getProductName(selectedRequest)}</strong>
               </div>
 
               <div className="finance-detail">
                 <small>Supplier</small>
-                <strong>
-                  {getSupplier(selectedRequest)}
-                </strong>
+                <strong>{getSupplier(selectedRequest)}</strong>
               </div>
 
               <div className="finance-detail">
                 <small>Quantity</small>
-                <strong>
-                  {displayValue(getQuantity(selectedRequest))}
-                </strong>
+                <strong>{displayValue(getQuantity(selectedRequest))}</strong>
               </div>
 
               <div className="finance-detail">
@@ -3067,9 +2139,7 @@ export default function FinancePage() {
 
               <div className="finance-detail">
                 <small>Currency</small>
-                <strong>
-                  {getCurrency(selectedRequest)}
-                </strong>
+                <strong>{getCurrency(selectedRequest)}</strong>
               </div>
 
               <div className="finance-detail">
@@ -3090,43 +2160,22 @@ export default function FinancePage() {
               </div>
             </div>
 
-            <h4 style={{
-              margin: "18px 0 12px",
-              fontSize: 12
-            }}>
+            <h4 style={{ margin: "18px 0 12px", fontSize: 12 }}>
               Business Justification
             </h4>
 
             <div className="finance-detail">
               <strong>
                 {selectedRequest.justification ||
-                 selectedRequest.description ||
-                 "No justification was returned by the API."}
+                  selectedRequest.description ||
+                  "No justification was returned by the API."}
               </strong>
             </div>
 
-            {selectedRequest.description &&
-             selectedRequest.justification && (
-              <div className="finance-detail" style={{
-                marginTop: 10
-              }}>
-                <small>Additional Description</small>
-                <strong>
-                  {selectedRequest.description}
-                </strong>
-              </div>
-            )}
-
-            <h4 style={{
-              margin: "20px 0 10px",
-              fontSize: 12
-            }}>
+            <h4 style={{ margin: "20px 0 10px", fontSize: 12 }}>
               <History
                 size={14}
-                style={{
-                  display: "inline",
-                  marginRight: 6
-                }}
+                style={{ display: "inline", marginRight: 6 }}
               />
               Approval Information
             </h4>
@@ -3193,69 +2242,57 @@ export default function FinancePage() {
               </div>
             </div>
 
-            {/* APPROVAL HISTORY */}
-
             {Array.isArray(selectedRequest.history) &&
-             selectedRequest.history.length > 0 && (
-              <div className="finance-history">
-                <h4>Request History</h4>
+              selectedRequest.history.length > 0 && (
+                <div className="finance-history">
+                  <h4>Request History</h4>
 
-                {selectedRequest.history.map((item, index) => (
-                  <div
-                    className="finance-history-item"
-                    key={item.id || index}
-                  >
-                    <strong>
-                      {item.action ||
-                       item.status ||
-                       item.decision ||
-                       "Request activity"}
-                    </strong>
+                  {selectedRequest.history.map((item, index) => (
+                    <div
+                      className="finance-history-item"
+                      key={item.id || index}
+                    >
+                      <strong>
+                        {item.action ||
+                          item.status ||
+                          item.decision ||
+                          "Request activity"}
+                      </strong>
 
-                    <p>
-                      {item.comment ||
-                       item.remarks ||
-                       item.description ||
-                       "No additional remarks"}
-                    </p>
+                      <p>
+                        {item.comment ||
+                          item.remarks ||
+                          item.description ||
+                          "No additional remarks"}
+                      </p>
 
-                    <small>
-                      {item.actor_name ||
-                       item.user_name ||
-                       item.actor ||
-                       "System"}
-                      {" · "}
-                      {formatDate(
-                        item.created_at ||
-                        item.createdAt ||
-                        item.timestamp
-                      )}
-                    </small>
-                  </div>
-                ))}
-              </div>
-            )}
+                      <small>
+                        {item.actor_name ||
+                          item.user_name ||
+                          item.actor ||
+                          "System"}
+                        {" · "}
+                        {formatDate(
+                          item.created_at ||
+                          item.createdAt ||
+                          item.timestamp
+                        )}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-            {/* ALL REMAINING API FIELDS */}
-
-            <h4 style={{
-              margin: "20px 0 10px",
-              fontSize: 12
-            }}>
+            <h4 style={{ margin: "20px 0 10px", fontSize: 12 }}>
               All Other Values Returned by the API
             </h4>
 
             <div className="finance-all-fields">
               {getRealRequestDetails(selectedRequest).map(
                 ({ key, label, value }) => (
-                  <div
-                    className="finance-detail"
-                    key={key}
-                  >
+                  <div className="finance-detail" key={key}>
                     <small>{label}</small>
-                    <strong>
-                      {displayValue(value)}
-                    </strong>
+                    <strong>{displayValue(value)}</strong>
                   </div>
                 )
               )}
@@ -3268,54 +2305,14 @@ export default function FinancePage() {
               >
                 Close
               </button>
-
-              {FINANCE_REVIEW_STATUSES.includes(
-                getStatus(selectedRequest)
-              ) && (
-                <>
-                  <button
-                    className="finance-button"
-                    style={{
-                      color: "#bd3445",
-                      background: "#fff0f1"
-                    }}
-                    onClick={() => {
-                      openDecisionModal(
-                        selectedRequest,
-                        "reject"
-                      );
-                      setSelectedRequest(null);
-                    }}
-                  >
-                    <XCircle size={14} />
-                    Reject
-                  </button>
-
-                  <button
-                    className="finance-button primary"
-                    onClick={() => {
-                      openDecisionModal(
-                        selectedRequest,
-                        "approve"
-                      );
-                      setSelectedRequest(null);
-                    }}
-                  >
-                    <CheckCircle2 size={14} />
-                    Approve
-                  </button>
-                </>
-              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* ====================================================
-          FINANCE APPROVE / REJECT MODAL
-      ==================================================== */}
+      {/* FINANCE APPROVE / REJECT MODAL */}
 
-      {decisionModal.request && (
+      {decisionModal.task && (
         <div
           className="finance-modal-overlay"
           onMouseDown={(event) => {
@@ -3380,6 +2377,13 @@ export default function FinancePage() {
                   )}
                 </strong>
               </div>
+
+              <div className="finance-detail">
+                <small>Approval Task ID</small>
+                <strong>
+                  {getTaskId(decisionModal.task)}
+                </strong>
+              </div>
             </div>
 
             <form onSubmit={submitFinanceDecision}>
@@ -3395,7 +2399,7 @@ export default function FinancePage() {
                   onChange={(event) =>
                     setDecisionModal((previous) => ({
                       ...previous,
-                      reason: event.target.value
+                      reason: event.target.value,
                     }))
                   }
                   placeholder="Enter your decision remarks..."
@@ -3407,7 +2411,7 @@ export default function FinancePage() {
 
                 <small style={{
                   color: "#8795a9",
-                  fontSize: 9
+                  fontSize: 9,
                 }}>
                   {decisionModal.reason.length}/1000 characters
                 </small>
@@ -3433,7 +2437,7 @@ export default function FinancePage() {
                     decisionModal.decision === "reject"
                       ? {
                           background: "#c83d4d",
-                          borderColor: "#c83d4d"
+                          borderColor: "#c83d4d",
                         }
                       : {}
                   }
@@ -3461,9 +2465,7 @@ export default function FinancePage() {
         </div>
       )}
 
-      {/* ====================================================
-          CREATE / EDIT BUDGET MODAL
-      ==================================================== */}
+      {/* CREATE / EDIT BUDGET MODAL */}
 
       {budgetModalOpen && (
         <div
@@ -3505,7 +2507,6 @@ export default function FinancePage() {
 
             <form onSubmit={saveBudget}>
               <div className="finance-form-grid">
-
                 <div className="finance-form-field full">
                   <label>Budget Name *</label>
 
@@ -3513,31 +2514,14 @@ export default function FinancePage() {
                     name="name"
                     value={budgetForm.name}
                     onChange={updateBudgetField}
-                    placeholder="IT Department Annual Budget"
+                    placeholder="Organization Annual Budget"
                     required
                   />
-                </div>
 
-                <div className="finance-form-field">
-                  <label>Department</label>
-
-                  <input
-                    name="department"
-                    value={budgetForm.department}
-                    onChange={updateBudgetField}
-                    placeholder="IT / HR / Finance"
-                  />
-                </div>
-
-                <div className="finance-form-field">
-                  <label>Category</label>
-
-                  <input
-                    name="category"
-                    value={budgetForm.category}
-                    onChange={updateBudgetField}
-                    placeholder="Equipment / Software"
-                  />
+                  <small>
+                    The current backend requires this field for validation,
+                    but does not persist the budget name.
+                  </small>
                 </div>
 
                 <div className="finance-form-field full">
@@ -3589,32 +2573,6 @@ export default function FinancePage() {
                     required
                   />
                 </div>
-
-                <div className="finance-form-field full">
-                  <label>Status</label>
-
-                  <select
-                    name="status"
-                    value={budgetForm.status}
-                    onChange={updateBudgetField}
-                  >
-                    <option value="active">Active</option>
-                    <option value="draft">Draft</option>
-                    <option value="inactive">Inactive</option>
-                    <option value="closed">Closed</option>
-                  </select>
-                </div>
-
-                <div className="finance-form-field full">
-                  <label>Description</label>
-
-                  <textarea
-                    name="description"
-                    value={budgetForm.description}
-                    onChange={updateBudgetField}
-                    placeholder="Describe the purpose of this budget..."
-                  />
-                </div>
               </div>
 
               <div className="finance-modal-actions">
@@ -3651,7 +2609,6 @@ export default function FinancePage() {
           </div>
         </div>
       )}
-
     </div>
   );
 }

@@ -1,5 +1,10 @@
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from "react";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -15,14 +20,17 @@ import {
   Check,
   Ban,
   RefreshCw,
-  User,
   Building2,
   AlertCircle,
   ChevronDown,
 } from "lucide-react";
+
 import { useNavigate } from "react-router-dom";
 
-// Backend is mounted at /api/v1.
+// ============================================================
+// API CONFIGURATION
+// ============================================================
+
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   "http://localhost:5000/api/v1"
@@ -37,19 +45,38 @@ const getToken = () =>
   sessionStorage.getItem("token") ||
   "";
 
+const createRequestId = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `manager-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+};
+
 const getArray = (response, keys = []) => {
   if (Array.isArray(response)) return response;
 
   for (const key of keys) {
     if (Array.isArray(response?.[key])) return response[key];
-    if (Array.isArray(response?.data?.[key])) return response.data[key];
+    if (Array.isArray(response?.data?.[key])) {
+      return response.data[key];
+    }
   }
 
   if (Array.isArray(response?.data)) return response.data;
-  if (Array.isArray(response?.data?.requests)) return response.data.requests;
+
+  if (Array.isArray(response?.data?.requests)) {
+    return response.data.requests;
+  }
 
   return [];
 };
+
+// ============================================================
+// FORMATTERS
+// ============================================================
 
 const formatCurrency = (value) =>
   new Intl.NumberFormat("en-IN", {
@@ -68,6 +95,10 @@ const formatDate = (value) => {
     : date.toLocaleDateString("en-IN");
 };
 
+// ============================================================
+// REQUEST HELPERS
+// ============================================================
+
 const getStatus = (request) =>
   String(
     request.status ||
@@ -79,7 +110,11 @@ const getStatus = (request) =>
     .replaceAll(" ", "_");
 
 const getEmployee = (request) => {
-  const employee = request.employee || request.requester || request.user || {};
+  const employee =
+    request.employee ||
+    request.requester ||
+    request.user ||
+    {};
 
   const nestedName = [
     employee.firstName || employee.first_name,
@@ -121,20 +156,30 @@ const getAmount = (request) => {
 };
 
 const getRequestId = (request) =>
-  request.id || request.requestId || request.request_id;
+  request.id ||
+  request.requestId ||
+  request.request_id;
 
 const getSupplier = (request) =>
-  request.supplier ||
   request.supplierName ||
   request.supplier_name ||
+  request.supplier ||
   "—";
 
-const getDepartment = (request) =>
-  request.department ||
-  request.departmentName ||
-  request.department_name ||
-  request.department?.name ||
-  "—";
+const getDepartment = (request) => {
+  const department = request.department;
+
+  if (department && typeof department === "object") {
+    return department.name || "—";
+  }
+
+  return (
+    department ||
+    request.departmentName ||
+    request.department_name ||
+    "—"
+  );
+};
 
 const getRequestDate = (request) =>
   request.createdAt ||
@@ -142,11 +187,9 @@ const getRequestDate = (request) =>
   request.submittedAt ||
   request.submitted_at;
 
-const MANAGER_PENDING_STATUSES = [
-  "PENDING_MANAGER",
-  "SUBMITTED",
-  "MANAGER_PENDING",
-];
+// ============================================================
+// STATUS CONSTANTS
+// ============================================================
 
 const FINANCE_PENDING_STATUSES = [
   "MANAGER_APPROVED",
@@ -166,10 +209,16 @@ const REJECTED_STATUSES = [
   "REJECTED",
 ];
 
+// ============================================================
+// MANAGER PAGE
+// ============================================================
+
 export default function ManagerPage() {
   const navigate = useNavigate();
 
   const [requests, setRequests] = useState([]);
+  const [pendingTasks, setPendingTasks] = useState([]);
+
   const [activeTab, setActiveTab] = useState("Overview");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
@@ -187,107 +236,370 @@ export default function ManagerPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [managerName, setManagerName] = useState("Manager");
 
-  // API helper.
-  // The token is retrieved for every request so updated login sessions are used.
+  // ==========================================================
+  // API REQUEST HELPER WITH DIAGNOSTICS
+  // ==========================================================
+
   const apiRequest = useCallback(async (endpoint, options = {}) => {
     const token = getToken();
+    const method = (options.method || "GET").toUpperCase();
+    const requestId = createRequestId();
+    const url = `${API_BASE}${endpoint}`;
 
     if (!token) {
-      throw new Error("Your session has expired. Please log in again.");
+      const authError = new Error(
+        "Your session has expired. Please log in again."
+      );
+
+      authError.status = 401;
+      authError.endpoint = endpoint;
+      authError.requestId = requestId;
+
+      throw authError;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...options.headers,
-      },
-    });
+    const requestBody = options.body || null;
 
-    const data = await response.json().catch(() => ({}));
+    console.groupCollapsed(
+      `[ETDOX MANAGER API] ${method} ${endpoint}`
+    );
 
-    if (response.status === 401) {
-      throw new Error("Session expired. Please log in again.");
+    console.log("Request ID:", requestId);
+    console.log("URL:", url);
+    console.log("Method:", method);
+
+    if (requestBody) {
+      try {
+        console.log("Request body:", JSON.parse(requestBody));
+      } catch {
+        console.log("Request body:", requestBody);
+      }
     }
+
+    let response;
+
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Request-ID": requestId,
+          ...options.headers,
+        },
+      });
+    } catch (networkError) {
+      console.error("Network error:", networkError);
+      console.groupEnd();
+
+      const error = new Error(
+        `Cannot connect to ETDOX backend. Check whether the backend is running. ${networkError.message}`
+      );
+
+      error.endpoint = endpoint;
+      error.method = method;
+      error.requestId = requestId;
+      error.cause = networkError;
+
+      throw error;
+    }
+
+    const responseText = await response.text();
+
+    let data = {};
+
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      data = {
+        rawResponse: responseText,
+      };
+    }
+
+    const serverRequestId =
+      response.headers.get("x-request-id") ||
+      data.requestId ||
+      data.request_id ||
+      null;
+
+    console.log("HTTP status:", response.status);
+    console.log("Response OK:", response.ok);
+    console.log("Client request ID:", requestId);
+    console.log("Server request ID:", serverRequestId);
+    console.log("Response body:", data);
 
     if (!response.ok) {
-      throw new Error(
+      console.error("API REQUEST FAILED", {
+        method,
+        endpoint,
+        status: response.status,
+        requestId,
+        serverRequestId,
+        response: data,
+      });
+
+      console.groupEnd();
+
+      const error = new Error(
         data.message ||
           data.error ||
           data.details ||
+          data.rawResponse ||
           `Request failed with status ${response.status}`
       );
+
+      error.status = response.status;
+      error.method = method;
+      error.endpoint = endpoint;
+      error.requestId = requestId;
+      error.serverRequestId = serverRequestId;
+      error.response = data;
+
+      if (response.status === 401) {
+        error.message = "Session expired. Please log in again.";
+      }
+
+      throw error;
     }
+
+    console.log("API REQUEST SUCCESS");
+    console.groupEnd();
 
     return data;
   }, []);
 
-  // Load procurement requests and manager profile.
+  // ==========================================================
+  // LOGOUT
+  // ==========================================================
+
+  const logout = useCallback(() => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("user");
+
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("accessToken");
+    sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("user");
+
+    navigate("/login");
+  }, [navigate]);
+
+  // ==========================================================
+  // LOAD DASHBOARD
+  // ==========================================================
+
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError("");
 
+    console.groupCollapsed("[ETDOX MANAGER] Dashboard loading");
+
     try {
-      const [requestResult, userResult] = await Promise.all([
+      // Execute independently so one failed endpoint
+      // does not prevent the other endpoints from loading.
+      const results = await Promise.allSettled([
         apiRequest("/procurement/requests"),
-        apiRequest("/auth/me").catch(() => null),
+
+        apiRequest(
+          "/workflows/tasks/pending?limit=100&offset=0"
+        ),
+
+        apiRequest("/auth/me"),
       ]);
 
-      // Controller returns:
-      // { success, message, data: requests, requests, pagination }
-      const requestList = getArray(requestResult, [
-        "requests",
-        "items",
-        "results",
-      ]);
+      const [requestResult, taskResult, userResult] = results;
 
-      setRequests(requestList);
+      // ------------------------------------------------------
+      // PROCUREMENT REQUESTS
+      // ------------------------------------------------------
 
-      const user =
-        userResult?.user ||
-        userResult?.data?.user ||
-        userResult?.data ||
-        userResult;
+      if (requestResult.status === "fulfilled") {
+        const requestList = getArray(
+          requestResult.value,
+          ["requests", "items", "results"]
+        );
 
-      if (user && typeof user === "object") {
-        const fullName =
-          user.name ||
-          user.fullName ||
-          user.full_name ||
-          [user.firstName || user.first_name, user.lastName || user.last_name]
-            .filter(Boolean)
-            .join(" ");
+        console.log(
+          "Procurement requests loaded:",
+          requestList.length
+        );
 
-        if (fullName) {
-          setManagerName(fullName);
+        console.table(
+          requestList.map((request) => ({
+            id: getRequestId(request),
+            requestNumber: request.request_number,
+            status: getStatus(request),
+          }))
+        );
+
+        setRequests(requestList);
+      } else {
+        console.error(
+          "Procurement endpoint failed:",
+          requestResult.reason
+        );
+
+        setRequests([]);
+
+        setError(
+          `Unable to load procurement requests: ${requestResult.reason?.message || "Unknown error"}`
+        );
+      }
+
+      // ------------------------------------------------------
+      // PENDING WORKFLOW TASKS
+      // ------------------------------------------------------
+
+      if (taskResult.status === "fulfilled") {
+        const taskResponse = taskResult.value;
+
+        const taskList = getArray(taskResponse, [
+          "tasks",
+          "items",
+          "results",
+        ]);
+
+        console.log(
+          "Raw workflow task response:",
+          taskResponse
+        );
+
+        console.log(
+          "Workflow tasks received:",
+          taskList.length
+        );
+
+        console.table(
+          taskList.map((task) => ({
+            taskId: task.id,
+            assigneeId: task.assignee_id,
+            resourceType:
+              task.resource_type || task.resourceType,
+            resourceId:
+              task.resource_id || task.resourceId,
+            status: task.status,
+            nodeId: task.node_id,
+          }))
+        );
+
+        const validTasks = taskList.filter((task) => {
+          const status = String(
+            task.status || ""
+          ).toUpperCase();
+
+          const resourceType = String(
+            task.resource_type ||
+              task.resourceType ||
+              ""
+          ).toLowerCase();
+
+          const resourceId =
+            task.resource_id || task.resourceId;
+
+          return (
+            status === "PENDING" &&
+            resourceType === "purchase_request" &&
+            Boolean(task.id) &&
+            Boolean(resourceId)
+          );
+        });
+
+        console.log(
+          "Valid manager approval tasks:",
+          validTasks.length
+        );
+
+        setPendingTasks(validTasks);
+
+        if (validTasks.length === 0 && taskList.length > 0) {
+          console.warn(
+            "Tasks were returned, but none matched the manager's pending purchase-request filters."
+          );
         }
+      } else {
+        console.error(
+          "Workflow pending-task endpoint failed:",
+          taskResult.reason
+        );
+
+        setPendingTasks([]);
+
+        setError((previous) => {
+          const taskMessage =
+            `Unable to load approval tasks: ${taskResult.reason?.message || "Unknown error"}`;
+
+          return previous
+            ? `${previous} | ${taskMessage}`
+            : taskMessage;
+        });
+      }
+
+      // ------------------------------------------------------
+      // MANAGER PROFILE
+      // ------------------------------------------------------
+
+      if (userResult.status === "fulfilled") {
+        const userResponse = userResult.value;
+
+        const user =
+          userResponse?.user ||
+          userResponse?.data?.user ||
+          userResponse?.data ||
+          userResponse;
+
+        console.log("Manager profile:", user);
+
+        if (user && typeof user === "object") {
+          const fullName =
+            user.name ||
+            user.fullName ||
+            user.full_name ||
+            [
+              user.firstName || user.first_name,
+              user.lastName || user.last_name,
+            ]
+              .filter(Boolean)
+              .join(" ");
+
+          if (fullName) {
+            setManagerName(fullName);
+          }
+        }
+      } else {
+        console.warn(
+          "Unable to load manager profile:",
+          userResult.reason
+        );
       }
     } catch (err) {
-      const message = err.message || "Unable to load manager dashboard.";
+      console.error(
+        "[ETDOX MANAGER] Dashboard loading error:",
+        err
+      );
 
-      setError(message);
+      setError(
+        err.message || "Unable to load manager dashboard."
+      );
 
       if (
-        message.toLowerCase().includes("session expired") ||
-        message.toLowerCase().includes("log in again")
+        err.status === 401 ||
+        err.message.toLowerCase().includes("session expired") ||
+        err.message.toLowerCase().includes("log in again")
       ) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("accessToken");
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("user");
-
-        sessionStorage.removeItem("token");
-        sessionStorage.removeItem("accessToken");
-        sessionStorage.removeItem("authToken");
-
-        navigate("/login");
+        logout();
       }
     } finally {
       setLoading(false);
+      console.groupEnd();
     }
-  }, [apiRequest, navigate]);
+  }, [apiRequest, logout]);
+
+  // ==========================================================
+  // INITIAL LOAD
+  // ==========================================================
 
   useEffect(() => {
     if (!getToken()) {
@@ -298,20 +610,111 @@ export default function ManagerPage() {
     loadDashboard();
   }, [loadDashboard, navigate]);
 
-  // Requests awaiting manager approval.
-  const managerPending = useMemo(
-    () =>
-      requests.filter((request) =>
-        MANAGER_PENDING_STATUSES.includes(getStatus(request))
-      ),
-    [requests]
-  );
+  // ==========================================================
+  // MATCH WORKFLOW TASKS WITH PROCUREMENT REQUESTS
+  // ==========================================================
 
-  // Requests approved by manager and awaiting finance.
+  const managerPending = useMemo(() => {
+    const requestMap = new Map(
+      requests
+        .filter((request) => getRequestId(request))
+        .map((request) => [
+          String(getRequestId(request)),
+          request,
+        ])
+    );
+
+    return pendingTasks.map((task) => {
+      const requestId = String(
+        task.resource_id || task.resourceId
+      );
+
+      const existingRequest = requestMap.get(requestId);
+
+      if (existingRequest) {
+        return {
+          ...existingRequest,
+          workflowTaskId: task.id,
+          workflowTask: task,
+        };
+      }
+
+      return {
+        id: requestId,
+        request_number: task.request_number,
+        total_amount: task.total_amount,
+        currency: task.currency,
+        requester_id: task.requester_id,
+        status: "IN_APPROVAL",
+        workflowTaskId: task.id,
+        workflowTask: task,
+      };
+    });
+  }, [requests, pendingTasks]);
+
+  // ==========================================================
+  // ATTACH TASK INFORMATION TO REQUEST LIST
+  // ==========================================================
+
+  const requestsWithTasks = useMemo(() => {
+    const taskByRequestId = new Map();
+
+    for (const task of pendingTasks) {
+      const resourceId =
+        task.resource_id || task.resourceId;
+
+      const key = String(resourceId);
+
+      if (!taskByRequestId.has(key)) {
+        taskByRequestId.set(key, task);
+      }
+    }
+
+    const enrichedRequests = requests.map((request) => {
+      const requestId = getRequestId(request);
+
+      const task = taskByRequestId.get(
+        String(requestId)
+      );
+
+      if (!task) return request;
+
+      return {
+        ...request,
+        workflowTaskId: task.id,
+        workflowTask: task,
+      };
+    });
+
+    const existingIds = new Set(
+      enrichedRequests.map((request) =>
+        String(getRequestId(request))
+      )
+    );
+
+    const missingRequests = managerPending.filter(
+      (request) =>
+        !existingIds.has(
+          String(getRequestId(request))
+        )
+    );
+
+    return [
+      ...enrichedRequests,
+      ...missingRequests,
+    ];
+  }, [requests, pendingTasks, managerPending]);
+
+  // ==========================================================
+  // DASHBOARD STATISTICS
+  // ==========================================================
+
   const financePending = useMemo(
     () =>
       requests.filter((request) =>
-        FINANCE_PENDING_STATUSES.includes(getStatus(request))
+        FINANCE_PENDING_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
@@ -319,7 +722,9 @@ export default function ManagerPage() {
   const approvedRequests = useMemo(
     () =>
       requests.filter((request) =>
-        APPROVED_STATUSES.includes(getStatus(request))
+        APPROVED_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
@@ -327,19 +732,24 @@ export default function ManagerPage() {
   const rejectedRequests = useMemo(
     () =>
       requests.filter((request) =>
-        REJECTED_STATUSES.includes(getStatus(request))
+        REJECTED_STATUSES.includes(
+          getStatus(request)
+        )
       ),
     [requests]
   );
 
-  // Search and status filters.
+  // ==========================================================
+  // SEARCH AND FILTERS
+  // ==========================================================
+
   const filteredRequests = useMemo(() => {
-    let list = requests;
+    let list = requestsWithTasks;
 
     if (activeTab === "Pending Requests") {
       list = managerPending;
     } else if (activeTab === "Approval History") {
-      list = requests.filter((request) =>
+      list = requestsWithTasks.filter((request) =>
         [
           ...APPROVED_STATUSES,
           ...REJECTED_STATUSES,
@@ -349,7 +759,8 @@ export default function ManagerPage() {
 
     if (statusFilter !== "ALL") {
       list = list.filter(
-        (request) => getStatus(request) === statusFilter
+        (request) =>
+          getStatus(request) === statusFilter
       );
     }
 
@@ -363,6 +774,7 @@ export default function ManagerPage() {
           getSupplier(request),
           getDepartment(request),
           getRequestId(request),
+          request.request_number,
           request.employeeEmail,
           request.employee_email,
           request.requester?.email,
@@ -378,10 +790,26 @@ export default function ManagerPage() {
     }
 
     return list;
-  }, [requests, activeTab, statusFilter, search, managerPending]);
+  }, [
+    requestsWithTasks,
+    activeTab,
+    statusFilter,
+    search,
+    managerPending,
+  ]);
 
-  // Open approval/rejection modal.
+  // ==========================================================
+  // OPEN DECISION MODAL
+  // ==========================================================
+
   const openDecision = (request, action) => {
+    if (!request.workflowTaskId) {
+      setError(
+        "No pending workflow task is assigned to this request."
+      );
+      return;
+    }
+
     setSelectedRequest(request);
     setDecision(action);
     setReason("");
@@ -389,19 +817,30 @@ export default function ManagerPage() {
     setSuccess("");
   };
 
-  // Submit manager decision.
-  const submitDecision = async () => {
-    if (!selectedRequest || !decision || submitting) return;
+  // ==========================================================
+  // SUBMIT WORKFLOW DECISION WITH ERROR TRACKING
+  // ==========================================================
 
-    if (decision === "reject" && !reason.trim()) {
+  const submitDecision = async () => {
+    if (!selectedRequest || !decision || submitting) {
+      return;
+    }
+
+    if (
+      decision === "reject" &&
+      !reason.trim()
+    ) {
       setError("Please enter a rejection reason.");
       return;
     }
 
-    const id = getRequestId(selectedRequest);
+    const taskId = selectedRequest.workflowTaskId;
+    const resourceId = getRequestId(selectedRequest);
 
-    if (!id) {
-      setError("Request ID is missing.");
+    if (!taskId) {
+      setError(
+        "Workflow task ID is missing. Refresh the dashboard and try again."
+      );
       return;
     }
 
@@ -409,45 +848,69 @@ export default function ManagerPage() {
     setError("");
     setSuccess("");
 
-    try {
-      const approved = decision === "approve";
+    const action =
+      decision === "approve" ? "approve" : "reject";
 
-      // IMPORTANT:
-      // Your procurement.controller.js reads only:
-      // req.body.decision
-      // req.body.comment
-      //
-      // Do not send status or reason as separate fields.
-      await apiRequest(
-        `/procurement/requests/${encodeURIComponent(
-          id
-        )}/manager-decision`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            decision: approved ? "approve" : "reject",
-            comment: reason.trim(),
-          }),
-        }
-      );
+    const endpoint =
+      `/workflows/tasks/${encodeURIComponent(taskId)}/actions`;
+
+    console.group("[ETDOX MANAGER APPROVAL ACTION]");
+
+    console.log("Workflow task ID:", taskId);
+    console.log("Purchase request ID:", resourceId);
+    console.log("Action:", action);
+    console.log("Endpoint:", endpoint);
+    console.log("Comment:", reason.trim());
+
+    try {
+      const result = await apiRequest(endpoint, {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          comment: reason.trim(),
+        }),
+      });
+
+      console.log("Approval action response:", result);
 
       setSelectedRequest(null);
       setDecision("");
       setReason("");
 
       setSuccess(
-        approved
-          ? "Request approved and forwarded to Finance."
+        action === "approve"
+          ? "Request approved successfully. The workflow has advanced."
           : "Request rejected successfully."
       );
 
       await loadDashboard();
     } catch (err) {
-      setError(err.message || "Unable to submit manager decision.");
+      console.error("Approval action failed:", {
+        taskId,
+        resourceId,
+        action,
+        endpoint: err.endpoint || endpoint,
+        status: err.status,
+        clientRequestId: err.requestId,
+        serverRequestId: err.serverRequestId,
+        response: err.response,
+        message: err.message,
+      });
+
+      setError(
+        `${err.message || "Unable to submit manager decision."}${
+          err.status ? ` (HTTP ${err.status})` : ""
+        }${err.serverRequestId ? ` | Server Request ID: ${err.serverRequestId}` : ""}`
+      );
     } finally {
       setSubmitting(false);
+      console.groupEnd();
     }
   };
+
+  // ==========================================================
+  // CLOSE MODAL
+  // ==========================================================
 
   const closeModal = () => {
     if (submitting) return;
@@ -457,19 +920,9 @@ export default function ManagerPage() {
     setReason("");
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("user");
-
-    sessionStorage.removeItem("token");
-    sessionStorage.removeItem("accessToken");
-    sessionStorage.removeItem("authToken");
-    sessionStorage.removeItem("user");
-
-    navigate("/login");
-  };
+  // ==========================================================
+  // NAVIGATION
+  // ==========================================================
 
   const navItems = [
     { name: "Overview", icon: LayoutDashboard },
@@ -477,18 +930,32 @@ export default function ManagerPage() {
     { name: "Approval History", icon: CheckCircle2 },
   ];
 
+  // ==========================================================
+  // STATUS HELPERS
+  // ==========================================================
+
   const statusStyle = (status) => {
-    if (APPROVED_STATUSES.includes(status)) return "approved";
+    if (APPROVED_STATUSES.includes(status)) {
+      return "approved";
+    }
 
-    if (REJECTED_STATUSES.includes(status)) return "rejected";
+    if (REJECTED_STATUSES.includes(status)) {
+      return "rejected";
+    }
 
-    if (FINANCE_PENDING_STATUSES.includes(status)) return "finance";
+    if (FINANCE_PENDING_STATUSES.includes(status)) {
+      return "finance";
+    }
 
     return "pending";
   };
 
   const isManagerPending = (request) =>
-    MANAGER_PENDING_STATUSES.includes(getStatus(request));
+    Boolean(request.workflowTaskId);
+
+  // ==========================================================
+  // UI
+  // ==========================================================
 
   return (
     <div className="manager-app">
@@ -1128,8 +1595,13 @@ export default function ManagerPage() {
         }
       `}</style>
 
-      {/* Sidebar */}
-      <aside className={`manager-sidebar ${sidebarOpen ? "open" : ""}`}>
+      {/* SIDEBAR */}
+
+      <aside
+        className={`manager-sidebar ${
+          sidebarOpen ? "open" : ""
+        }`}
+      >
         <div className="manager-brand">
           <div className="manager-brand-icon">
             <Building2 size={21} />
@@ -1137,7 +1609,9 @@ export default function ManagerPage() {
           ETDOX
         </div>
 
-        <div className="manager-nav-label">WORKSPACE</div>
+        <div className="manager-nav-label">
+          WORKSPACE
+        </div>
 
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -1169,14 +1643,18 @@ export default function ManagerPage() {
         })}
 
         <div className="manager-sidebar-bottom">
-          <button className="manager-nav" onClick={logout}>
+          <button
+            className="manager-nav"
+            onClick={logout}
+          >
             <LogOut size={17} />
             Logout
           </button>
         </div>
       </aside>
 
-      {/* Main dashboard */}
+      {/* MAIN DASHBOARD */}
+
       <main className="manager-main">
         <header className="manager-topbar">
           <div
@@ -1188,10 +1666,16 @@ export default function ManagerPage() {
           >
             <button
               className="manager-icon-btn manager-mobile-menu"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={() =>
+                setSidebarOpen(!sidebarOpen)
+              }
               aria-label="Toggle navigation"
             >
-              {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
+              {sidebarOpen ? (
+                <X size={18} />
+              ) : (
+                <Menu size={18} />
+              )}
             </button>
 
             <div className="manager-heading">
@@ -1214,10 +1698,7 @@ export default function ManagerPage() {
               onClick={loadDashboard}
               disabled={loading}
             >
-              <RefreshCw
-                size={16}
-                className={loading ? "manager-spin" : ""}
-              />
+              <RefreshCw size={16} />
             </button>
 
             <button
@@ -1238,12 +1719,16 @@ export default function ManagerPage() {
                 <small>Manager</small>
               </div>
 
-              <ChevronDown size={14} color="#8490a4" />
+              <ChevronDown
+                size={14}
+                color="#8490a4"
+              />
             </div>
           </div>
         </header>
 
-        {/* Error message */}
+        {/* ERROR MESSAGE */}
+
         {error && (
           <div className="manager-alert error">
             <AlertCircle size={16} />
@@ -1265,7 +1750,8 @@ export default function ManagerPage() {
           </div>
         )}
 
-        {/* Success message */}
+        {/* SUCCESS MESSAGE */}
+
         {success && (
           <div className="manager-alert success">
             <CheckCircle2 size={16} />
@@ -1287,7 +1773,8 @@ export default function ManagerPage() {
           </div>
         )}
 
-        {/* Overview statistics */}
+        {/* OVERVIEW STATISTICS */}
+
         {activeTab === "Overview" && (
           <section className="manager-stats">
             <div className="manager-stat">
@@ -1301,7 +1788,9 @@ export default function ManagerPage() {
 
               <h2>{managerPending.length}</h2>
 
-              <small>Requests awaiting manager review</small>
+              <small>
+                Requests awaiting manager review
+              </small>
             </div>
 
             <div className="manager-stat">
@@ -1329,7 +1818,9 @@ export default function ManagerPage() {
 
               <h2>{approvedRequests.length}</h2>
 
-              <small>Manager-approved or completed</small>
+              <small>
+                Manager-approved or completed
+              </small>
             </div>
 
             <div className="manager-stat">
@@ -1348,7 +1839,8 @@ export default function ManagerPage() {
           </section>
         )}
 
-        {/* Procurement request table */}
+        {/* PROCUREMENT REQUEST TABLE */}
+
         <section className="manager-panel">
           <div className="manager-panel-head">
             <div>
@@ -1362,37 +1854,65 @@ export default function ManagerPage() {
                 {activeTab === "Pending Requests"
                   ? "Review requests that require your approval."
                   : activeTab === "Approval History"
-                  ? "Previously reviewed procurement requests."
-                  : "Requests submitted by employees in your organization."}
+                    ? "Previously reviewed procurement requests."
+                    : "Requests submitted by employees in your organization."}
               </p>
             </div>
 
             <div className="manager-controls">
               <div className="manager-search">
-                <Search size={15} color="#8d98aa" />
+                <Search
+                  size={15}
+                  color="#8d98aa"
+                />
 
                 <input
                   placeholder="Search requests..."
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) =>
+                    setSearch(event.target.value)
+                  }
                 />
               </div>
 
               <select
                 className="manager-select"
                 value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value)
+                }
               >
                 <option value="ALL">All statuses</option>
-                <option value="PENDING_MANAGER">Pending Manager</option>
-                <option value="SUBMITTED">Submitted</option>
-                <option value="MANAGER_PENDING">Manager Pending</option>
-                <option value="MANAGER_APPROVED">Manager Approved</option>
-                <option value="MANAGER_REJECTED">Manager Rejected</option>
-                <option value="PENDING_FINANCE">Pending Finance</option>
-                <option value="FINANCE_APPROVED">Finance Approved</option>
-                <option value="FINANCE_REJECTED">Finance Rejected</option>
-                <option value="COMPLETED">Completed</option>
+                <option value="PENDING_MANAGER">
+                  Pending Manager
+                </option>
+                <option value="SUBMITTED">
+                  Submitted
+                </option>
+                <option value="MANAGER_PENDING">
+                  Manager Pending
+                </option>
+                <option value="IN_APPROVAL">
+                  In Approval
+                </option>
+                <option value="MANAGER_APPROVED">
+                  Manager Approved
+                </option>
+                <option value="MANAGER_REJECTED">
+                  Manager Rejected
+                </option>
+                <option value="PENDING_FINANCE">
+                  Pending Finance
+                </option>
+                <option value="FINANCE_APPROVED">
+                  Finance Approved
+                </option>
+                <option value="FINANCE_REJECTED">
+                  Finance Rejected
+                </option>
+                <option value="COMPLETED">
+                  Completed
+                </option>
               </select>
             </div>
           </div>
@@ -1432,10 +1952,15 @@ export default function ManagerPage() {
                 <tbody>
                   {filteredRequests.map((request, index) => {
                     const status = getStatus(request);
-                    const isPending = isManagerPending(request);
+                    const isPending =
+                      isManagerPending(request);
 
                     return (
-                      <tr key={getRequestId(request) || index}>
+                      <tr
+                        key={
+                          getRequestId(request) || index
+                        }
+                      >
                         <td>
                           <div className="manager-person">
                             <div className="manager-person-avatar">
@@ -1445,7 +1970,9 @@ export default function ManagerPage() {
                             </div>
 
                             <div>
-                              <strong>{getEmployee(request)}</strong>
+                              <strong>
+                                {getEmployee(request)}
+                              </strong>
 
                               <small>
                                 {request.employeeId ||
@@ -1454,6 +1981,7 @@ export default function ManagerPage() {
                                   request.requester?.email ||
                                   request.employeeEmail ||
                                   request.employee_email ||
+                                  request.request_number ||
                                   "Employee"}
                               </small>
                             </div>
@@ -1462,7 +1990,9 @@ export default function ManagerPage() {
 
                         <td>
                           <div className="manager-product">
-                            <strong>{getProduct(request)}</strong>
+                            <strong>
+                              {getProduct(request)}
+                            </strong>
 
                             <small>
                               Qty: {request.quantity ?? "—"}
@@ -1476,11 +2006,17 @@ export default function ManagerPage() {
 
                         <td>
                           <strong style={{ color: "#27344a" }}>
-                            {formatCurrency(getAmount(request))}
+                            {formatCurrency(
+                              getAmount(request)
+                            )}
                           </strong>
                         </td>
 
-                        <td>{formatDate(getRequestDate(request))}</td>
+                        <td>
+                          {formatDate(
+                            getRequestDate(request)
+                          )}
+                        </td>
 
                         <td>
                           <span
@@ -1513,7 +2049,10 @@ export default function ManagerPage() {
                                   className="manager-action approve"
                                   title="Approve request"
                                   onClick={() =>
-                                    openDecision(request, "approve")
+                                    openDecision(
+                                      request,
+                                      "approve"
+                                    )
                                   }
                                 >
                                   <Check size={15} />
@@ -1523,7 +2062,10 @@ export default function ManagerPage() {
                                   className="manager-action reject"
                                   title="Reject request"
                                   onClick={() =>
-                                    openDecision(request, "reject")
+                                    openDecision(
+                                      request,
+                                      "reject"
+                                    )
                                   }
                                 >
                                   <Ban size={15} />
@@ -1542,7 +2084,8 @@ export default function ManagerPage() {
         </section>
       </main>
 
-      {/* Request details and decision modal */}
+      {/* REQUEST DETAILS AND DECISION MODAL */}
+
       {selectedRequest && (
         <div
           className="manager-modal-backdrop"
@@ -1550,7 +2093,9 @@ export default function ManagerPage() {
         >
           <div
             className="manager-modal"
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) =>
+              event.stopPropagation()
+            }
           >
             <div className="manager-modal-head">
               <h2>
@@ -1574,27 +2119,37 @@ export default function ManagerPage() {
             <div className="manager-details">
               <div className="manager-detail">
                 <small>Employee</small>
-                <strong>{getEmployee(selectedRequest)}</strong>
+                <strong>
+                  {getEmployee(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Product</small>
-                <strong>{getProduct(selectedRequest)}</strong>
+                <strong>
+                  {getProduct(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Supplier</small>
-                <strong>{getSupplier(selectedRequest)}</strong>
+                <strong>
+                  {getSupplier(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Department</small>
-                <strong>{getDepartment(selectedRequest)}</strong>
+                <strong>
+                  {getDepartment(selectedRequest)}
+                </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Quantity</small>
-                <strong>{selectedRequest.quantity ?? "—"}</strong>
+                <strong>
+                  {selectedRequest.quantity ?? "—"}
+                </strong>
               </div>
 
               <div className="manager-detail">
@@ -1610,14 +2165,18 @@ export default function ManagerPage() {
               <div className="manager-detail">
                 <small>Total Amount</small>
                 <strong>
-                  {formatCurrency(getAmount(selectedRequest))}
+                  {formatCurrency(
+                    getAmount(selectedRequest)
+                  )}
                 </strong>
               </div>
 
               <div className="manager-detail">
                 <small>Submitted Date</small>
                 <strong>
-                  {formatDate(getRequestDate(selectedRequest))}
+                  {formatDate(
+                    getRequestDate(selectedRequest)
+                  )}
                 </strong>
               </div>
             </div>
@@ -1626,7 +2185,9 @@ export default function ManagerPage() {
               className="manager-detail"
               style={{ marginTop: 13 }}
             >
-              <small>Justification / Description</small>
+              <small>
+                Justification / Description
+              </small>
 
               <strong>
                 {selectedRequest.justification ||
@@ -1654,13 +2215,16 @@ export default function ManagerPage() {
                 <textarea
                   className="manager-reason"
                   value={reason}
-                  onChange={(event) => setReason(event.target.value)}
+                  onChange={(event) =>
+                    setReason(event.target.value)
+                  }
                   placeholder={
                     decision === "reject"
                       ? "Enter why this request is being rejected..."
                       : "Add an optional note for Finance..."
                   }
                   disabled={submitting}
+                  maxLength={4000}
                 />
               </div>
             )}
@@ -1677,11 +2241,14 @@ export default function ManagerPage() {
               {decision && (
                 <button
                   className={`manager-btn ${
-                    decision === "approve" ? "green" : "red"
+                    decision === "approve"
+                      ? "green"
+                      : "red"
                   }`}
                   disabled={
                     submitting ||
-                    (decision === "reject" && !reason.trim())
+                    (decision === "reject" &&
+                      !reason.trim())
                   }
                   onClick={submitDecision}
                 >

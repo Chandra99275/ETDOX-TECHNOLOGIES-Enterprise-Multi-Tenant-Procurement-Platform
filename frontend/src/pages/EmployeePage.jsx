@@ -28,13 +28,23 @@ import {
   CalendarDays,
   Building2,
   ChevronRight,
+  ShieldCheck,
+  Landmark,
+  UserCheck,
+  Trash2,
+  Plus,
+  Minus,
+  ShoppingBag,
+  Laptop,
+  Monitor,
+  Keyboard,
+  Printer,
+  Headphones,
+  Smartphone,
+  SearchX,
 } from "lucide-react";
 
 import "./EmployeePage.css";
-
-/* =========================================================
-   API CONFIGURATION
-========================================================= */
 
 const API_ORIGIN = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000"
@@ -45,6 +55,92 @@ const API_ORIGIN = (
 
 const API_ROOT = `${API_ORIGIN}/api/v1`;
 const REFRESH_INTERVAL = 15000;
+const ACTIVE_PAGE_STORAGE_KEY = "etdox_employee_active_page";
+
+/* =========================================================
+   SAMPLE STORE PRODUCTS
+
+   Temporary frontend catalog.
+   Later, replace this array with products from your API.
+========================================================= */
+
+const STORE_PRODUCTS = [
+  {
+    id: "ETD-001",
+    name: "Business Laptop",
+    category: "Computers",
+    description: "Professional laptop for office and development work.",
+    price: 65000,
+    currency: "INR",
+    icon: Laptop,
+    supplier: "ETDOX Approved Supplier",
+    stock: 15,
+  },
+  {
+    id: "ETD-002",
+    name: "Desktop Monitor",
+    category: "Computers",
+    description: "24-inch Full HD monitor for workplace productivity.",
+    price: 12500,
+    currency: "INR",
+    icon: Monitor,
+    supplier: "ETDOX Approved Supplier",
+    stock: 20,
+  },
+  {
+    id: "ETD-003",
+    name: "Wireless Keyboard",
+    category: "Accessories",
+    description: "Wireless keyboard for everyday office use.",
+    price: 1800,
+    currency: "INR",
+    icon: Keyboard,
+    supplier: "ETDOX Approved Supplier",
+    stock: 35,
+  },
+  {
+    id: "ETD-004",
+    name: "Office Headset",
+    category: "Accessories",
+    description: "Comfortable headset with microphone.",
+    price: 3200,
+    currency: "INR",
+    icon: Headphones,
+    supplier: "ETDOX Approved Supplier",
+    stock: 25,
+  },
+  {
+    id: "ETD-005",
+    name: "Office Printer",
+    category: "Office Equipment",
+    description: "Multifunction printer for office documents.",
+    price: 14500,
+    currency: "INR",
+    icon: Printer,
+    supplier: "ETDOX Approved Supplier",
+    stock: 8,
+  },
+  {
+    id: "ETD-006",
+    name: "Business Smartphone",
+    category: "Electronics",
+    description: "Business smartphone for work communication.",
+    price: 22000,
+    currency: "INR",
+    icon: Smartphone,
+    supplier: "ETDOX Approved Supplier",
+    stock: 12,
+  },
+];
+
+const STORE_CATEGORIES = [
+  "All",
+  ...new Set(STORE_PRODUCTS.map((product) => product.category)),
+];
+
+/* =========================================================
+   NAVIGATION
+========================================================= */
 
 const navigation = [
   { label: "Overview", icon: LayoutDashboard },
@@ -55,8 +151,20 @@ const navigation = [
   { label: "My Profile", icon: UserRound },
 ];
 
+const VALID_PAGES = navigation.map((item) => item.label);
+
+const getInitialPage = () => {
+  try {
+    const savedPage = localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY);
+
+    return VALID_PAGES.includes(savedPage) ? savedPage : "Overview";
+  } catch {
+    return "Overview";
+  }
+};
+
 /* =========================================================
-   GENERAL HELPERS
+   HELPERS
 ========================================================= */
 
 const money = (value, currency = "INR") => {
@@ -69,7 +177,11 @@ const money = (value, currency = "INR") => {
       maximumFractionDigits: 2,
     }).format(Number.isFinite(amount) ? amount : 0);
   } catch {
-    return `₹${Number.isFinite(amount) ? amount.toLocaleString("en-IN") : "0"}`;
+    return `₹${
+      Number.isFinite(amount)
+        ? amount.toLocaleString("en-IN")
+        : "0"
+    }`;
   }
 };
 
@@ -161,12 +273,12 @@ const requestNameOf = (item) =>
 const requestAmountOf = (item) =>
   Number(
     item?.totalAmount ??
-    item?.total_amount ??
-    item?.total ??
-    item?.amount ??
-    item?.estimatedAmount ??
-    item?.estimated_amount ??
-    0
+      item?.total_amount ??
+      item?.total ??
+      item?.amount ??
+      item?.estimatedAmount ??
+      item?.estimated_amount ??
+      0
   );
 
 const requestQuantityOf = (item) =>
@@ -178,9 +290,7 @@ const requestQuantityOf = (item) =>
 const requestDepartmentOf = (item) => {
   const department = item?.department;
 
-  if (typeof department === "string") {
-    return department;
-  }
+  if (typeof department === "string") return department;
 
   if (department && typeof department === "object") {
     return (
@@ -215,36 +325,36 @@ const budgetIdOf = (budget) =>
 const budgetAllocatedOf = (budget) =>
   Number(
     budget?.allocatedAmount ??
-    budget?.allocated_amount ??
-    budget?.allocated ??
-    budget?.totalAmount ??
-    budget?.total_amount ??
-    budget?.amount ??
-    0
+      budget?.allocated_amount ??
+      budget?.allocated ??
+      budget?.totalAmount ??
+      budget?.total_amount ??
+      budget?.amount ??
+      0
   );
 
 const budgetSpentOf = (budget) =>
   Number(
     budget?.spentAmount ??
-    budget?.spent_amount ??
-    budget?.spent ??
-    0
+      budget?.spent_amount ??
+      budget?.spent ??
+      0
   );
 
 const budgetCommittedOf = (budget) =>
   Number(
     budget?.committedAmount ??
-    budget?.committed_amount ??
-    budget?.committed ??
-    0
+      budget?.committed_amount ??
+      budget?.committed ??
+      0
   );
 
 const budgetReservedOf = (budget) =>
   Number(
     budget?.reservedAmount ??
-    budget?.reserved_amount ??
-    budget?.reserved ??
-    0
+      budget?.reserved_amount ??
+      budget?.reserved ??
+      0
   );
 
 const budgetAvailableOf = (budget) => {
@@ -289,16 +399,13 @@ const budgetDepartmentOf = (budget) => {
   );
 };
 
-/* =========================================================
-   API RESPONSE HELPERS
-========================================================= */
-
 const unwrapArray = (response, preferredKeys = []) => {
   const keys = [
     ...preferredKeys,
     "requests",
     "budgets",
     "invoices",
+    "products",
     "items",
     "records",
     "results",
@@ -308,41 +415,24 @@ const unwrapArray = (response, preferredKeys = []) => {
   let current = response;
 
   for (let depth = 0; depth < 8; depth += 1) {
-    if (Array.isArray(current)) {
-      return current;
-    }
+    if (Array.isArray(current)) return current;
+    if (!current || typeof current !== "object") return [];
 
-    if (!current || typeof current !== "object") {
-      return [];
+    for (const key of keys) {
+      if (Array.isArray(current[key])) return current[key];
     }
 
     let found = false;
 
-    for (const key of keys) {
-      if (Array.isArray(current[key])) {
-        return current[key];
-      }
-    }
-
-    for (const key of [
-      "data",
-      "result",
-      "payload",
-      "response",
-    ]) {
-      if (
-        current[key] &&
-        typeof current[key] === "object"
-      ) {
+    for (const key of ["data", "result", "payload", "response"]) {
+      if (current[key] && typeof current[key] === "object") {
         current = current[key];
         found = true;
         break;
       }
     }
 
-    if (!found) {
-      return [];
-    }
+    if (!found) return [];
   }
 
   return [];
@@ -369,10 +459,7 @@ const findRequestId = (object, depth = 0) => {
   }
 
   const directId = requestIdOf(object);
-
-  if (directId) {
-    return directId;
-  }
+  if (directId) return directId;
 
   for (const key of [
     "request",
@@ -383,10 +470,7 @@ const findRequestId = (object, depth = 0) => {
   ]) {
     if (object[key] && typeof object[key] === "object") {
       const id = findRequestId(object[key], depth + 1);
-
-      if (id) {
-        return id;
-      }
+      if (id) return id;
     }
   }
 
@@ -394,23 +478,14 @@ const findRequestId = (object, depth = 0) => {
 };
 
 const getRequestError = (result, fallback) => {
-  const details =
-    result?.details ||
-    result?.errors ||
-    result?.issues;
+  const details = result?.details || result?.errors || result?.issues;
 
   if (Array.isArray(details)) {
     const messages = details
-      .map((item) =>
-        item?.message ||
-        item?.msg ||
-        item?.path?.join?.(".")
-      )
+      .map((item) => item?.message || item?.msg || item?.path?.join?.("."))
       .filter(Boolean);
 
-    if (messages.length) {
-      return messages.join("; ");
-    }
+    if (messages.length) return messages.join("; ");
   }
 
   if (details && typeof details === "object") {
@@ -419,12 +494,7 @@ const getRequestError = (result, fallback) => {
       .join("; ");
   }
 
-  return (
-    result?.message ||
-    result?.error ||
-    result?.detail ||
-    fallback
-  );
+  return result?.message || result?.error || result?.detail || fallback;
 };
 
 const getToken = () =>
@@ -438,6 +508,103 @@ const getToken = () =>
 const getStatusClass = (status) =>
   normalizeStatus(status).toLowerCase().replaceAll("_", "-");
 
+const formatDate = (value) => {
+  if (!value) return "—";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+const formatApprovalDate = (value) => {
+  if (!value) return "Awaiting action";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "Awaiting action";
+
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+/* =========================================================
+   APPROVAL PROGRESS
+========================================================= */
+
+const getApprovalProgress = (status) => {
+  const normalized = normalizeStatus(status);
+
+  const managerRejected = [
+    "REJECTED_MANAGER",
+    "MANAGER_REJECTED",
+    "REJECTED_BY_MANAGER",
+  ].includes(normalized);
+
+  const financeRejected = [
+    "REJECTED_FINANCE",
+    "FINANCE_REJECTED",
+    "REJECTED_BY_FINANCE",
+    "REJECTED",
+  ].includes(normalized);
+
+  const managerApproved =
+    MANAGER_APPROVED.includes(normalized) ||
+    FINANCE_PENDING.includes(normalized) ||
+    FINANCE_APPROVED.includes(normalized);
+
+  const financeApproved = FINANCE_APPROVED.includes(normalized);
+
+  return {
+    managerApproved,
+    financeApproved,
+    managerRejected,
+    financeRejected,
+    rejected: REJECTED_STATUSES.includes(normalized),
+    cancelled: normalized === "CANCELLED",
+    managerState: managerRejected
+      ? "rejected"
+      : managerApproved
+        ? "approved"
+        : "pending",
+    financeState: financeRejected
+      ? "rejected"
+      : financeApproved
+        ? "approved"
+        : managerApproved
+          ? "pending"
+          : "waiting",
+  };
+};
+
+const canWithdrawRequest = (item) => {
+  const status = normalizeStatus(item?.status);
+
+  return [
+    "DRAFT",
+    "SUBMITTED",
+    "PENDING",
+    "PENDING_MANAGER",
+    "MANAGER_PENDING",
+    "PENDING_FINANCE",
+    "FINANCE_PENDING",
+  ].includes(status);
+};
+
+/* =========================================================
+   SMALL COMPONENTS
+========================================================= */
+
 function StatusBadge({ status }) {
   const normalized = normalizeStatus(status);
 
@@ -448,7 +615,11 @@ function StatusBadge({ status }) {
   );
 }
 
-function EmptyState({ icon: Icon = ClipboardList, title, description }) {
+function EmptyState({
+  icon: Icon = ClipboardList,
+  title,
+  description,
+}) {
   return (
     <div className="employee-empty-state">
       <span className="employee-empty-icon">
@@ -460,12 +631,140 @@ function EmptyState({ icon: Icon = ClipboardList, title, description }) {
   );
 }
 
+function ApprovalTimeline({ request }) {
+  const progress = getApprovalProgress(request.status);
+
+  const submittedDate =
+    request.submittedAt ||
+    request.submitted_at ||
+    request.createdAt ||
+    request.created_at;
+
+  const managerDate =
+    request.managerApprovedAt ||
+    request.manager_approved_at ||
+    request.managerActionAt ||
+    request.manager_action_at;
+
+  const financeDate =
+    request.financeApprovedAt ||
+    request.finance_approved_at ||
+    request.financeActionAt ||
+    request.finance_action_at;
+
+  const stages = [
+    {
+      key: "submitted",
+      title: "Request submitted",
+      subtitle: "Employee",
+      date: submittedDate,
+      state: "approved",
+      icon: UserCheck,
+    },
+    {
+      key: "manager",
+      title: "Manager approval",
+      subtitle: progress.managerRejected
+        ? "Rejected by manager"
+        : progress.managerApproved
+          ? "Approved by manager"
+          : "Waiting for manager",
+      date: managerDate,
+      state: progress.managerState,
+      icon: ShieldCheck,
+    },
+    {
+      key: "finance",
+      title: "Finance approval",
+      subtitle: progress.financeRejected
+        ? "Rejected by Finance"
+        : progress.financeApproved
+          ? "Approved by Finance"
+          : progress.managerApproved
+            ? "Waiting for Finance"
+            : "Pending manager approval",
+      date: financeDate,
+      state: progress.financeState,
+      icon: Landmark,
+    },
+  ];
+
+  return (
+    <div className="approval-timeline">
+      <div className="approval-timeline-heading">
+        <div>
+          <h4>Approval progress</h4>
+          <p>Track each stage of your purchase request.</p>
+        </div>
+        <StatusBadge status={request.status} />
+      </div>
+
+      <div className="approval-track">
+        {stages.map((stage, index) => {
+          const Icon = stage.icon;
+
+          return (
+            <div
+              className={`approval-stage approval-stage-${stage.state}`}
+              key={stage.key}
+            >
+              <div className="approval-stage-indicator">
+                <span className="approval-stage-icon">
+                  {stage.state === "rejected" ? (
+                    <X size={19} />
+                  ) : stage.state === "approved" ? (
+                    <CheckCircle2 size={19} />
+                  ) : (
+                    <Icon size={19} />
+                  )}
+                </span>
+
+                {index !== stages.length - 1 && (
+                  <span
+                    className={`approval-stage-line ${
+                      stage.state === "approved"
+                        ? "approval-line-complete"
+                        : ""
+                    }`}
+                  />
+                )}
+              </div>
+
+              <div className="approval-stage-content">
+                <strong>{stage.title}</strong>
+                <span className="approval-stage-subtitle">
+                  {stage.subtitle}
+                </span>
+                <small>{formatApprovalDate(stage.date)}</small>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {progress.rejected && (
+        <div className="approval-rejection-note">
+          <AlertCircle size={17} />
+          This request was rejected. Contact the relevant approver
+          for further information.
+        </div>
+      )}
+
+      {progress.cancelled && (
+        <div className="approval-cancelled-note">
+          This request has been cancelled.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* =========================================================
    EMPLOYEE PAGE
 ========================================================= */
 
 export default function EmployeePage() {
-  const [activePage, setActivePage] = useState("Overview");
+  const [activePage, setActivePage] = useState(getInitialPage);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [requests, setRequests] = useState([]);
@@ -481,6 +780,13 @@ export default function EmployeePage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [confirmWithdraw, setConfirmWithdraw] = useState(null);
+
+  /* Store state */
+  const [storeSearch, setStoreSearch] = useState("");
+  const [storeCategory, setStoreCategory] = useState("All");
+  const [cart, setCart] = useState([]);
+  const [checkoutBudgetId, setCheckoutBudgetId] = useState("");
 
   const refreshLock = useRef(false);
   const mounted = useRef(false);
@@ -497,6 +803,25 @@ export default function EmployeePage() {
   });
 
   /* =======================================================
+     PERSIST ACTIVE PAGE
+  ======================================================= */
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_PAGE_STORAGE_KEY, activePage);
+    } catch (storageError) {
+      console.warn("[ETDOX] Could not save active page:", storageError);
+    }
+  }, [activePage]);
+
+  const navigateTo = useCallback((page) => {
+    setActivePage(page);
+    setMobileMenuOpen(false);
+    setError("");
+    setSuccess("");
+  }, []);
+
+  /* =======================================================
      LOGOUT
   ======================================================= */
 
@@ -506,6 +831,7 @@ export default function EmployeePage() {
       "accessToken",
       "authToken",
       "user",
+      ACTIVE_PAGE_STORAGE_KEY,
     ].forEach((key) => {
       localStorage.removeItem(key);
       sessionStorage.removeItem(key);
@@ -523,20 +849,14 @@ export default function EmployeePage() {
       const token = getToken();
 
       if (!token) {
-        throw new Error(
-          "Login token not found. Please log in again."
-        );
+        throw new Error("Login token not found. Please log in again.");
       }
 
       const headers = new Headers(options.headers || {});
-
       headers.set("Accept", "application/json");
       headers.set("Authorization", `Bearer ${token}`);
 
-      if (
-        options.body &&
-        !(options.body instanceof FormData)
-      ) {
+      if (options.body && !(options.body instanceof FormData)) {
         headers.set("Content-Type", "application/json");
       }
 
@@ -553,9 +873,7 @@ export default function EmployeePage() {
         );
       }
 
-      const contentType =
-        response.headers.get("content-type") || "";
-
+      const contentType = response.headers.get("content-type") || "";
       let result = {};
 
       if (contentType.includes("application/json")) {
@@ -573,10 +891,7 @@ export default function EmployeePage() {
 
       if (response.status === 401) {
         logout();
-
-        throw new Error(
-          "Your login session expired. Please log in again."
-        );
+        throw new Error("Your login session expired. Please log in again.");
       }
 
       if (!response.ok) {
@@ -589,14 +904,11 @@ export default function EmployeePage() {
 
         apiError.status = response.status;
         apiError.response = result;
-
         throw apiError;
       }
 
       if (result?.success === false) {
-        throw new Error(
-          getRequestError(result, "API operation failed.")
-        );
+        throw new Error(getRequestError(result, "API operation failed."));
       }
 
       return result;
@@ -626,14 +938,12 @@ export default function EmployeePage() {
   );
 
   /* =======================================================
-     LOAD REAL DATABASE DATA
+     LOAD DASHBOARD
   ======================================================= */
 
   const loadDashboard = useCallback(
     async (quiet = false) => {
-      if (refreshLock.current) {
-        return;
-      }
+      if (refreshLock.current) return;
 
       refreshLock.current = true;
 
@@ -643,38 +953,24 @@ export default function EmployeePage() {
 
       try {
         const results = await Promise.allSettled([
-          tryEndpoints([
-            "/procurement/requests",
-            "/procurement",
-          ]),
+          tryEndpoints(["/procurement/requests", "/procurement"]),
           apiRequest("/budgets"),
-          tryEndpoints([
-            "/invoices",
-            "/procurement/invoices",
-          ]),
+          tryEndpoints(["/invoices", "/procurement/invoices"]),
           apiRequest("/auth/me"),
         ]);
 
-        if (!mounted.current) {
-          return;
-        }
+        if (!mounted.current) return;
 
-        const [
-          requestResult,
-          budgetResult,
-          invoiceResult,
-          userResult,
-        ] = results;
+        const [requestResult, budgetResult, invoiceResult, userResult] =
+          results;
 
         const errors = [];
 
-        /* Requests */
-
         if (requestResult.status === "fulfilled") {
-          const loadedRequests = unwrapArray(
-            requestResult.value,
-            ["requests", "items"]
-          );
+          const loadedRequests = unwrapArray(requestResult.value, [
+            "requests",
+            "items",
+          ]);
 
           setRequests(loadedRequests);
 
@@ -687,65 +983,59 @@ export default function EmployeePage() {
           }
         } else {
           errors.push(
-            `Requests: ${requestResult.reason?.message || "Could not load requests."}`
+            `Requests: ${
+              requestResult.reason?.message ||
+              "Could not load requests."
+            }`
           );
         }
 
-        /* Budgets */
-
         if (budgetResult.status === "fulfilled") {
-          const loadedBudgets = unwrapArray(
-            budgetResult.value,
-            ["budgets", "items"]
-          );
+          const loadedBudgets = unwrapArray(budgetResult.value, [
+            "budgets",
+            "items",
+          ]);
 
           setBudgets(loadedBudgets);
 
           setForm((previous) => {
-            const currentBudget = loadedBudgets.find(
+            const selected = loadedBudgets.find(
               (item) =>
-                String(budgetIdOf(item)) ===
-                String(previous.budgetId)
+                String(budgetIdOf(item)) === String(previous.budgetId)
             );
-
-            const selectedBudget =
-              currentBudget || null;
 
             return {
               ...previous,
-              budgetId: selectedBudget
-                ? String(budgetIdOf(selectedBudget))
+              budgetId: selected
+                ? String(budgetIdOf(selected))
                 : previous.budgetId,
               currency:
-                selectedBudget?.currency ||
-                previous.currency ||
-                "INR",
+                selected?.currency || previous.currency || "INR",
             };
           });
         } else {
           errors.push(
-            `Budgets: ${budgetResult.reason?.message || "Could not load budgets."}`
+            `Budgets: ${
+              budgetResult.reason?.message ||
+              "Could not load budgets."
+            }`
           );
         }
-
-        /* Invoices */
 
         if (invoiceResult.status === "fulfilled") {
           setInvoices(
-            unwrapArray(invoiceResult.value, [
-              "invoices",
-              "items",
-            ])
+            unwrapArray(invoiceResult.value, ["invoices", "items"])
           );
         }
-
-        /* Employee profile */
 
         if (userResult.status === "fulfilled") {
           setEmployee(getUser(userResult.value));
         } else {
           errors.push(
-            `Profile: ${userResult.reason?.message || "Could not load profile."}`
+            `Profile: ${
+              userResult.reason?.message ||
+              "Could not load profile."
+            }`
           );
         }
 
@@ -753,9 +1043,7 @@ export default function EmployeePage() {
         setLastUpdated(new Date());
       } catch (err) {
         if (mounted.current) {
-          setError(
-            err.message || "Unable to load employee dashboard."
-          );
+          setError(err.message || "Unable to load employee dashboard.");
         }
       } finally {
         refreshLock.current = false;
@@ -770,7 +1058,6 @@ export default function EmployeePage() {
 
   useEffect(() => {
     mounted.current = true;
-
     loadDashboard();
 
     const timer = window.setInterval(() => {
@@ -785,15 +1072,11 @@ export default function EmployeePage() {
       }
     };
 
-    document.addEventListener(
-      "visibilitychange",
-      handleVisibility
-    );
+    document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
       mounted.current = false;
       window.clearInterval(timer);
-
       document.removeEventListener(
         "visibilitychange",
         handleVisibility
@@ -810,17 +1093,13 @@ export default function EmployeePage() {
 
     if (name === "budgetId") {
       const selectedBudget = budgets.find(
-        (item) =>
-          String(budgetIdOf(item)) === String(value)
+        (item) => String(budgetIdOf(item)) === String(value)
       );
 
       setForm((previous) => ({
         ...previous,
         budgetId: value,
-        currency:
-          selectedBudget?.currency ||
-          previous.currency ||
-          "INR",
+        currency: selectedBudget?.currency || previous.currency || "INR",
       }));
 
       return;
@@ -833,15 +1112,45 @@ export default function EmployeePage() {
   };
 
   /* =======================================================
-     CREATE AND SUBMIT REAL REQUEST
+     CREATE PURCHASE REQUEST
   ======================================================= */
+
+  const createAndSubmitRequest = async (payload) => {
+    const createResponse = await apiRequest("/procurement", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    const createdRequest = getCreatedRequest(createResponse);
+    const createdId =
+      findRequestId(createResponse) || requestIdOf(createdRequest);
+
+    if (!createdId) {
+      throw new Error(
+        "The server did not return a request ID. Check the procurement create response."
+      );
+    }
+
+    try {
+      await apiRequest(
+        `/procurement/${encodeURIComponent(createdId)}/submit`,
+        { method: "POST" }
+      );
+    } catch (submitError) {
+      await loadDashboard(true);
+
+      throw new Error(
+        `Request ${createdId} was saved, but submission failed: ${submitError.message}`
+      );
+    }
+
+    return createdId;
+  };
 
   const submitRequest = async (event) => {
     event.preventDefault();
 
-    if (submitting) {
-      return;
-    }
+    if (submitting) return;
 
     setError("");
     setSuccess("");
@@ -862,10 +1171,7 @@ export default function EmployeePage() {
       return;
     }
 
-    if (
-      !Number.isInteger(quantity) ||
-      quantity < 1
-    ) {
+    if (!Number.isInteger(quantity) || quantity < 1) {
       setError("Quantity must be a whole number greater than zero.");
       return;
     }
@@ -880,27 +1186,21 @@ export default function EmployeePage() {
     }
 
     const selectedBudget = budgets.find(
-      (item) =>
-        String(budgetIdOf(item)) === String(form.budgetId)
+      (item) => String(budgetIdOf(item)) === String(form.budgetId)
     );
 
-    if (
-      selectedBudget &&
-      total > budgetAvailableOf(selectedBudget)
-    ) {
+    if (selectedBudget && total > budgetAvailableOf(selectedBudget)) {
       setError(
         `Insufficient budget. Available: ${money(
           budgetAvailableOf(selectedBudget),
           selectedBudget.currency
         )}. Request total: ${money(total, form.currency)}.`
       );
-
       return;
     }
 
     const employeeDepartment =
-      employee?.department &&
-      typeof employee.department === "object"
+      employee?.department && typeof employee.department === "object"
         ? employee.department
         : null;
 
@@ -916,9 +1216,7 @@ export default function EmployeePage() {
         : employeeDepartment?.name) ||
       employee?.departmentName ||
       employee?.department_name ||
-      (selectedBudget
-        ? budgetDepartmentOf(selectedBudget)
-        : "");
+      (selectedBudget ? budgetDepartmentOf(selectedBudget) : "");
 
     const description = [
       form.description.trim(),
@@ -928,14 +1226,6 @@ export default function EmployeePage() {
     ]
       .filter(Boolean)
       .join("\n");
-
-    /*
-      These fields support the procurement service's
-      common input names.
-
-      Do not send a fake employee ID or tenant ID.
-      The backend must get those from authenticated req.user.
-    */
 
     const payload = {
       title: productName,
@@ -947,15 +1237,10 @@ export default function EmployeePage() {
       unitPrice,
       amount: total,
       total,
-      currency:
-        selectedBudget?.currency ||
-        form.currency ||
-        "INR",
+      currency: selectedBudget?.currency || form.currency || "INR",
       department: departmentName,
       departmentName,
-      ...(departmentId
-        ? { departmentId }
-        : {}),
+      ...(departmentId ? { departmentId } : {}),
       ...(selectedBudget
         ? {
             budgetId: budgetIdOf(selectedBudget),
@@ -976,52 +1261,7 @@ export default function EmployeePage() {
     setSubmitting(true);
 
     try {
-      /* STEP 1: Save the request in PostgreSQL. */
-
-      const createResponse = await apiRequest(
-        "/procurement",
-        {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }
-      );
-
-      const createdRequest =
-        getCreatedRequest(createResponse);
-
-      const createdId =
-        findRequestId(createResponse) ||
-        requestIdOf(createdRequest);
-
-      if (!createdId) {
-        console.error(
-          "[ETDOX] Create response did not contain an ID:",
-          createResponse
-        );
-
-        throw new Error(
-          "The server received the create request but did not return a request ID. Check the procurement controller's create response."
-        );
-      }
-
-      /* STEP 2: Submit the saved request for manager approval. */
-
-      try {
-        await apiRequest(
-          `/procurement/${encodeURIComponent(createdId)}/submit`,
-          {
-            method: "POST",
-          }
-        );
-      } catch (submitError) {
-        await loadDashboard(true);
-
-        throw new Error(
-          `Your request was saved with ID ${createdId}, but submission failed: ${submitError.message}`
-        );
-      }
-
-      /* STEP 3: Clear the form. */
+      const createdId = await createAndSubmitRequest(payload);
 
       setForm((previous) => ({
         ...previous,
@@ -1033,22 +1273,15 @@ export default function EmployeePage() {
         justification: "",
       }));
 
-      /* STEP 4: Show success and reload real database records. */
-
       setSuccess(
         `Purchase request ${createdId} was successfully submitted for manager approval.`
       );
 
-      setActivePage("My Requests");
-
+      navigateTo("My Requests");
       await loadDashboard(true);
     } catch (err) {
       console.error("[ETDOX] Purchase request error:", err);
-
-      setError(
-        err.message || "Could not create the purchase request."
-      );
-
+      setError(err.message || "Could not create the purchase request.");
       await loadDashboard(true);
     } finally {
       setSubmitting(false);
@@ -1056,15 +1289,517 @@ export default function EmployeePage() {
   };
 
   /* =======================================================
-     REAL REQUEST COUNTS
+     PRODUCT STORE
+  ======================================================= */
+
+  const filteredProducts = useMemo(() => {
+    const query = storeSearch.trim().toLowerCase();
+
+    return STORE_PRODUCTS.filter((product) => {
+      const matchesCategory =
+        storeCategory === "All" ||
+        product.category === storeCategory;
+
+      const matchesSearch =
+        !query ||
+        [
+          product.name,
+          product.category,
+          product.description,
+          product.id,
+        ].some((value) =>
+          String(value || "").toLowerCase().includes(query)
+        );
+
+      return matchesCategory && matchesSearch;
+    });
+  }, [storeSearch, storeCategory]);
+
+  const cartCount = useMemo(
+    () => cart.reduce((sum, item) => sum + item.quantity, 0),
+    [cart]
+  );
+
+  const cartTotal = useMemo(
+    () =>
+      cart.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0
+      ),
+    [cart]
+  );
+
+  const addToCart = (product) => {
+    setCart((previous) => {
+      const existing = previous.find(
+        (item) => item.id === product.id
+      );
+
+      if (existing) {
+        return previous.map((item) =>
+          item.id === product.id
+            ? {
+                ...item,
+                quantity: Math.min(
+                  product.stock,
+                  item.quantity + 1
+                ),
+              }
+            : item
+        );
+      }
+
+      return [
+        ...previous,
+        {
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          currency: product.currency,
+          supplier: product.supplier,
+          quantity: 1,
+        },
+      ];
+    });
+
+    setSuccess(`${product.name} added to your cart.`);
+    setError("");
+  };
+
+  const updateCartQuantity = (productId, change) => {
+    setCart((previous) =>
+      previous
+        .map((item) => {
+          if (item.id !== productId) return item;
+
+          const product = STORE_PRODUCTS.find(
+            (entry) => entry.id === productId
+          );
+
+          const nextQuantity = item.quantity + change;
+
+          return {
+            ...item,
+            quantity: Math.min(
+              product?.stock || 99,
+              nextQuantity
+            ),
+          };
+        })
+        .filter((item) => item.quantity > 0)
+    );
+  };
+
+  const removeFromCart = (productId) => {
+    setCart((previous) =>
+      previous.filter((item) => item.id !== productId)
+    );
+  };
+
+  const checkoutStore = async () => {
+    if (submitting) return;
+
+    if (!cart.length) {
+      setError("Your cart is empty.");
+      return;
+    }
+
+    const selectedBudget = budgets.find(
+      (item) =>
+        String(budgetIdOf(item)) === String(checkoutBudgetId)
+    );
+
+    if (!checkoutBudgetId) {
+      setError("Select a budget allocation before placing your order.");
+      return;
+    }
+
+    if (!selectedBudget) {
+      setError("The selected budget could not be found. Refresh your budgets.");
+      return;
+    }
+
+    if (cartTotal > budgetAvailableOf(selectedBudget)) {
+      setError(
+        `Insufficient budget. Available: ${money(
+          budgetAvailableOf(selectedBudget),
+          selectedBudget.currency
+        )}. Cart total: ${money(cartTotal, selectedBudget.currency)}.`
+      );
+      return;
+    }
+
+    const department =
+      typeof employee?.department === "string"
+        ? employee.department
+        : employee?.department?.name ||
+          employee?.departmentName ||
+          employee?.department_name ||
+          budgetDepartmentOf(selectedBudget);
+
+    const departmentId =
+      employee?.departmentId ||
+      employee?.department_id ||
+      employee?.department?.id ||
+      budgetDepartmentIdOf(selectedBudget);
+
+    const orderDescription = cart
+      .map(
+        (item) =>
+          `${item.name} | Product ID: ${item.id} | Quantity: ${item.quantity} | Unit price: ${money(item.price, item.currency)} | Line total: ${money(item.price * item.quantity, item.currency)}`
+      )
+      .join("\n");
+
+    const totalQuantity = cart.reduce(
+      (sum, item) => sum + item.quantity,
+      0
+    );
+
+    const payload = {
+      title: `Store order - ${cart.length} product type(s)`,
+      productName: `Store order - ${cart.length} product type(s)`,
+      description: orderDescription,
+      justification:
+        "Purchase requested through the ETDOX employee product store.",
+      supplier: "Multiple approved store suppliers",
+      quantity: totalQuantity,
+      unitPrice: Number((cartTotal / totalQuantity).toFixed(2)),
+      amount: cartTotal,
+      total: cartTotal,
+      currency: selectedBudget.currency || "INR",
+      department,
+      departmentName: department,
+      ...(departmentId ? { departmentId } : {}),
+      budgetId: budgetIdOf(selectedBudget),
+      ...(selectedBudget.costCenterId ||
+      selectedBudget.cost_center_id ||
+      selectedBudget.costCenter?.id
+        ? {
+            costCenterId:
+              selectedBudget.costCenterId ||
+              selectedBudget.cost_center_id ||
+              selectedBudget.costCenter?.id,
+          }
+        : {}),
+    };
+
+    setSubmitting(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const createdId = await createAndSubmitRequest(payload);
+
+      setCart([]);
+      setCheckoutBudgetId("");
+
+      setSuccess(
+        `Your store order was submitted successfully. Request ID: ${createdId}. It is now waiting for manager approval.`
+      );
+
+      navigateTo("My Requests");
+      await loadDashboard(true);
+    } catch (err) {
+      console.error("[ETDOX] Store checkout error:", err);
+      setError(err.message || "Could not place your store order.");
+      await loadDashboard(true);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const renderStore = () => (
+    <div className="employee-store">
+      <section className="employee-content-card proc-card">
+        <div className="employee-section-heading">
+          <div>
+            <h2>ETDOX Product Store</h2>
+            <p>
+              Browse workplace products and submit them for procurement
+              approval.
+            </p>
+          </div>
+
+          <div className="employee-store-cart-indicator">
+            <ShoppingBag size={20} />
+            <strong>{cartCount}</strong>
+            <span>Cart items</span>
+          </div>
+        </div>
+
+        <div className="employee-store-toolbar">
+          <label className="proc-search-box">
+            <Search size={17} />
+            <input
+              value={storeSearch}
+              onChange={(event) => setStoreSearch(event.target.value)}
+              placeholder="Search products..."
+            />
+          </label>
+
+          <div className="employee-store-categories">
+            {STORE_CATEGORIES.map((category) => (
+              <button
+                key={category}
+                type="button"
+                className={
+                  storeCategory === category
+                    ? "employee-store-category active"
+                    : "employee-store-category"
+                }
+                onClick={() => setStoreCategory(category)}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="employee-store-grid">
+          {filteredProducts.map((product) => {
+            const Icon = product.icon;
+            const inCart = cart.find(
+              (item) => item.id === product.id
+            );
+
+            return (
+              <article
+                className="employee-store-product"
+                key={product.id}
+              >
+                <div className="employee-store-product-image">
+                  <Icon size={42} strokeWidth={1.5} />
+                </div>
+
+                <div className="employee-store-product-info">
+                  <span className="employee-store-product-category">
+                    {product.category}
+                  </span>
+
+                  <h3>{product.name}</h3>
+                  <p>{product.description}</p>
+
+                  <div className="employee-store-product-stock">
+                    <Package size={14} />
+                    {product.stock} available
+                  </div>
+
+                  <div className="employee-store-product-bottom">
+                    <strong>
+                      {money(product.price, product.currency)}
+                    </strong>
+
+                    <button
+                      type="button"
+                      className="employee-primary-button"
+                      onClick={() => addToCart(product)}
+                      disabled={
+                        product.stock <= 0 ||
+                        (inCart && inCart.quantity >= product.stock)
+                      }
+                    >
+                      <Plus size={16} />
+                      {inCart ? "Add more" : "Add to cart"}
+                    </button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        {!filteredProducts.length && (
+          <EmptyState
+            icon={SearchX}
+            title="No products found"
+            description="Try another product name or category."
+          />
+        )}
+
+        <p className="proc-note">
+          Product listings are currently sample store data. The catalogue
+          will be connected to the ETDOX database in the next backend update.
+        </p>
+      </section>
+
+      <section className="employee-content-card proc-card">
+        <div className="employee-section-heading">
+          <div>
+            <h2>Your shopping cart</h2>
+            <p>Review your selected products before submitting an order.</p>
+          </div>
+          <ShoppingCart size={22} />
+        </div>
+
+        {cart.length ? (
+          <>
+            <div className="employee-store-cart-list">
+              {cart.map((item) => (
+                <div className="employee-store-cart-item" key={item.id}>
+                  <div className="employee-store-cart-item-info">
+                    <strong>{item.name}</strong>
+                    <span>
+                      {item.id} · {money(item.price, item.currency)} each
+                    </span>
+                  </div>
+
+                  <div className="employee-store-quantity">
+                    <button
+                      type="button"
+                      aria-label={`Decrease ${item.name} quantity`}
+                      onClick={() => updateCartQuantity(item.id, -1)}
+                    >
+                      <Minus size={15} />
+                    </button>
+
+                    <strong>{item.quantity}</strong>
+
+                    <button
+                      type="button"
+                      aria-label={`Increase ${item.name} quantity`}
+                      onClick={() => updateCartQuantity(item.id, 1)}
+                    >
+                      <Plus size={15} />
+                    </button>
+                  </div>
+
+                  <strong className="employee-store-line-total">
+                    {money(item.price * item.quantity, item.currency)}
+                  </strong>
+
+                  <button
+                    type="button"
+                    className="employee-store-remove"
+                    onClick={() => removeFromCart(item.id)}
+                    aria-label={`Remove ${item.name}`}
+                  >
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="employee-store-checkout">
+              <label>
+                Charge to budget *
+                <select
+                  value={checkoutBudgetId}
+                  onChange={(event) =>
+                    setCheckoutBudgetId(event.target.value)
+                  }
+                >
+                  <option value="">Select budget allocation</option>
+                  {budgets.map((budget, index) => (
+                    <option
+                      key={budgetIdOf(budget) || index}
+                      value={budgetIdOf(budget)}
+                    >
+                      {budget.name ||
+                        budget.budgetName ||
+                        budget.budget_name ||
+                        budgetDepartmentOf(budget)}
+                      {" — Available "}
+                      {money(
+                        budgetAvailableOf(budget),
+                        budget.currency
+                      )}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="employee-store-total">
+                <span>Order total</span>
+                <strong>{money(cartTotal)}</strong>
+              </div>
+
+              {checkoutBudgetId &&
+                budgets.find(
+                  (item) =>
+                    String(budgetIdOf(item)) ===
+                    String(checkoutBudgetId)
+                ) &&
+                cartTotal >
+                  budgetAvailableOf(
+                    budgets.find(
+                      (item) =>
+                        String(budgetIdOf(item)) ===
+                        String(checkoutBudgetId)
+                    )
+                  ) && (
+                  <p className="proc-inline-warning">
+                    <AlertCircle size={17} />
+                    Your cart total exceeds the available budget.
+                  </p>
+                )}
+
+              <button
+                type="button"
+                className="employee-primary-button employee-store-checkout-button"
+                onClick={checkoutStore}
+                disabled={
+                  submitting ||
+                  !cart.length ||
+                  !checkoutBudgetId ||
+                  !budgets.some(
+                    (item) =>
+                      String(budgetIdOf(item)) ===
+                        String(checkoutBudgetId) &&
+                      cartTotal <= budgetAvailableOf(item)
+                  )
+                }
+              >
+                <Send size={17} />
+                {submitting
+                  ? "Submitting order..."
+                  : "Place order for approval"}
+              </button>
+
+              <p className="proc-note">
+                Placing this order creates a procurement request. It does
+                not immediately purchase the products. Your manager and
+                Finance team must complete the approval workflow.
+              </p>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon={ShoppingCart}
+            title="Your cart is empty"
+            description="Add products from the store to create a purchase order."
+          />
+        )}
+      </section>
+    </div>
+  );
+
+  /* =======================================================
+     WITHDRAW REQUEST
+  ======================================================= */
+
+  const withdrawRequest = (request) => {
+    if (!canWithdrawRequest(request)) return;
+    setConfirmWithdraw(request);
+  };
+
+  const confirmWithdrawRequest = async () => {
+    if (!confirmWithdraw) return;
+
+    setConfirmWithdraw(null);
+
+    setError(
+      "Withdrawal is not connected yet. Add or confirm the employee-authorized withdrawal endpoint in the backend before enabling this action."
+    );
+  };
+
+  /* =======================================================
+     COUNTS
   ======================================================= */
 
   const pendingManagerCount = useMemo(
     () =>
       requests.filter((item) =>
-        MANAGER_PENDING.includes(
-          normalizeStatus(item.status)
-        )
+        MANAGER_PENDING.includes(normalizeStatus(item.status))
       ).length,
     [requests]
   );
@@ -1072,9 +1807,7 @@ export default function EmployeePage() {
   const managerApprovedCount = useMemo(
     () =>
       requests.filter((item) =>
-        MANAGER_APPROVED.includes(
-          normalizeStatus(item.status)
-        )
+        MANAGER_APPROVED.includes(normalizeStatus(item.status))
       ).length,
     [requests]
   );
@@ -1082,9 +1815,7 @@ export default function EmployeePage() {
   const pendingFinanceCount = useMemo(
     () =>
       requests.filter((item) =>
-        FINANCE_PENDING.includes(
-          normalizeStatus(item.status)
-        )
+        FINANCE_PENDING.includes(normalizeStatus(item.status))
       ).length,
     [requests]
   );
@@ -1092,9 +1823,7 @@ export default function EmployeePage() {
   const financeApprovedCount = useMemo(
     () =>
       requests.filter((item) =>
-        FINANCE_APPROVED.includes(
-          normalizeStatus(item.status)
-        )
+        FINANCE_APPROVED.includes(normalizeStatus(item.status))
       ).length,
     [requests]
   );
@@ -1102,23 +1831,16 @@ export default function EmployeePage() {
   const rejectedCount = useMemo(
     () =>
       requests.filter((item) =>
-        REJECTED_STATUSES.includes(
-          normalizeStatus(item.status)
-        )
+        REJECTED_STATUSES.includes(normalizeStatus(item.status))
       ).length,
     [requests]
   );
 
-  const pendingCount =
-    pendingManagerCount + pendingFinanceCount;
+  const pendingCount = pendingManagerCount + pendingFinanceCount;
 
   const totalRequested = useMemo(
     () =>
-      requests.reduce(
-        (sum, item) =>
-          sum + requestAmountOf(item),
-        0
-      ),
+      requests.reduce((sum, item) => sum + requestAmountOf(item), 0),
     [requests]
   );
 
@@ -1129,9 +1851,9 @@ export default function EmployeePage() {
           sum +
           Number(
             item.amount ??
-            item.totalAmount ??
-            item.total_amount ??
-            0
+              item.totalAmount ??
+              item.total_amount ??
+              0
           ),
         0
       ),
@@ -1159,13 +1881,10 @@ export default function EmployeePage() {
       const matchesSearch =
         !query ||
         searchableValues.some((value) =>
-          String(value || "")
-            .toLowerCase()
-            .includes(query)
+          String(value || "").toLowerCase().includes(query)
         );
 
-      const normalizedStatus =
-        normalizeStatus(item.status);
+      const normalizedStatus = normalizeStatus(item.status);
 
       const matchesStatus =
         statusFilter === "ALL" ||
@@ -1209,10 +1928,7 @@ export default function EmployeePage() {
     const csv = rows
       .map((row) =>
         row
-          .map(
-            (cell) =>
-              `"${String(cell ?? "").replaceAll('"', '""')}"`
-          )
+          .map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`)
           .join(",")
       )
       .join("\r\n");
@@ -1265,28 +1981,15 @@ export default function EmployeePage() {
                       "—"}
                   </small>
                 </td>
-
                 <td>{requestQuantityOf(item) || "—"}</td>
-
                 <td>
-                  {money(
-                    requestAmountOf(item),
-                    item.currency || "INR"
-                  )}
+                  {money(requestAmountOf(item), item.currency || "INR")}
                 </td>
-
                 <td>{requestDepartmentOf(item)}</td>
-
                 <td>
                   <StatusBadge status={item.status} />
                 </td>
-
-                <td>
-                  {createdAt &&
-                  !Number.isNaN(new Date(createdAt).getTime())
-                    ? new Date(createdAt).toLocaleDateString("en-IN")
-                    : "—"}
-                </td>
+                <td>{formatDate(createdAt)}</td>
               </tr>
             );
           })}
@@ -1320,22 +2023,21 @@ export default function EmployeePage() {
             {employee?.name ||
               employee?.firstName ||
               employee?.first_name ||
-              "Employee"}!
+              "Employee"}
+            !
           </h2>
 
           <p>
-            Create purchase requests, check budgets, and
-            track approval progress from one workspace.
+            Create purchase requests, check budgets, and track approval
+            progress from one workspace.
           </p>
 
           <button
             className="employee-primary-button"
-            onClick={() =>
-              setActivePage("Order Products")
-            }
+            onClick={() => navigateTo("Order Products")}
           >
             <ShoppingCart size={17} />
-            Create purchase request
+            Browse product store
             <ChevronRight size={17} />
           </button>
         </div>
@@ -1351,11 +2053,9 @@ export default function EmployeePage() {
             <span>My requests</span>
             <ClipboardList size={20} />
           </div>
-          <div className="employee-stat-number">
-            {requests.length}
-          </div>
+          <div className="employee-stat-number">{requests.length}</div>
           <div className="employee-stat-bottom">
-            Real requests returned by the API
+            Purchase requests in your account
           </div>
         </article>
 
@@ -1364,9 +2064,7 @@ export default function EmployeePage() {
             <span>Awaiting approval</span>
             <Clock3 size={20} />
           </div>
-          <div className="employee-stat-number">
-            {pendingCount}
-          </div>
+          <div className="employee-stat-number">{pendingCount}</div>
           <div className="employee-stat-bottom">
             Manager: {pendingManagerCount} · Finance: {pendingFinanceCount}
           </div>
@@ -1413,17 +2111,14 @@ export default function EmployeePage() {
             <span>Waiting for manager</span>
             <strong>{pendingManagerCount}</strong>
           </div>
-
           <div>
             <span>Approved by manager</span>
             <strong>{managerApprovedCount}</strong>
           </div>
-
           <div>
             <span>Waiting for Finance</span>
             <strong>{pendingFinanceCount}</strong>
           </div>
-
           <div>
             <span>Rejected</span>
             <strong>{rejectedCount}</strong>
@@ -1454,13 +2149,13 @@ export default function EmployeePage() {
           <EmptyState
             icon={ShoppingCart}
             title="No requests yet"
-            description="Create your first purchase request."
+            description="Browse the product store or create a custom purchase request."
           />
         )}
 
         <button
           className="employee-secondary-button"
-          onClick={() => setActivePage("My Requests")}
+          onClick={() => navigateTo("My Requests")}
         >
           View all requests
           <ChevronRight size={16} />
@@ -1476,10 +2171,9 @@ export default function EmployeePage() {
 
           <button
             className="employee-text-button"
-            onClick={() => setActivePage("Budgets")}
+            onClick={() => navigateTo("Budgets")}
           >
-            View budgets
-            <ChevronRight size={15} />
+            View budgets <ChevronRight size={15} />
           </button>
         </div>
 
@@ -1488,17 +2182,14 @@ export default function EmployeePage() {
             {budgets.slice(0, 3).map((budget, index) => {
               const allocated = budgetAllocatedOf(budget);
               const available = budgetAvailableOf(budget);
-
               const used =
                 budgetSpentOf(budget) +
-                budgetCommittedOf(budget);
+                budgetCommittedOf(budget) +
+                budgetReservedOf(budget);
 
               const percent =
                 allocated > 0
-                  ? Math.min(
-                      100,
-                      (used / allocated) * 100
-                    )
+                  ? Math.min(100, (used / allocated) * 100)
                   : 0;
 
               return (
@@ -1507,21 +2198,15 @@ export default function EmployeePage() {
                   key={budgetIdOf(budget) || index}
                 >
                   <span>{budgetDepartmentOf(budget)}</span>
-
-                  <h3>
-                    {money(allocated, budget.currency)}
-                  </h3>
-
+                  <h3>{money(allocated, budget.currency)}</h3>
                   <p>Allocated funds</p>
 
                   <div className="proc-budget-bar">
-                    <span
-                      style={{ width: `${percent}%` }}
-                    />
+                    <span style={{ width: `${percent}%` }} />
                   </div>
 
                   <div className="proc-budget-row">
-                    <span>Used / committed</span>
+                    <span>Used / reserved</span>
                     <strong>{percent.toFixed(1)}%</strong>
                   </div>
 
@@ -1547,13 +2232,12 @@ export default function EmployeePage() {
   );
 
   /* =======================================================
-     ORDER PRODUCTS
+     CUSTOM ORDER FORM
   ======================================================= */
 
   const renderOrderForm = () => {
     const selectedBudget = budgets.find(
-      (item) =>
-        String(budgetIdOf(item)) === String(form.budgetId)
+      (item) => String(budgetIdOf(item)) === String(form.budgetId)
     );
 
     const quantity = Number(form.quantity || 0);
@@ -1565,176 +2249,190 @@ export default function EmployeePage() {
       : null;
 
     const exceedsBudget =
-      Boolean(selectedBudget) &&
-      total > available;
+      Boolean(selectedBudget) && total > available;
 
     return (
-      <section className="employee-content-card proc-card">
-        <div className="employee-section-heading">
-          <div>
-            <h2>New purchase request</h2>
-            <p>
-              Enter product details and submit for approval.
-            </p>
-          </div>
-          <ShoppingCart size={22} />
-        </div>
-
-        <form
-          className="proc-form"
-          onSubmit={submitRequest}
-        >
-          <div className="proc-form-grid">
-            <label>
-              Product name *
-              <input
-                name="productName"
-                value={form.productName}
-                onChange={updateField}
-                placeholder="e.g. Office laptop"
-                maxLength={160}
-                required
-              />
-            </label>
-
-            <label>
-              Supplier / vendor
-              <input
-                name="supplier"
-                value={form.supplier}
-                onChange={updateField}
-                placeholder="Vendor name (optional)"
-                maxLength={160}
-              />
-            </label>
-
-            <label>
-              Quantity *
-              <input
-                type="number"
-                name="quantity"
-                value={form.quantity}
-                onChange={updateField}
-                min="1"
-                step="1"
-                required
-              />
-            </label>
-
-            <label>
-              Unit price ({form.currency}) *
-              <input
-                type="number"
-                name="unitPrice"
-                value={form.unitPrice}
-                onChange={updateField}
-                min="0.01"
-                step="0.01"
-                placeholder="0.00"
-                required
-              />
-            </label>
-
-            <label>
-              Budget allocation
-              <select
-                name="budgetId"
-                value={form.budgetId}
-                onChange={updateField}
-              >
-                <option value="">
-                  No specific allocation
-                </option>
-
-                {budgets.map((budget, index) => (
-                  <option
-                    key={budgetIdOf(budget) || index}
-                    value={budgetIdOf(budget)}
-                  >
-                    {budget.name ||
-                      budget.budgetName ||
-                      budget.budget_name ||
-                      budgetDepartmentOf(budget)}
-                    {" — Available "}
-                    {money(
-                      budgetAvailableOf(budget),
-                      budget.currency
-                    )}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="proc-full-field">
-              Product description
-              <textarea
-                name="description"
-                value={form.description}
-                onChange={updateField}
-                rows={3}
-                maxLength={2000}
-                placeholder="Specifications, model, features, or requirements."
-              />
-            </label>
-
-            <label className="proc-full-field">
-              Business justification *
-              <textarea
-                name="justification"
-                value={form.justification}
-                onChange={updateField}
-                rows={3}
-                maxLength={2000}
-                placeholder="Explain why this product is needed for your work."
-                required
-              />
-            </label>
-          </div>
-
-          <div className="proc-estimate">
+      <>
+        <section className="employee-content-card proc-card">
+          <div className="employee-section-heading">
             <div>
-              <span>Estimated request total</span>
-              <strong>{money(total, form.currency)}</strong>
+              <h2>Product Store</h2>
+              <p>Choose from available workplace products.</p>
             </div>
 
-            <div>
-              <span>Available allocation</span>
-              <strong>
-                {selectedBudget
-                  ? money(
-                      available,
-                      selectedBudget.currency
-                    )
-                  : "Not assigned"}
-              </strong>
-            </div>
+            <button
+              className="employee-primary-button"
+              onClick={() => {
+                setError("");
+                setSuccess("");
+                setStoreSearch("");
+                setStoreCategory("All");
+              }}
+            >
+              <ShoppingBag size={17} />
+              Browse products below
+            </button>
           </div>
 
-          {exceedsBudget && (
-            <p className="proc-inline-warning">
-              <AlertCircle size={17} />
-              The request exceeds the selected budget's available amount.
-            </p>
-          )}
+          {renderStore()}
+        </section>
 
-          <button
-            className="employee-primary-button"
-            type="submit"
-            disabled={
-              submitting ||
-              exceedsBudget ||
-              !form.productName.trim() ||
-              !form.justification.trim()
-            }
-          >
-            <Send size={17} />
+        <section className="employee-content-card proc-card">
+          <div className="employee-section-heading">
+            <div>
+              <h2>Custom purchase request</h2>
+              <p>Request a product that is not listed in the store.</p>
+            </div>
+            <ShoppingCart size={22} />
+          </div>
 
-            {submitting
-              ? "Creating and submitting..."
-              : "Submit for approval"}
-          </button>
-        </form>
-      </section>
+          <form className="proc-form" onSubmit={submitRequest}>
+            <div className="proc-form-grid">
+              <label>
+                Product name *
+                <input
+                  name="productName"
+                  value={form.productName}
+                  onChange={updateField}
+                  placeholder="e.g. Special office equipment"
+                  maxLength={160}
+                  required
+                />
+              </label>
+
+              <label>
+                Supplier / vendor
+                <input
+                  name="supplier"
+                  value={form.supplier}
+                  onChange={updateField}
+                  placeholder="Vendor name (optional)"
+                  maxLength={160}
+                />
+              </label>
+
+              <label>
+                Quantity *
+                <input
+                  type="number"
+                  name="quantity"
+                  value={form.quantity}
+                  onChange={updateField}
+                  min="1"
+                  step="1"
+                  required
+                />
+              </label>
+
+              <label>
+                Unit price ({form.currency}) *
+                <input
+                  type="number"
+                  name="unitPrice"
+                  value={form.unitPrice}
+                  onChange={updateField}
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0.00"
+                  required
+                />
+              </label>
+
+              <label>
+                Budget allocation
+                <select
+                  name="budgetId"
+                  value={form.budgetId}
+                  onChange={updateField}
+                >
+                  <option value="">No specific allocation</option>
+
+                  {budgets.map((budget, index) => (
+                    <option
+                      key={budgetIdOf(budget) || index}
+                      value={budgetIdOf(budget)}
+                    >
+                      {budget.name ||
+                        budget.budgetName ||
+                        budget.budget_name ||
+                        budgetDepartmentOf(budget)}
+                      {" — Available "}
+                      {money(
+                        budgetAvailableOf(budget),
+                        budget.currency
+                      )}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="proc-full-field">
+                Product description
+                <textarea
+                  name="description"
+                  value={form.description}
+                  onChange={updateField}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="Specifications, model, features, or requirements."
+                />
+              </label>
+
+              <label className="proc-full-field">
+                Business justification *
+                <textarea
+                  name="justification"
+                  value={form.justification}
+                  onChange={updateField}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="Explain why this product is needed for your work."
+                  required
+                />
+              </label>
+            </div>
+
+            <div className="proc-estimate">
+              <div>
+                <span>Estimated request total</span>
+                <strong>{money(total, form.currency)}</strong>
+              </div>
+
+              <div>
+                <span>Available allocation</span>
+                <strong>
+                  {selectedBudget
+                    ? money(available, selectedBudget.currency)
+                    : "Not assigned"}
+                </strong>
+              </div>
+            </div>
+
+            {exceedsBudget && (
+              <p className="proc-inline-warning">
+                <AlertCircle size={17} />
+                The request exceeds the selected budget's available amount.
+              </p>
+            )}
+
+            <button
+              className="employee-primary-button"
+              type="submit"
+              disabled={
+                submitting ||
+                exceedsBudget ||
+                !form.productName.trim() ||
+                !form.justification.trim()
+              }
+            >
+              <Send size={17} />
+              {submitting
+                ? "Creating and submitting..."
+                : "Submit for approval"}
+            </button>
+          </form>
+        </section>
+      </>
     );
   };
 
@@ -1748,7 +2446,7 @@ export default function EmployeePage() {
         <div>
           <h2>My purchase requests</h2>
           <p>
-            Search your requests and monitor approval status.
+            Follow manager and Finance approvals for each purchase request.
           </p>
         </div>
 
@@ -1776,12 +2474,9 @@ export default function EmployeePage() {
       <div className="proc-filter-row">
         <label className="proc-search-box">
           <Search size={17} />
-
           <input
             value={search}
-            onChange={(event) =>
-              setSearch(event.target.value)
-            }
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search request, product, department..."
           />
         </label>
@@ -1789,9 +2484,7 @@ export default function EmployeePage() {
         <select
           className="proc-status-filter"
           value={statusFilter}
-          onChange={(event) =>
-            setStatusFilter(event.target.value)
-          }
+          onChange={(event) => setStatusFilter(event.target.value)}
           aria-label="Filter by status"
         >
           <option value="ALL">All statuses</option>
@@ -1806,24 +2499,124 @@ export default function EmployeePage() {
         </select>
       </div>
 
-      {renderRequestTable(filteredRequests)}
+      <div className="request-approval-list">
+        {filteredRequests.map((item, index) => {
+          const id = requestIdOf(item);
+          const withdrawAllowed = canWithdrawRequest(item);
+
+          return (
+            <article
+              className="request-approval-card"
+              key={id || index}
+            >
+              <div className="request-approval-top">
+                <div className="request-product-icon">
+                  <Package size={22} />
+                </div>
+
+                <div className="request-product-info">
+                  <h3>{requestNameOf(item)}</h3>
+                  <span>
+                    Request ID:{" "}
+                    {item.requestNumber ||
+                      item.request_number ||
+                      id ||
+                      "—"}
+                  </span>
+                </div>
+
+                <StatusBadge status={item.status} />
+              </div>
+
+              <div className="request-approval-meta">
+                <div>
+                  <span>Quantity</span>
+                  <strong>{requestQuantityOf(item) || "—"}</strong>
+                </div>
+
+                <div>
+                  <span>Request amount</span>
+                  <strong>
+                    {money(
+                      requestAmountOf(item),
+                      item.currency || "INR"
+                    )}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Department</span>
+                  <strong>{requestDepartmentOf(item)}</strong>
+                </div>
+
+                <div>
+                  <span>Submitted</span>
+                  <strong>{formatDate(requestDateOf(item))}</strong>
+                </div>
+              </div>
+
+              <ApprovalTimeline request={item} />
+
+              {withdrawAllowed && (
+                <div className="request-card-actions">
+                  <button
+                    className="proc-withdraw-button"
+                    type="button"
+                    disabled
+                    title="Backend withdrawal endpoint must be connected first"
+                    onClick={() => withdrawRequest(item)}
+                  >
+                    <Trash2 size={15} />
+                    Withdraw request
+                  </button>
+
+                  <span>
+                    Withdrawal becomes available after backend support
+                    is connected.
+                  </span>
+                </div>
+              )}
+            </article>
+          );
+        })}
+
+        {!filteredRequests.length && (
+          <EmptyState
+            icon={ShoppingCart}
+            title="No purchase requests found"
+            description="Try changing your search or status filter, or create a new request."
+          />
+        )}
+      </div>
 
       <div className="proc-approval-explainer">
-        <h3>Approval workflow</h3>
-        <ol>
-          <li>
-            Employee creates and submits a purchase request.
-          </li>
-          <li>
-            Manager reviews and approves or rejects the request.
-          </li>
-          <li>
-            Manager-approved requests move to Finance.
-          </li>
-          <li>
-            Finance reviews and makes the final decision.
-          </li>
-        </ol>
+        <h3>How the approval process works</h3>
+
+        <div className="proc-approval-steps">
+          <div>
+            <span>01</span>
+            <strong>Employee submission</strong>
+            <p>Your purchase request is submitted to your manager.</p>
+          </div>
+
+          <div>
+            <span>02</span>
+            <strong>Manager review</strong>
+            <p>Your manager approves or rejects the request.</p>
+          </div>
+
+          <div>
+            <span>03</span>
+            <strong>Finance review</strong>
+            <p>Manager-approved requests move to Finance.</p>
+          </div>
+
+          <div>
+            <span>04</span>
+            <strong>Final decision</strong>
+            <p>Finance completes the final approval decision.</p>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -1837,9 +2630,7 @@ export default function EmployeePage() {
       <div className="employee-section-heading">
         <div>
           <h2>Department budgets</h2>
-          <p>
-            Review allocated, committed, spent, and available funds.
-          </p>
+          <p>Review allocated, committed, spent, and available funds.</p>
         </div>
         <Wallet size={22} />
       </div>
@@ -1850,12 +2641,13 @@ export default function EmployeePage() {
           const available = budgetAvailableOf(budget);
           const spent = budgetSpentOf(budget);
           const committed = budgetCommittedOf(budget);
+          const reserved = budgetReservedOf(budget);
 
           const percent =
             allocated > 0
               ? Math.min(
                   100,
-                  ((spent + committed) / allocated) * 100
+                  ((spent + committed + reserved) / allocated) * 100
                 )
               : 0;
 
@@ -1868,24 +2660,15 @@ export default function EmployeePage() {
                 <span className="proc-budget-icon">
                   <Building2 size={18} />
                 </span>
-
-                <StatusBadge
-                  status={budget.status || "ACTIVE"}
-                />
+                <StatusBadge status={budget.status || "ACTIVE"} />
               </div>
 
               <span>{budgetDepartmentOf(budget)}</span>
-
-              <h3>
-                {money(allocated, budget.currency)}
-              </h3>
-
+              <h3>{money(allocated, budget.currency)}</h3>
               <p>Allocated budget</p>
 
               <div className="proc-budget-bar">
-                <span
-                  style={{ width: `${percent}%` }}
-                />
+                <span style={{ width: `${percent}%` }} />
               </div>
 
               <div className="proc-budget-row">
@@ -1894,24 +2677,23 @@ export default function EmployeePage() {
               </div>
 
               <div className="proc-budget-row">
+                <span>Reserved</span>
+                <strong>{money(reserved, budget.currency)}</strong>
+              </div>
+
+              <div className="proc-budget-row">
                 <span>Committed</span>
-                <strong>
-                  {money(committed, budget.currency)}
-                </strong>
+                <strong>{money(committed, budget.currency)}</strong>
               </div>
 
               <div className="proc-budget-row">
                 <span>Spent</span>
-                <strong>
-                  {money(spent, budget.currency)}
-                </strong>
+                <strong>{money(spent, budget.currency)}</strong>
               </div>
 
               <div className="proc-budget-row">
                 <span>Available</span>
-                <strong>
-                  {money(available, budget.currency)}
-                </strong>
+                <strong>{money(available, budget.currency)}</strong>
               </div>
             </article>
           );
@@ -1927,8 +2709,8 @@ export default function EmployeePage() {
       )}
 
       <p className="proc-note">
-        Budget values are loaded from the backend.
-        Only authorized Finance users can change allocations.
+        Budget values are loaded from the backend. Only authorized
+        Finance users can change allocations.
       </p>
     </section>
   );
@@ -1942,9 +2724,7 @@ export default function EmployeePage() {
       <div className="employee-section-heading">
         <div>
           <h2>My invoices</h2>
-          <p>
-            Invoices made available for your purchase requests.
-          </p>
+          <p>Invoices made available for your purchase requests.</p>
         </div>
         <Receipt size={22} />
       </div>
@@ -1978,15 +2758,15 @@ export default function EmployeePage() {
             {invoices.map((invoice, index) => {
               const amount = Number(
                 invoice.amount ??
-                invoice.totalAmount ??
-                invoice.total_amount ??
-                0
+                  invoice.totalAmount ??
+                  invoice.total_amount ??
+                  0
               );
 
               const paid = Number(
                 invoice.paidAmount ??
-                invoice.paid_amount ??
-                0
+                  invoice.paid_amount ??
+                  0
               );
 
               return (
@@ -2141,9 +2921,7 @@ export default function EmployeePage() {
 
           <div>
             <span>Account status</span>
-            <strong>
-              {employee?.status || "Active session"}
-            </strong>
+            <strong>{employee?.status || "Active session"}</strong>
           </div>
         </div>
       </section>
@@ -2156,7 +2934,7 @@ export default function EmployeePage() {
 
   const pageHeading = {
     Overview: "Employee Overview",
-    "Order Products": "Request a Product",
+    "Order Products": "Product Store & Purchase Requests",
     "My Requests": "My Purchase Requests",
     Budgets: "Department Budgets",
     Invoices: "My Invoices",
@@ -2201,9 +2979,7 @@ export default function EmployeePage() {
 
       <aside
         className={`employee-sidebar ${
-          mobileMenuOpen
-            ? "employee-sidebar-open"
-            : ""
+          mobileMenuOpen ? "employee-sidebar-open" : ""
         }`}
       >
         <div className="employee-brand">
@@ -2235,26 +3011,24 @@ export default function EmployeePage() {
               <button
                 key={item.label}
                 className={`employee-nav-item ${
-                  activePage === item.label
-                    ? "active"
-                    : ""
+                  activePage === item.label ? "active" : ""
                 }`}
-                onClick={() => {
-                  setActivePage(item.label);
-                  setMobileMenuOpen(false);
-                  setError("");
-                  setSuccess("");
-                }}
+                onClick={() => navigateTo(item.label)}
               >
                 <Icon size={19} />
                 <span>{item.label}</span>
 
-                {item.label === "My Requests" &&
-                  pendingCount > 0 && (
-                    <span className="employee-nav-count">
-                      {pendingCount}
-                    </span>
-                  )}
+                {item.label === "My Requests" && pendingCount > 0 && (
+                  <span className="employee-nav-count">
+                    {pendingCount}
+                  </span>
+                )}
+
+                {item.label === "Order Products" && cartCount > 0 && (
+                  <span className="employee-nav-count">
+                    {cartCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -2264,8 +3038,7 @@ export default function EmployeePage() {
           <div className="employee-help-card">
             <strong>Need approval support?</strong>
             <p>
-              Contact your manager or Finance team if a
-              request is delayed.
+              Contact your manager or Finance team if a request is delayed.
             </p>
           </div>
 
@@ -2294,7 +3067,6 @@ export default function EmployeePage() {
               <div className="employee-breadcrumb">
                 ETDOX <span>/</span> {activePage}
               </div>
-
               <h1>{pageHeading}</h1>
             </div>
           </div>
@@ -2302,15 +3074,11 @@ export default function EmployeePage() {
           <div className="employee-topbar-actions">
             <div className="employee-last-updated">
               <CalendarDays size={14} />
-
               {lastUpdated
-                ? `Updated ${lastUpdated.toLocaleTimeString(
-                    "en-IN",
-                    {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }
-                  )}`
+                ? `Updated ${lastUpdated.toLocaleTimeString("en-IN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
                 : "Not synced"}
             </div>
 
@@ -2321,9 +3089,7 @@ export default function EmployeePage() {
             >
               <RefreshCw
                 size={16}
-                className={
-                  loading ? "proc-spin" : ""
-                }
+                className={loading ? "proc-spin" : ""}
               />
               Refresh
             </button>
@@ -2350,7 +3116,6 @@ export default function EmployeePage() {
                     employee?.first_name ||
                     "Employee"}
                 </strong>
-
                 <span>
                   {employee?.role ||
                     employee?.roles?.[0]?.name ||
@@ -2363,13 +3128,9 @@ export default function EmployeePage() {
 
         <div className="employee-page-content">
           {error && (
-            <div
-              className="proc-alert proc-alert-error"
-              role="alert"
-            >
+            <div className="proc-alert proc-alert-error" role="alert">
               <AlertCircle size={18} />
               <span>{error}</span>
-
               <button
                 onClick={() => setError("")}
                 aria-label="Dismiss error"
@@ -2380,13 +3141,9 @@ export default function EmployeePage() {
           )}
 
           {success && (
-            <div
-              className="proc-alert proc-alert-success"
-              role="status"
-            >
+            <div className="proc-alert proc-alert-success" role="status">
               <CheckCircle2 size={18} />
               <span>{success}</span>
-
               <button
                 onClick={() => setSuccess("")}
                 aria-label="Dismiss success"
@@ -2399,9 +3156,7 @@ export default function EmployeePage() {
           {loading ? (
             <section className="employee-content-card proc-card employee-loading">
               <span className="employee-loader" />
-              <strong>
-                Loading your ETDOX workspace...
-              </strong>
+              <strong>Loading your ETDOX workspace...</strong>
               <p>Connecting to the procurement API.</p>
             </section>
           ) : (
@@ -2416,6 +3171,47 @@ export default function EmployeePage() {
           <span>Employee Procurement Workspace</span>
         </footer>
       </main>
+
+      {confirmWithdraw && (
+        <div className="proc-modal-backdrop">
+          <div
+            className="proc-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="withdraw-title"
+          >
+            <span className="proc-modal-icon">
+              <AlertCircle size={24} />
+            </span>
+
+            <h2 id="withdraw-title">
+              Withdraw purchase request?
+            </h2>
+
+            <p>
+              This will request cancellation of{" "}
+              <strong>{requestNameOf(confirmWithdraw)}</strong>. Approval
+              history should remain available for audit purposes.
+            </p>
+
+            <div className="proc-modal-actions">
+              <button
+                className="proc-modal-cancel"
+                onClick={() => setConfirmWithdraw(null)}
+              >
+                Keep request
+              </button>
+
+              <button
+                className="proc-modal-confirm"
+                onClick={confirmWithdrawRequest}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

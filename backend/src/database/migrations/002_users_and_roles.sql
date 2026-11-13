@@ -70,6 +70,6 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user
     ON user_sessions(user_id);
-=======
+
 Get-Content ".\backend\src\modules\auth\auth.repository.js" |
->>>>>>> 0c27d73 (Fix tenant-aware current user authentication)
+ (Fix tenant-aware current user authentication)
