@@ -5,6 +5,7 @@ import {
   Navigate,
   Route,
   Routes,
+  useLocation,
 } from "react-router-dom";
 
 import LandingPage from "./pages/LandingPage";
@@ -14,50 +15,110 @@ import ManagerPage from "./pages/ManagerPage";
 import FinancePage from "./pages/FinancePage";
 import AdminPage from "./pages/AdminPage";
 
+// ============================================================
+// AUTH HELPERS
+// ============================================================
+
 const getToken = () =>
   localStorage.getItem("token") ||
-  localStorage.getItem("accessToken");
+  localStorage.getItem("accessToken") ||
+  localStorage.getItem("authToken");
 
 const getUser = () => {
   try {
-    return JSON.parse(localStorage.getItem("user") || "{}");
+    const storedUser = JSON.parse(
+      localStorage.getItem("user") || "{}"
+    );
+
+    return (
+      storedUser?.user ||
+      storedUser?.data?.user ||
+      storedUser?.data ||
+      storedUser ||
+      {}
+    );
   } catch {
     return {};
   }
 };
 
+const normalizeRole = (role) => {
+  if (!role) return "";
+
+  if (typeof role === "object") {
+    role =
+      role.name ||
+      role.slug ||
+      role.code ||
+      role.role ||
+      "";
+  }
+
+  return String(role)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+};
+
 const getUserRole = () => {
   const user = getUser();
-  return String(
+
+  return normalizeRole(
     user.role ||
       user.userRole ||
       user.user_type ||
       user.userType ||
-      ""
-  ).toLowerCase();
+      user.role_name ||
+      user.roleName
+  );
 };
+
+// ============================================================
+// ROLE ROUTES
+// ============================================================
 
 const roleRoutes = {
   employee: "/employee/dashboard",
   requester: "/employee/dashboard",
+
   manager: "/manager/dashboard",
   department_manager: "/manager/dashboard",
+
   finance: "/finance/dashboard",
   finance_manager: "/finance/dashboard",
+
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
 };
 
+// ============================================================
+// PROTECTED ROUTE
+// ============================================================
+
 function ProtectedRoute({ children, allowedRoles }) {
+  const location = useLocation();
   const token = getToken();
 
+  // No authentication token: redirect to login.
   if (!token) {
-    return <Navigate to="/login" replace />;
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location }}
+      />
+    );
   }
 
   const role = getUserRole();
 
-  if (allowedRoles && role && !allowedRoles.includes(role)) {
+  // If the role is available, verify access.
+  // If it is not available yet, preserve the requested route.
+  if (
+    role &&
+    allowedRoles &&
+    !allowedRoles.includes(role)
+  ) {
     return (
       <Navigate
         to={roleRoutes[role] || "/login"}
@@ -69,8 +130,14 @@ function ProtectedRoute({ children, allowedRoles }) {
   return children;
 }
 
+// ============================================================
+// DASHBOARD REDIRECT
+// ============================================================
+
 function DashboardRedirect() {
-  if (!getToken()) {
+  const token = getToken();
+
+  if (!token) {
     return <Navigate to="/login" replace />;
   }
 
@@ -84,14 +151,29 @@ function DashboardRedirect() {
   );
 }
 
+// ============================================================
+// APP ROUTES
+// ============================================================
+
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         {/* Public Pages */}
-        <Route path="/" element={<Navigate to="/landingpage" replace />} />
-        <Route path="/landingpage" element={<LandingPage />} />
-        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/"
+          element={<Navigate to="/landingpage" replace />}
+        />
+
+        <Route
+          path="/landingpage"
+          element={<LandingPage />}
+        />
+
+        <Route
+          path="/login"
+          element={<LoginPage />}
+        />
 
         {/* Employee Dashboard */}
         <Route
@@ -110,7 +192,10 @@ export default function App() {
           path="/manager/dashboard"
           element={
             <ProtectedRoute
-              allowedRoles={["manager", "department_manager"]}
+              allowedRoles={[
+                "manager",
+                "department_manager",
+              ]}
             >
               <ManagerPage />
             </ProtectedRoute>
@@ -122,7 +207,10 @@ export default function App() {
           path="/finance/dashboard"
           element={
             <ProtectedRoute
-              allowedRoles={["finance", "finance_manager"]}
+              allowedRoles={[
+                "finance",
+                "finance_manager",
+              ]}
             >
               <FinancePage />
             </ProtectedRoute>
@@ -134,7 +222,10 @@ export default function App() {
           path="/admin/dashboard"
           element={
             <ProtectedRoute
-              allowedRoles={["admin", "organization_admin"]}
+              allowedRoles={[
+                "admin",
+                "organization_admin",
+              ]}
             >
               <AdminPage />
             </ProtectedRoute>
@@ -142,10 +233,16 @@ export default function App() {
         />
 
         {/* Role-based Dashboard Redirect */}
-        <Route path="/dashboard" element={<DashboardRedirect />} />
+        <Route
+          path="/dashboard"
+          element={<DashboardRedirect />}
+        />
 
         {/* Unknown Routes */}
-        <Route path="*" element={<Navigate to="/landingpage" replace />} />
+        <Route
+          path="*"
+          element={<Navigate to="/landingpage" replace />}
+        />
       </Routes>
     </BrowserRouter>
   );

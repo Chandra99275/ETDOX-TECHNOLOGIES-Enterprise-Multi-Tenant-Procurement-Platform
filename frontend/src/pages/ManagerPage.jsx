@@ -1,5 +1,10 @@
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from "react";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -19,6 +24,7 @@ import {
   AlertCircle,
   ChevronDown,
 } from "lucide-react";
+
 import { useNavigate } from "react-router-dom";
 
 // ============================================================
@@ -39,12 +45,24 @@ const getToken = () =>
   sessionStorage.getItem("token") ||
   "";
 
+const createRequestId = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `manager-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+};
+
 const getArray = (response, keys = []) => {
   if (Array.isArray(response)) return response;
 
   for (const key of keys) {
     if (Array.isArray(response?.[key])) return response[key];
-    if (Array.isArray(response?.data?.[key])) return response.data[key];
+    if (Array.isArray(response?.data?.[key])) {
+      return response.data[key];
+    }
   }
 
   if (Array.isArray(response?.data)) return response.data;
@@ -219,45 +237,155 @@ export default function ManagerPage() {
   const [managerName, setManagerName] = useState("Manager");
 
   // ==========================================================
-  // API REQUEST HELPER
+  // API REQUEST HELPER WITH DIAGNOSTICS
   // ==========================================================
 
   const apiRequest = useCallback(async (endpoint, options = {}) => {
     const token = getToken();
+    const method = (options.method || "GET").toUpperCase();
+    const requestId = createRequestId();
+    const url = `${API_BASE}${endpoint}`;
 
     if (!token) {
-      throw new Error(
+      const authError = new Error(
         "Your session has expired. Please log in again."
       );
+
+      authError.status = 401;
+      authError.endpoint = endpoint;
+      authError.requestId = requestId;
+
+      throw authError;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...options.headers,
-      },
-    });
+    const requestBody = options.body || null;
 
-    const data = await response.json().catch(() => ({}));
+    console.groupCollapsed(
+      `[ETDOX MANAGER API] ${method} ${endpoint}`
+    );
 
-    if (response.status === 401) {
-      throw new Error("Session expired. Please log in again.");
+    console.log("Request ID:", requestId);
+    console.log("URL:", url);
+    console.log("Method:", method);
+
+    if (requestBody) {
+      try {
+        console.log("Request body:", JSON.parse(requestBody));
+      } catch {
+        console.log("Request body:", requestBody);
+      }
     }
+
+    let response;
+
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Request-ID": requestId,
+          ...options.headers,
+        },
+      });
+    } catch (networkError) {
+      console.error("Network error:", networkError);
+      console.groupEnd();
+
+      const error = new Error(
+        `Cannot connect to ETDOX backend. Check whether the backend is running. ${networkError.message}`
+      );
+
+      error.endpoint = endpoint;
+      error.method = method;
+      error.requestId = requestId;
+      error.cause = networkError;
+
+      throw error;
+    }
+
+    const responseText = await response.text();
+
+    let data = {};
+
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      data = {
+        rawResponse: responseText,
+      };
+    }
+
+    const serverRequestId =
+      response.headers.get("x-request-id") ||
+      data.requestId ||
+      data.request_id ||
+      null;
+
+    console.log("HTTP status:", response.status);
+    console.log("Response OK:", response.ok);
+    console.log("Client request ID:", requestId);
+    console.log("Server request ID:", serverRequestId);
+    console.log("Response body:", data);
 
     if (!response.ok) {
-      throw new Error(
+      console.error("API REQUEST FAILED", {
+        method,
+        endpoint,
+        status: response.status,
+        requestId,
+        serverRequestId,
+        response: data,
+      });
+
+      console.groupEnd();
+
+      const error = new Error(
         data.message ||
           data.error ||
           data.details ||
+          data.rawResponse ||
           `Request failed with status ${response.status}`
       );
+
+      error.status = response.status;
+      error.method = method;
+      error.endpoint = endpoint;
+      error.requestId = requestId;
+      error.serverRequestId = serverRequestId;
+      error.response = data;
+
+      if (response.status === 401) {
+        error.message = "Session expired. Please log in again.";
+      }
+
+      throw error;
     }
+
+    console.log("API REQUEST SUCCESS");
+    console.groupEnd();
 
     return data;
   }, []);
+
+  // ==========================================================
+  // LOGOUT
+  // ==========================================================
+
+  const logout = useCallback(() => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("user");
+
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("accessToken");
+    sessionStorage.removeItem("authToken");
+    sessionStorage.removeItem("user");
+
+    navigate("/login");
+  }, [navigate]);
 
   // ==========================================================
   // LOAD DASHBOARD
@@ -267,132 +395,207 @@ export default function ManagerPage() {
     setLoading(true);
     setError("");
 
+    console.groupCollapsed("[ETDOX MANAGER] Dashboard loading");
+
     try {
-      const [requestResult, taskResult, userResult] =
-        await Promise.all([
-          apiRequest("/procurement/requests"),
+      // Execute independently so one failed endpoint
+      // does not prevent the other endpoints from loading.
+      const results = await Promise.allSettled([
+        apiRequest("/procurement/requests"),
 
-          // A task endpoint failure should not prevent
-          // the procurement request list from loading.
-          apiRequest(
-            "/workflows/tasks/pending?limit=100&offset=0"
-          ).catch((err) => ({
-            __taskError: err.message,
-            data: [],
-          })),
+        apiRequest(
+          "/workflows/tasks/pending?limit=100&offset=0"
+        ),
 
-          apiRequest("/auth/me").catch(() => null),
-        ]);
+        apiRequest("/auth/me"),
+      ]);
+
+      const [requestResult, taskResult, userResult] = results;
 
       // ------------------------------------------------------
       // PROCUREMENT REQUESTS
       // ------------------------------------------------------
 
-      const requestList = getArray(requestResult, [
-        "requests",
-        "items",
-        "results",
-      ]);
+      if (requestResult.status === "fulfilled") {
+        const requestList = getArray(
+          requestResult.value,
+          ["requests", "items", "results"]
+        );
 
-      setRequests(requestList);
+        console.log(
+          "Procurement requests loaded:",
+          requestList.length
+        );
+
+        console.table(
+          requestList.map((request) => ({
+            id: getRequestId(request),
+            requestNumber: request.request_number,
+            status: getStatus(request),
+          }))
+        );
+
+        setRequests(requestList);
+      } else {
+        console.error(
+          "Procurement endpoint failed:",
+          requestResult.reason
+        );
+
+        setRequests([]);
+
+        setError(
+          `Unable to load procurement requests: ${requestResult.reason?.message || "Unknown error"}`
+        );
+      }
 
       // ------------------------------------------------------
       // PENDING WORKFLOW TASKS
-      //
-      // Backend response:
-      // {
-      //   data: [...],
-      //   total: number,
-      //   pagination: {...}
-      // }
       // ------------------------------------------------------
 
-      const taskList = getArray(taskResult, [
-        "tasks",
-        "items",
-        "results",
-      ]);
+      if (taskResult.status === "fulfilled") {
+        const taskResponse = taskResult.value;
 
-      const validTasks = taskList.filter((task) => {
-        const status = String(
-          task.status || ""
-        ).toUpperCase();
+        const taskList = getArray(taskResponse, [
+          "tasks",
+          "items",
+          "results",
+        ]);
 
-        const resourceType = String(
-          task.resource_type ||
-            task.resourceType ||
-            ""
-        ).toLowerCase();
-
-        return (
-          status === "PENDING" &&
-          resourceType === "purchase_request" &&
-          Boolean(task.id) &&
-          Boolean(task.resource_id)
+        console.log(
+          "Raw workflow task response:",
+          taskResponse
         );
-      });
 
-      setPendingTasks(validTasks);
-
-      if (taskResult?.__taskError) {
-        setError(
-          `Unable to load approval tasks: ${taskResult.__taskError}`
+        console.log(
+          "Workflow tasks received:",
+          taskList.length
         );
+
+        console.table(
+          taskList.map((task) => ({
+            taskId: task.id,
+            assigneeId: task.assignee_id,
+            resourceType:
+              task.resource_type || task.resourceType,
+            resourceId:
+              task.resource_id || task.resourceId,
+            status: task.status,
+            nodeId: task.node_id,
+          }))
+        );
+
+        const validTasks = taskList.filter((task) => {
+          const status = String(
+            task.status || ""
+          ).toUpperCase();
+
+          const resourceType = String(
+            task.resource_type ||
+              task.resourceType ||
+              ""
+          ).toLowerCase();
+
+          const resourceId =
+            task.resource_id || task.resourceId;
+
+          return (
+            status === "PENDING" &&
+            resourceType === "purchase_request" &&
+            Boolean(task.id) &&
+            Boolean(resourceId)
+          );
+        });
+
+        console.log(
+          "Valid manager approval tasks:",
+          validTasks.length
+        );
+
+        setPendingTasks(validTasks);
+
+        if (validTasks.length === 0 && taskList.length > 0) {
+          console.warn(
+            "Tasks were returned, but none matched the manager's pending purchase-request filters."
+          );
+        }
+      } else {
+        console.error(
+          "Workflow pending-task endpoint failed:",
+          taskResult.reason
+        );
+
+        setPendingTasks([]);
+
+        setError((previous) => {
+          const taskMessage =
+            `Unable to load approval tasks: ${taskResult.reason?.message || "Unknown error"}`;
+
+          return previous
+            ? `${previous} | ${taskMessage}`
+            : taskMessage;
+        });
       }
 
       // ------------------------------------------------------
       // MANAGER PROFILE
       // ------------------------------------------------------
 
-      const user =
-        userResult?.user ||
-        userResult?.data?.user ||
-        userResult?.data ||
-        userResult;
+      if (userResult.status === "fulfilled") {
+        const userResponse = userResult.value;
 
-      if (user && typeof user === "object") {
-        const fullName =
-          user.name ||
-          user.fullName ||
-          user.full_name ||
-          [
-            user.firstName || user.first_name,
-            user.lastName || user.last_name,
-          ]
-            .filter(Boolean)
-            .join(" ");
+        const user =
+          userResponse?.user ||
+          userResponse?.data?.user ||
+          userResponse?.data ||
+          userResponse;
 
-        if (fullName) {
-          setManagerName(fullName);
+        console.log("Manager profile:", user);
+
+        if (user && typeof user === "object") {
+          const fullName =
+            user.name ||
+            user.fullName ||
+            user.full_name ||
+            [
+              user.firstName || user.first_name,
+              user.lastName || user.last_name,
+            ]
+              .filter(Boolean)
+              .join(" ");
+
+          if (fullName) {
+            setManagerName(fullName);
+          }
         }
+      } else {
+        console.warn(
+          "Unable to load manager profile:",
+          userResult.reason
+        );
       }
     } catch (err) {
-      const message =
-        err.message ||
-        "Unable to load manager dashboard.";
+      console.error(
+        "[ETDOX MANAGER] Dashboard loading error:",
+        err
+      );
 
-      setError(message);
+      setError(
+        err.message || "Unable to load manager dashboard."
+      );
 
       if (
-        message.toLowerCase().includes("session expired") ||
-        message.toLowerCase().includes("log in again")
+        err.status === 401 ||
+        err.message.toLowerCase().includes("session expired") ||
+        err.message.toLowerCase().includes("log in again")
       ) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("accessToken");
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("user");
-
-        sessionStorage.removeItem("token");
-        sessionStorage.removeItem("accessToken");
-        sessionStorage.removeItem("authToken");
-        sessionStorage.removeItem("user");
-
-        navigate("/login");
+        logout();
       }
     } finally {
       setLoading(false);
+      console.groupEnd();
     }
-  }, [apiRequest, navigate]);
+  }, [apiRequest, logout]);
 
   // ==========================================================
   // INITIAL LOAD
@@ -422,7 +625,10 @@ export default function ManagerPage() {
     );
 
     return pendingTasks.map((task) => {
-      const requestId = String(task.resource_id);
+      const requestId = String(
+        task.resource_id || task.resourceId
+      );
+
       const existingRequest = requestMap.get(requestId);
 
       if (existingRequest) {
@@ -433,10 +639,8 @@ export default function ManagerPage() {
         };
       }
 
-      // Fallback if the procurement list does not contain
-      // the request associated with this workflow task.
       return {
-        id: task.resource_id,
+        id: requestId,
         request_number: task.request_number,
         total_amount: task.total_amount,
         currency: task.currency,
@@ -449,14 +653,17 @@ export default function ManagerPage() {
   }, [requests, pendingTasks]);
 
   // ==========================================================
-  // ATTACH TASK INFORMATION TO THE REQUEST LIST
+  // ATTACH TASK INFORMATION TO REQUEST LIST
   // ==========================================================
 
   const requestsWithTasks = useMemo(() => {
     const taskByRequestId = new Map();
 
     for (const task of pendingTasks) {
-      const key = String(task.resource_id);
+      const resourceId =
+        task.resource_id || task.resourceId;
+
+      const key = String(resourceId);
 
       if (!taskByRequestId.has(key)) {
         taskByRequestId.set(key, task);
@@ -479,8 +686,6 @@ export default function ManagerPage() {
       };
     });
 
-    // Include task-associated requests not returned
-    // by the procurement requests endpoint.
     const existingIds = new Set(
       enrichedRequests.map((request) =>
         String(getRequestId(request))
@@ -613,16 +818,7 @@ export default function ManagerPage() {
   };
 
   // ==========================================================
-  // SUBMIT WORKFLOW DECISION
-  //
-  // Backend route:
-  // POST /workflows/tasks/:taskId/actions
-  //
-  // Accepted body:
-  // {
-  //   action: "approve" | "reject" | "request_changes",
-  //   comment?: string
-  // }
+  // SUBMIT WORKFLOW DECISION WITH ERROR TRACKING
   // ==========================================================
 
   const submitDecision = async () => {
@@ -639,6 +835,7 @@ export default function ManagerPage() {
     }
 
     const taskId = selectedRequest.workflowTaskId;
+    const resourceId = getRequestId(selectedRequest);
 
     if (!taskId) {
       setError(
@@ -651,40 +848,63 @@ export default function ManagerPage() {
     setError("");
     setSuccess("");
 
-    try {
-      const approved = decision === "approve";
+    const action =
+      decision === "approve" ? "approve" : "reject";
 
-      await apiRequest(
-        `/workflows/tasks/${encodeURIComponent(
-          taskId
-        )}/actions`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            action: approved ? "approve" : "reject",
-            comment: reason.trim(),
-          }),
-        }
-      );
+    const endpoint =
+      `/workflows/tasks/${encodeURIComponent(taskId)}/actions`;
+
+    console.group("[ETDOX MANAGER APPROVAL ACTION]");
+
+    console.log("Workflow task ID:", taskId);
+    console.log("Purchase request ID:", resourceId);
+    console.log("Action:", action);
+    console.log("Endpoint:", endpoint);
+    console.log("Comment:", reason.trim());
+
+    try {
+      const result = await apiRequest(endpoint, {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          comment: reason.trim(),
+        }),
+      });
+
+      console.log("Approval action response:", result);
 
       setSelectedRequest(null);
       setDecision("");
       setReason("");
 
       setSuccess(
-        approved
+        action === "approve"
           ? "Request approved successfully. The workflow has advanced."
           : "Request rejected successfully."
       );
 
       await loadDashboard();
     } catch (err) {
+      console.error("Approval action failed:", {
+        taskId,
+        resourceId,
+        action,
+        endpoint: err.endpoint || endpoint,
+        status: err.status,
+        clientRequestId: err.requestId,
+        serverRequestId: err.serverRequestId,
+        response: err.response,
+        message: err.message,
+      });
+
       setError(
-        err.message ||
-          "Unable to submit manager decision."
+        `${err.message || "Unable to submit manager decision."}${
+          err.status ? ` (HTTP ${err.status})` : ""
+        }${err.serverRequestId ? ` | Server Request ID: ${err.serverRequestId}` : ""}`
       );
     } finally {
       setSubmitting(false);
+      console.groupEnd();
     }
   };
 
@@ -698,24 +918,6 @@ export default function ManagerPage() {
     setSelectedRequest(null);
     setDecision("");
     setReason("");
-  };
-
-  // ==========================================================
-  // LOGOUT
-  // ==========================================================
-
-  const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("user");
-
-    sessionStorage.removeItem("token");
-    sessionStorage.removeItem("accessToken");
-    sessionStorage.removeItem("authToken");
-    sessionStorage.removeItem("user");
-
-    navigate("/login");
   };
 
   // ==========================================================
@@ -1393,9 +1595,7 @@ export default function ManagerPage() {
         }
       `}</style>
 
-      {/* ======================================================
-          SIDEBAR
-      ====================================================== */}
+      {/* SIDEBAR */}
 
       <aside
         className={`manager-sidebar ${
@@ -1453,9 +1653,7 @@ export default function ManagerPage() {
         </div>
       </aside>
 
-      {/* ======================================================
-          MAIN DASHBOARD
-      ====================================================== */}
+      {/* MAIN DASHBOARD */}
 
       <main className="manager-main">
         <header className="manager-topbar">
@@ -1500,12 +1698,7 @@ export default function ManagerPage() {
               onClick={loadDashboard}
               disabled={loading}
             >
-              <RefreshCw
-                size={16}
-                className={
-                  loading ? "manager-spin" : ""
-                }
-              />
+              <RefreshCw size={16} />
             </button>
 
             <button
@@ -1580,9 +1773,7 @@ export default function ManagerPage() {
           </div>
         )}
 
-        {/* ====================================================
-            OVERVIEW STATISTICS
-        ==================================================== */}
+        {/* OVERVIEW STATISTICS */}
 
         {activeTab === "Overview" && (
           <section className="manager-stats">
@@ -1648,9 +1839,7 @@ export default function ManagerPage() {
           </section>
         )}
 
-        {/* ====================================================
-            PROCUREMENT REQUEST TABLE
-        ==================================================== */}
+        {/* PROCUREMENT REQUEST TABLE */}
 
         <section className="manager-panel">
           <div className="manager-panel-head">
@@ -1665,8 +1854,8 @@ export default function ManagerPage() {
                 {activeTab === "Pending Requests"
                   ? "Review requests that require your approval."
                   : activeTab === "Approval History"
-                  ? "Previously reviewed procurement requests."
-                  : "Requests submitted by employees in your organization."}
+                    ? "Previously reviewed procurement requests."
+                    : "Requests submitted by employees in your organization."}
               </p>
             </div>
 
@@ -1763,15 +1952,13 @@ export default function ManagerPage() {
                 <tbody>
                   {filteredRequests.map((request, index) => {
                     const status = getStatus(request);
-
                     const isPending =
                       isManagerPending(request);
 
                     return (
                       <tr
                         key={
-                          getRequestId(request) ||
-                          index
+                          getRequestId(request) || index
                         }
                       >
                         <td>
@@ -1818,9 +2005,7 @@ export default function ManagerPage() {
                         <td>{getDepartment(request)}</td>
 
                         <td>
-                          <strong
-                            style={{ color: "#27344a" }}
-                          >
+                          <strong style={{ color: "#27344a" }}>
                             {formatCurrency(
                               getAmount(request)
                             )}
@@ -1899,9 +2084,7 @@ export default function ManagerPage() {
         </section>
       </main>
 
-      {/* ======================================================
-          REQUEST DETAILS AND DECISION MODAL
-      ====================================================== */}
+      {/* REQUEST DETAILS AND DECISION MODAL */}
 
       {selectedRequest && (
         <div

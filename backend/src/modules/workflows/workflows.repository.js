@@ -20,6 +20,9 @@ const RUN_APPROVED = "APPROVED";
 const RUN_REJECTED = "REJECTED";
 const RUN_CANCELLED = "CANCELLED";
 
+const MANAGER_APPROVAL_NODE = "manager_approval";
+const FINANCE_APPROVAL_NODE = "finance_approval";
+
 // ============================================================
 // GENERAL HELPERS
 // ============================================================
@@ -38,7 +41,11 @@ function validateGraph(graph) {
   const parsed = workflowGraphSchema.safeParse(graph);
 
   if (!parsed.success) {
-    throw new AppError(422, "INVALID_WORKFLOW", "The workflow graph is invalid.");
+    throw new AppError(
+      422,
+      "INVALID_WORKFLOW",
+      "The workflow graph is invalid."
+    );
   }
 
   const validated = parsed.data;
@@ -195,7 +202,11 @@ function nextApprovalStage(graph, origins) {
 
 async function validateStageAssignees(client, tenantId, graph, nodeIds) {
   if (!tenantId) {
-    throw new AppError(403, "INVALID_TENANT", "Tenant context is missing.");
+    throw new AppError(
+      403,
+      "INVALID_TENANT",
+      "Tenant context is missing."
+    );
   }
 
   const approvalNodes = nodeIds.map((nodeId) =>
@@ -216,7 +227,9 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
     throw new AppError(
       422,
       "MISSING_WORKFLOW_ASSIGNEE",
-      `Missing assignee for: ${missingNodes.map((node) => node.id).join(", ")}`
+      `Missing assignee for: ${missingNodes
+        .map((node) => node.id)
+        .join(", ")}`
     );
   }
 
@@ -231,7 +244,9 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
   const uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  const malformedIds = uniqueAssignees.filter((id) => !uuidRegex.test(id));
+  const malformedIds = uniqueAssignees.filter(
+    (id) => !uuidRegex.test(id)
+  );
 
   if (malformedIds.length) {
     throw new AppError(
@@ -241,18 +256,16 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
     );
   }
 
-  // IMPORTANT:
-  // app_current_tenant_id() reads app.tenant_id.
-  // Set the correct transaction-local PostgreSQL setting.
   await client.query(
     `SELECT set_config('app.tenant_id', $1, true)`,
     [String(tenantId)]
   );
 
-  // Verify tenant context used by RLS.
-  const tenantCheck = await client.query(
-    `SELECT app_current_tenant_id()::text AS tenant_id`
-  );
+  const tenantCheck = await client.query(`
+    SELECT
+      app_current_tenant_id()::text AS tenant_id,
+      current_setting('app.tenant_id', true) AS configured_tenant
+  `);
 
   const databaseTenantId = tenantCheck.rows[0]?.tenant_id;
 
@@ -264,20 +277,25 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
     throw new AppError(
       403,
       "TENANT_CONTEXT_MISMATCH",
-      `Database tenant context mismatch. Expected ${tenantId}, received ${databaseTenantId ?? "NULL"}.`
+      `Database tenant context mismatch. Expected ${tenantId}, received ${
+        databaseTenantId ?? "NULL"
+      }.`
     );
   }
 
-  // Read assignees under the verified tenant context.
   const result = await client.query(
     `SELECT id, tenant_id, is_active
      FROM public.users
-     WHERE id = ANY($1::uuid[])`,
-    [uniqueAssignees]
+     WHERE id = ANY($1::uuid[])
+       AND tenant_id = $2::uuid`,
+    [uniqueAssignees, tenantId]
   );
 
   const usersById = new Map(
-    result.rows.map((user) => [String(user.id).toLowerCase(), user])
+    result.rows.map((user) => [
+      String(user.id).trim().toLowerCase(),
+      user,
+    ])
   );
 
   const invalidAssignees = [];
@@ -288,14 +306,14 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
 
     if (!user) {
       invalidAssignees.push(
-        `${node.id}: ${assigneeId} not found or hidden by RLS`
+        `${node.id}: ${assigneeId} not found, belongs to another tenant, or is hidden by RLS`
       );
       continue;
     }
 
     if (
-      String(user.tenant_id).toLowerCase() !==
-      String(tenantId).toLowerCase()
+      String(user.tenant_id).trim().toLowerCase() !==
+      String(tenantId).trim().toLowerCase()
     ) {
       invalidAssignees.push(
         `${node.id}: ${assigneeId} belongs to another tenant`
@@ -309,10 +327,37 @@ async function validateStageAssignees(client, tenantId, graph, nodeIds) {
   }
 
   if (invalidAssignees.length) {
+    const diagnostics = await client.query(`
+      SELECT
+        current_database() AS database_name,
+        current_user AS database_user,
+        session_user AS session_user,
+        inet_server_addr() AS server_address,
+        inet_server_port() AS server_port,
+        version() AS postgres_version,
+        current_setting('app.tenant_id', true) AS configured_tenant,
+        app_current_tenant_id()::text AS active_tenant,
+        row_security_active('public.users') AS users_rls_active
+    `);
+
+    console.error("[ETDOX WORKFLOW ASSIGNEE NOT VISIBLE]", {
+      ...diagnostics.rows[0],
+      expectedTenant: String(tenantId),
+      requestedAssignees: uniqueAssignees,
+      visibleAssignees: result.rows.map((user) => ({
+        id: user.id,
+        tenantId: user.tenant_id,
+        isActive: user.is_active,
+      })),
+      invalidAssignees,
+    });
+
     throw new AppError(
       422,
       "INVALID_WORKFLOW_ASSIGNEE",
-      `Approval assignee validation failed: ${invalidAssignees.join("; ")}`
+      `Approval assignee validation failed: ${invalidAssignees.join(
+        "; "
+      )}. Check the user record, tenant ID, database connection, and users RLS policy.`
     );
   }
 
@@ -434,7 +479,9 @@ export async function startWorkflowRun(
   requiredContext(context);
   const validatedGraph = validateGraph(graph);
 
-  const start = validatedGraph.nodes.find((node) => node.type === "start");
+  const start = validatedGraph.nodes.find(
+    (node) => node.type === "start"
+  );
 
   if (!start) {
     throw new AppError(
@@ -478,7 +525,13 @@ export async function startWorkflowRun(
 
   const run = inserted.rows[0];
 
-  await createStageTasks(client, context, run.id, validatedGraph, stage.nodeIds);
+  await createStageTasks(
+    client,
+    context,
+    run.id,
+    validatedGraph,
+    stage.nodeIds
+  );
 
   await audit(client, context, "workflow_run.started", run.id, {
     definitionId,
@@ -528,7 +581,11 @@ export async function getWorkflow(context, id) {
     );
 
     if (!result.rowCount) {
-      throw new AppError(404, "NOT_FOUND", "Workflow definition not found.");
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
     }
 
     return result.rows[0];
@@ -595,7 +652,11 @@ export async function createWorkflowVersion(context, id, input) {
     );
 
     if (!current.rowCount) {
-      throw new AppError(404, "NOT_FOUND", "Workflow definition not found.");
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
     }
 
     const name = input.name ?? current.rows[0].name;
@@ -624,10 +685,16 @@ export async function createWorkflowVersion(context, id, input) {
         ]
       );
 
-      await audit(client, context, "workflow.version_created", result.rows[0].id, {
-        sourceWorkflowId: id,
-        version: result.rows[0].version,
-      });
+      await audit(
+        client,
+        context,
+        "workflow.version_created",
+        result.rows[0].id,
+        {
+          sourceWorkflowId: id,
+          version: result.rows[0].version,
+        }
+      );
 
       return result.rows[0];
     } catch (error) {
@@ -661,7 +728,11 @@ export async function activateWorkflow(context, id) {
     );
 
     if (!target.rowCount) {
-      throw new AppError(404, "NOT_FOUND", "Workflow definition not found.");
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
     }
 
     const graph = validateGraph(target.rows[0].graph);
@@ -720,7 +791,11 @@ export async function deleteWorkflow(context, id) {
     );
 
     if (!current.rowCount) {
-      throw new AppError(404, "NOT_FOUND", "Workflow definition not found.");
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Workflow definition not found."
+      );
     }
 
     if (current.rows[0].is_active) {
@@ -760,7 +835,11 @@ export async function deleteWorkflow(context, id) {
 export async function listPendingTasks(context, options = {}) {
   requiredContext(context);
 
-  const limit = Math.min(Math.max(Number(options.limit) || 20, 1), 100);
+  const limit = Math.min(
+    Math.max(Number(options.limit) || 20, 1),
+    100
+  );
+
   const offset = Math.max(Number(options.offset) || 0, 0);
 
   return withTenantTransaction(context.tenantId, async (client) => {
@@ -777,9 +856,11 @@ export async function listPendingTasks(context, options = {}) {
          pr.requester_id
        FROM public.approval_tasks t
        JOIN public.workflow_runs r
-         ON r.tenant_id = t.tenant_id AND r.id = t.workflow_run_id
+         ON r.tenant_id = t.tenant_id
+        AND r.id = t.workflow_run_id
        JOIN public.workflow_definitions d
-         ON d.tenant_id = r.tenant_id AND d.id = r.definition_id
+         ON d.tenant_id = r.tenant_id
+        AND d.id = r.definition_id
        LEFT JOIN public.purchase_requests pr
          ON pr.tenant_id = r.tenant_id
         AND r.resource_type = 'purchase_request'
@@ -790,19 +871,32 @@ export async function listPendingTasks(context, options = {}) {
          AND r.status = $4
        ORDER BY t.due_at NULLS LAST, t.created_at, t.id
        LIMIT $5 OFFSET $6`,
-      [context.tenantId, context.userId, TASK_PENDING, RUNNING, limit, offset]
+      [
+        context.tenantId,
+        context.userId,
+        TASK_PENDING,
+        RUNNING,
+        limit,
+        offset,
+      ]
     );
 
     const count = await client.query(
       `SELECT COUNT(*)::text AS total
        FROM public.approval_tasks t
        JOIN public.workflow_runs r
-         ON r.tenant_id = t.tenant_id AND r.id = t.workflow_run_id
+         ON r.tenant_id = t.tenant_id
+        AND r.id = t.workflow_run_id
        WHERE t.tenant_id = $1
          AND t.status = $3
          AND t.assignee_id = $2
          AND r.status = $4`,
-      [context.tenantId, context.userId, TASK_PENDING, RUNNING]
+      [
+        context.tenantId,
+        context.userId,
+        TASK_PENDING,
+        RUNNING,
+      ]
     );
 
     return {
@@ -822,7 +916,9 @@ export async function actOnTask(context, taskId, input = {}) {
   const action = normalizeAction(input.action ?? input.decision);
 
   const comment =
-    typeof input.comment === "string" ? input.comment.trim() || null : null;
+    typeof input.comment === "string"
+      ? input.comment.trim() || null
+      : null;
 
   return withTenantTransaction(context.tenantId, async (client) => {
     const initialTask = await client.query(
@@ -833,7 +929,11 @@ export async function actOnTask(context, taskId, input = {}) {
     );
 
     if (!initialTask.rowCount) {
-      throw new AppError(404, "NOT_FOUND", "Approval task not found.");
+      throw new AppError(
+        404,
+        "NOT_FOUND",
+        "Approval task not found."
+      );
     }
 
     const runId = initialTask.rows[0].workflow_run_id;
@@ -847,8 +947,10 @@ export async function actOnTask(context, taskId, input = {}) {
          d.graph
        FROM public.workflow_runs r
        JOIN public.workflow_definitions d
-         ON d.tenant_id = r.tenant_id AND d.id = r.definition_id
-       WHERE r.tenant_id = $1 AND r.id = $2
+         ON d.tenant_id = r.tenant_id
+        AND d.id = r.definition_id
+       WHERE r.tenant_id = $1
+         AND r.id = $2
        FOR UPDATE OF r`,
       [context.tenantId, runId]
     );
@@ -869,7 +971,10 @@ export async function actOnTask(context, taskId, input = {}) {
       [context.tenantId, taskId]
     );
 
-    if (!lockedTask.rowCount || lockedTask.rows[0].status !== TASK_PENDING) {
+    if (
+      !lockedTask.rowCount ||
+      lockedTask.rows[0].status !== TASK_PENDING
+    ) {
       throw new AppError(
         409,
         "INVALID_STATE",
@@ -906,6 +1011,19 @@ export async function actOnTask(context, taskId, input = {}) {
 
     const graph = validateGraph(run.rows[0].graph);
 
+    // Make sure the task node exists in the workflow graph.
+    const currentNode = graph.nodes.find(
+      (node) => node.id === taskRow.node_id
+    );
+
+    if (!currentNode || currentNode.type !== "approval") {
+      throw new AppError(
+        409,
+        "INVALID_WORKFLOW_NODE",
+        "The approval task does not match a valid approval node."
+      );
+    }
+
     const taskStatus =
       action === "approve"
         ? TASK_APPROVED
@@ -920,9 +1038,18 @@ export async function actOnTask(context, taskId, input = {}) {
            comment = $5,
            acted_at = now(),
            updated_at = now()
-       WHERE tenant_id = $1 AND id = $2 AND status = $6
+       WHERE tenant_id = $1
+         AND id = $2
+         AND status = $6
        RETURNING *`,
-      [context.tenantId, taskId, taskStatus, action, comment, TASK_PENDING]
+      [
+        context.tenantId,
+        taskId,
+        taskStatus,
+        action,
+        comment,
+        TASK_PENDING,
+      ]
     );
 
     if (!updatedTask.rowCount) {
@@ -937,7 +1064,10 @@ export async function actOnTask(context, taskId, input = {}) {
     let requestStatus = null;
     let currentActiveNodes = activeNodes;
 
+    // --------------------------------------------------------
     // REJECT / REQUEST CHANGES
+    // --------------------------------------------------------
+
     if (action === "reject" || action === "request_changes") {
       const finalRunStatus =
         action === "reject" ? RUN_REJECTED : RUN_CANCELLED;
@@ -947,14 +1077,20 @@ export async function actOnTask(context, taskId, input = {}) {
 
       await client.query(
         `UPDATE public.approval_tasks
-         SET status = 'CANCELLED', updated_at = now()
-         WHERE tenant_id = $1 AND workflow_run_id = $2 AND status = $3`,
+         SET status = 'CANCELLED',
+             updated_at = now()
+         WHERE tenant_id = $1
+           AND workflow_run_id = $2
+           AND status = $3`,
         [context.tenantId, runId, TASK_PENDING]
       );
 
       await client.query(
         `UPDATE public.workflow_runs
-         SET status = $3, completed_at = now(), active_node = NULL, updated_at = now()
+         SET status = $3,
+             completed_at = now(),
+             active_node = NULL,
+             updated_at = now()
          WHERE tenant_id = $1 AND id = $2`,
         [context.tenantId, runId, finalRunStatus]
       );
@@ -963,7 +1099,10 @@ export async function actOnTask(context, taskId, input = {}) {
       currentActiveNodes = [];
     }
 
+    // --------------------------------------------------------
     // APPROVE
+    // --------------------------------------------------------
+
     else if (action === "approve") {
       const remaining = await client.query(
         `SELECT node_id
@@ -972,15 +1111,25 @@ export async function actOnTask(context, taskId, input = {}) {
            AND workflow_run_id = $2
            AND status = $3
            AND node_id = ANY($4::text[])`,
-        [context.tenantId, runId, TASK_PENDING, activeNodes]
+        [
+          context.tenantId,
+          runId,
+          TASK_PENDING,
+          activeNodes,
+        ]
       );
 
       if (remaining.rowCount > 0) {
         await client.query(
           `UPDATE public.workflow_runs
-           SET active_node = $3, updated_at = now()
+           SET active_node = $3,
+               updated_at = now()
            WHERE tenant_id = $1 AND id = $2`,
-          [context.tenantId, runId, JSON.stringify(activeNodes)]
+          [
+            context.tenantId,
+            runId,
+            JSON.stringify(activeNodes),
+          ]
         );
       } else {
         const stage = nextApprovalStage(graph, activeNodes);
@@ -1005,15 +1154,72 @@ export async function actOnTask(context, taskId, input = {}) {
 
           await client.query(
             `UPDATE public.workflow_runs
-             SET active_node = $3, updated_at = now()
+             SET active_node = $3,
+                 updated_at = now()
              WHERE tenant_id = $1 AND id = $2`,
-            [context.tenantId, runId, JSON.stringify(currentActiveNodes)]
+            [
+              context.tenantId,
+              runId,
+              JSON.stringify(currentActiveNodes),
+            ]
           );
 
-          await audit(client, context, "workflow_run.stage_started", runId, {
-            activeNodes: currentActiveNodes,
-            previousNodes: activeNodes,
-          });
+          // --------------------------------------------------
+          // MANAGER APPROVED: MOVE REQUEST TO FINANCE
+          // --------------------------------------------------
+
+          if (
+            run.rows[0].resource_type === RESOURCE_PURCHASE_REQUEST &&
+            currentActiveNodes.includes(FINANCE_APPROVAL_NODE)
+          ) {
+            const financeStatusUpdate = await client.query(
+              `UPDATE public.purchase_requests
+               SET status = 'PENDING_FINANCE',
+                   updated_at = now()
+               WHERE tenant_id = $1
+                 AND id = $2
+                 AND workflow_run_id = $3
+                 AND status = 'IN_APPROVAL'`,
+              [
+                context.tenantId,
+                run.rows[0].resource_id,
+                runId,
+              ]
+            );
+
+            if (!financeStatusUpdate.rowCount) {
+              throw new AppError(
+                409,
+                "INVALID_STATE",
+                "Could not move the purchase request to Finance approval."
+              );
+            }
+
+            requestStatus = "PENDING_FINANCE";
+
+            await audit(
+              client,
+              context,
+              "purchase_request.pending_finance",
+              run.rows[0].resource_id,
+              {
+                workflowRunId: runId,
+                previousNodes: activeNodes,
+                activeNodes: currentActiveNodes,
+              }
+            );
+          }
+
+          await audit(
+            client,
+            context,
+            "workflow_run.stage_started",
+            runId,
+            {
+              activeNodes: currentActiveNodes,
+              previousNodes: activeNodes,
+            }
+          );
         } else {
           if (!stage.reachesEnd) {
             throw new AppError(
@@ -1034,26 +1240,46 @@ export async function actOnTask(context, taskId, input = {}) {
                  active_node = NULL,
                  updated_at = now()
              WHERE tenant_id = $1 AND id = $2`,
-            [context.tenantId, runId, RUN_APPROVED]
+            [
+              context.tenantId,
+              runId,
+              RUN_APPROVED,
+            ]
           );
         }
       }
     }
 
-    // UPDATE PURCHASE REQUEST WHEN WORKFLOW IS FINISHED
+    // --------------------------------------------------------
+    // UPDATE PURCHASE REQUEST STATUS
+    //
+    // IN_APPROVAL:
+    //   Initial Manager approval stage.
+    //
+    // PENDING_FINANCE:
+    //   Finance approval stage.
+    //
+    // APPROVED / REJECTED / CHANGES_REQUESTED:
+    //   Final workflow decisions.
+    // --------------------------------------------------------
+
     if (
       run.rows[0].resource_type === RESOURCE_PURCHASE_REQUEST &&
-      requestStatus
+      requestStatus &&
+      requestStatus !== "PENDING_FINANCE"
     ) {
       const updatedRequest = await client.query(
         `UPDATE public.purchase_requests
          SET status = $3,
-             approved_at = CASE WHEN $3 = 'APPROVED' THEN now() ELSE approved_at END,
+             approved_at = CASE
+               WHEN $3 = 'APPROVED' THEN now()
+               ELSE approved_at
+             END,
              updated_at = now()
          WHERE tenant_id = $1
            AND id = $2
            AND workflow_run_id = $4
-           AND status = 'IN_APPROVAL'`,
+           AND status IN ('IN_APPROVAL', 'PENDING_FINANCE')`,
         [
           context.tenantId,
           run.rows[0].resource_id,
@@ -1074,7 +1300,10 @@ export async function actOnTask(context, taskId, input = {}) {
         `SELECT requester_id, request_number
          FROM public.purchase_requests
          WHERE tenant_id = $1 AND id = $2`,
-        [context.tenantId, run.rows[0].resource_id]
+        [
+          context.tenantId,
+          run.rows[0].resource_id,
+        ]
       );
 
       if (purchaseRequest.rowCount) {
@@ -1102,15 +1331,24 @@ export async function actOnTask(context, taskId, input = {}) {
       }
     }
 
+    // --------------------------------------------------------
     // AUDIT DECISION
-    await audit(client, context, `approval_task.${action}`, taskId, {
-      workflowRunId: runId,
-      nodeId: taskRow.node_id,
-      runStatus,
-      requestStatus,
-      activeNodes: currentActiveNodes,
-      comment,
-    });
+    // --------------------------------------------------------
+
+    await audit(
+      client,
+      context,
+      `approval_task.${action}`,
+      taskId,
+      {
+        workflowRunId: runId,
+        nodeId: taskRow.node_id,
+        runStatus,
+        requestStatus,
+        activeNodes: currentActiveNodes,
+        comment,
+      }
+    );
 
     return {
       success: true,
@@ -1118,10 +1356,13 @@ export async function actOnTask(context, taskId, input = {}) {
         action === "approve"
           ? requestStatus === "APPROVED"
             ? "Purchase request approved successfully."
-            : "Approval successful. Workflow moved to the next stage."
+            : requestStatus === "PENDING_FINANCE"
+              ? "Manager approval successful. Request moved to Finance approval."
+              : "Approval successful. Workflow moved to the next stage."
           : action === "reject"
             ? "Purchase request rejected successfully."
             : "Changes requested successfully.",
+
       task: updatedTask.rows[0],
       workflowRunStatus: runStatus,
       purchaseRequestStatus: requestStatus,
