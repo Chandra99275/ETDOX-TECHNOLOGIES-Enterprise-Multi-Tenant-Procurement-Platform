@@ -866,3 +866,32 @@
     grid-template-columns: 1fr;
   }
 }
+.submit-error-message {
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecdca;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin-top: 12px;
+}
+
+.request-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.submit-error-message {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 12px;
+  padding: 12px 14px;
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecdca;
+  border-radius: 8px;
+  font-size: 14px;
+}

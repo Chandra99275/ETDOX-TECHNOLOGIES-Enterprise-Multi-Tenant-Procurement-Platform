@@ -195,6 +195,7 @@ const loadRequestDetails = async (requestId) => {
   try {
     setDetailsLoading(true);
     setDetailsError("");
+    setSubmitError("");
     setSelectedRequest(null);
 
     const token = getToken();
@@ -882,38 +883,47 @@ const loadRequestDetails = async (requestId) => {
           )}
         </div>
          
-     {selectedRequest && getStatus(selectedRequest) === "DRAFT" && (
-          <button
-            className="create-request-submit"
-            onClick={() => handleEditRequest(selectedRequest)}
-          >
-            Edit Request
-          </button>
-        )}
-        
-        {selectedRequest && getStatus(selectedRequest) === "DRAFT" && (
-      <button
-          className="create-request-submit"
-          onClick={() => handleSubmitRequest(selectedRequest.id)}
-          disabled={submitLoading}
-         >
-        {submitLoading ? "Submitting..." : "Submit Request"}
+     <div className="request-modal-actions">
+  {selectedRequest && getStatus(selectedRequest) === "DRAFT" && (
+    <button
+      className="create-request-submit"
+      onClick={() => handleEditRequest(selectedRequest)}
+    >
+      Edit Request
+    </button>
+  )}
+
+  {selectedRequest && getStatus(selectedRequest) === "DRAFT" && (
+    <button
+      className="create-request-submit"
+      onClick={() => handleSubmitRequest(selectedRequest.id)}
+      disabled={submitLoading}
+    >
+      {submitLoading ? "Submitting..." : "Submit Request"}
+    </button>
+  )}
+
+  <button
+    className="request-modal-close"
+    onClick={() => {
+      setSelectedRequest(null);
+      setDetailsError("");
+      setDetailsLoading(false);
+    }}
+       >
+         Close
       </button>
-    )}
+   </div>
 
 
-        <button
-          className="request-modal-close"
-          onClick={() => {
-            setSelectedRequest(null);
-            setDetailsError("");
-            setDetailsLoading(false);
-          }}
-        >
-          Close
-        </button>
       </div>
-
+        
+        {submitError && (
+             <p className="submit-error-message">
+               {submitError}
+             </p>
+           )}
+  
       {detailsLoading && (
         <p>Loading request details...</p>
       )}
