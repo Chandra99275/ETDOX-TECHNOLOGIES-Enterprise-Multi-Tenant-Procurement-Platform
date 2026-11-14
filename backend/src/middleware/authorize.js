@@ -1,87 +1,55 @@
-const normalize = (value) => String(value).trim().toLowerCase();
 
-function forbidden(message = "You do not have permission to perform this action.") {
-  const error = new Error(message);
-  error.status = 403;
-  error.code = "FORBIDDEN";
-  return error;
-}
+import {
+  requireRole,
+  requirePermission as checkPermission,
+  requireAnyPermission as checkAnyPermission,
+} from "./rbac.js";
+
+// ============================================================
+// ETDOX CENTRALIZED AUTHORIZATION MIDDLEWARE
+// ============================================================
 
 /**
- * Restrict a route to one or more roles.
+ * Restrict access to specific roles.
  *
- * Example:
+ * Examples:
+ * authorize("admin")
  * authorize("admin", "manager")
+ * authorize("procurement_manager")
+ * authorize("platform_admin")
  */
 export function authorize(...allowedRoles) {
-  const permittedRoles = allowedRoles.flat().map(normalize);
-
-  if (permittedRoles.length === 0) {
-    throw new Error("authorize() requires at least one allowed role.");
-  }
-
-  return function authorizeRole(req, _res, next) {
-    if (!req.user) {
-      const error = new Error("Authentication required.");
-      error.status = 401;
-      error.code = "UNAUTHORIZED";
-      return next(error);
-    }
-
-    const userRoles = [
-      ...(req.user.role ? [req.user.role] : []),
-      ...(Array.isArray(req.user.roles) ? req.user.roles : []),
-    ].map(normalize);
-
-    const hasPermission = permittedRoles.some((role) =>
-      userRoles.includes(role)
-    );
-
-    if (!hasPermission) {
-      return next(forbidden());
-    }
-
-    return next();
-  };
+  return requireRole(...allowedRoles);
 }
 
 /**
- * Require a specific permission.
+ * Require ALL specified permissions.
  *
  * Example:
- * requirePermission("invoices:approve")
+ * requirePermission(
+ *   "purchase_requests:read",
+ *   "purchase_requests:approve"
+ * )
  */
 export function requirePermission(...requiredPermissions) {
-  const permissions = requiredPermissions.flat();
-
-  if (permissions.length === 0) {
-    throw new Error(
-      "requirePermission() requires at least one permission."
-    );
-  }
-
-  return function permissionCheck(req, _res, next) {
-    if (!req.user) {
-      const error = new Error("Authentication required.");
-      error.status = 401;
-      error.code = "UNAUTHORIZED";
-      return next(error);
-    }
-
-    const userPermissions = Array.isArray(req.user.permissions)
-      ? req.user.permissions
-      : [];
-
-    const allowed = permissions.every((permission) =>
-      userPermissions.includes(permission)
-    );
-
-    if (!allowed) {
-      return next(forbidden("Required permission is missing."));
-    }
-
-    return next();
-  };
+  return checkPermission(...requiredPermissions);
 }
+
+/**
+ * Require ANY ONE of the specified permissions.
+ *
+ * Example:
+ * requireAnyPermission(
+ *   "purchase_requests:read",
+ *   "purchase_orders:read"
+ * )
+ */
+export function requireAnyPermission(...requiredPermissions) {
+  return checkAnyPermission(...requiredPermissions);
+}
+
+// ============================================================
+// DEFAULT EXPORT
+// ============================================================
 
 export default authorize;
