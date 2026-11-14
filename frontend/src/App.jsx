@@ -14,6 +14,7 @@ import EmployeePage from "./pages/employeepage";
 import ManagerPage from "./pages/ManagerPage";
 import FinancePage from "./pages/FinancePage";
 import AdminPage from "./pages/AdminPage";
+import ProcurementPage from "./pages/procurement/ProcurementPage";
 
 // ============================================================
 // AUTH HELPERS
@@ -89,6 +90,8 @@ const roleRoutes = {
 
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
+  procurement_manager: "/procurement/dashboard",
+  procurement_specialist: "/procurement/dashboard",
 };
 
 // ============================================================
@@ -231,6 +234,23 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+          
+          {/* Procurement Dashboard */}
+       <Route
+         path="/procurement/dashboard"
+         element={
+           <ProtectedRoute
+             allowedRoles={[
+               "procurement_manager",
+               "procurement_specialist",
+               "admin",
+                "organization_admin",
+             ]}
+           >
+             <ProcurementPage />
+           </ProtectedRoute>
+         }
+       />
 
         {/* Role-based Dashboard Redirect */}
         <Route
