@@ -4,7 +4,6 @@ import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 
 import { env } from "../../config/env.js";
-
 import * as authRepo from "./auth.repository.js";
 import * as emailService from "./email.service.js";
 
@@ -28,19 +27,15 @@ function createAuthError(message, statusCode = 400, code) {
   const error = new Error(message);
   error.statusCode = statusCode;
 
-  if (code) {
-    error.code = code;
-  }
+  if (code) error.code = code;
 
   return error;
 }
 
 function normalizeEmail(email) {
-  if (typeof email !== "string") {
-    return "";
-  }
-
-  return email.trim().toLowerCase();
+  return typeof email === "string"
+    ? email.trim().toLowerCase()
+    : "";
 }
 
 function generateSecureToken() {
@@ -67,7 +62,6 @@ function checkRateLimit(key, cooldownSeconds) {
   }
 
   rateLimits.set(key, now + cooldownSeconds * 1000);
-
   return 0;
 }
 
@@ -89,6 +83,33 @@ function validatePasswordPolicy(password) {
   }
 
   return null;
+}
+
+function getTokenExpiryDate() {
+  // Keep session expiry consistent with the JWT configuration.
+  const configured = env.jwtExpiresIn || "8h";
+
+  if (typeof configured === "number") {
+    return new Date(Date.now() + configured * 1000);
+  }
+
+  const match = String(configured).match(/^(\d+)\s*(s|m|h|d)$/i);
+
+  if (!match) {
+    return new Date(Date.now() + 8 * 60 * 60 * 1000);
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return new Date(Date.now() + amount * multipliers[unit]);
 }
 
 // --------------------------------------------------
@@ -161,13 +182,11 @@ export function resolvePrimaryRole(roles = []) {
 
 export function resolveDashboardRoute(roles = []) {
   const role = resolvePrimaryRole(roles);
-
   return ROLE_DASHBOARDS[role] || "/employee/dashboard";
 }
 
 // --------------------------------------------------
-// Database record compatibility
-// Supports snake_case and camelCase fields.
+// User record compatibility
 // --------------------------------------------------
 
 function getField(user, snakeCase, camelCase) {
@@ -175,7 +194,7 @@ function getField(user, snakeCase, camelCase) {
 }
 
 function getUserId(user) {
-  return getField(user, "id", "id");
+  return user?.id ?? null;
 }
 
 function getTenantId(user) {
@@ -187,11 +206,11 @@ function getPasswordHash(user) {
 }
 
 function getUserEmail(user) {
-  return getField(user, "email", "email");
+  return user?.email ?? null;
 }
 
 function getUserStatus(user) {
-  return getField(user, "status", "status");
+  return user?.status ?? null;
 }
 
 function getIsActive(user) {
@@ -201,11 +220,9 @@ function getIsActive(user) {
 function getFullName(user) {
   const existingName =
     getField(user, "full_name", "fullName") ??
-    getField(user, "name", "name");
+    user?.name;
 
-  if (existingName) {
-    return existingName;
-  }
+  if (existingName) return existingName;
 
   const firstName =
     getField(user, "first_name", "firstName") ?? "";
@@ -217,10 +234,12 @@ function getFullName(user) {
 }
 
 function getUserRoles(user) {
-  const roles = user?.roles;
-
-  if (Array.isArray(roles) && roles.length > 0) {
-    return roles.map((role) => String(role).toLowerCase().trim());
+  if (Array.isArray(user?.roles) && user.roles.length > 0) {
+    return user.roles.map((role) =>
+      String(typeof role === "string" ? role : role?.name ?? "")
+        .toLowerCase()
+        .trim()
+    ).filter(Boolean);
   }
 
   const role =
@@ -253,7 +272,7 @@ function validateIdentity(user) {
 
   const roles = getUserRoles(user);
 
-  if (roles.length === 0) {
+  if (!roles.length) {
     throw createAuthError(
       "Your account does not have an assigned role.",
       403
@@ -404,10 +423,7 @@ export async function register({
     );
   }
 
-  if (
-    organizationMode === "create" &&
-    !organizationName?.trim()
-  ) {
+  if (organizationMode === "create" && !organizationName?.trim()) {
     throw createAuthError(
       "Organization name is required.",
       400
@@ -418,9 +434,7 @@ export async function register({
     .toLowerCase()
     .trim();
 
-  if (
-    ["platform_admin", "superadmin"].includes(normalizedRole)
-  ) {
+  if (["platform_admin", "superadmin"].includes(normalizedRole)) {
     throw createAuthError(
       "Platform administrator cannot be registered publicly.",
       403
@@ -447,7 +461,6 @@ export async function register({
 
     tenantId = tenant.id;
     tenantName = tenant.name;
-
     assignedRoles = ["organization_admin", "admin"];
   } else {
     const tenant = await authRepo.findDefaultTenant();
@@ -490,6 +503,7 @@ export async function register({
 
   await authRepo.createEmailVerificationToken({
     userId: user.id,
+    tenantId,
     tokenHash: hashToken(rawToken),
     otp,
     expiresAt,
@@ -555,7 +569,17 @@ export async function verifyEmail({ token, otp, email }) {
     );
   }
 
-  const user = await authRepo.findUserById(record.userId);
+  if (!record.tenantId) {
+    throw createAuthError(
+      "Verification record is missing tenant information.",
+      500
+    );
+  }
+
+  const user = await authRepo.findUserById(
+    record.userId,
+    record.tenantId
+  );
 
   if (!user) {
     throw createAuthError("User account not found.", 404);
@@ -575,7 +599,12 @@ export async function verifyEmail({ token, otp, email }) {
     ? "PENDING_APPROVAL"
     : "ACTIVE";
 
-  await authRepo.updateUserStatus(user.id, status, true);
+  await authRepo.updateUserStatus(
+    user.id,
+    record.tenantId,
+    status,
+    true
+  );
 
   return {
     success: true,
@@ -616,6 +645,7 @@ export async function resendVerification({ email }) {
   if (user && getUserStatus(user) === "PENDING_VERIFICATION") {
     const token = generateSecureToken();
     const otp = generateOtp();
+    const tenantId = getTenantId(user);
 
     const expiresAt = new Date(
       Date.now() +
@@ -624,6 +654,7 @@ export async function resendVerification({ email }) {
 
     await authRepo.createEmailVerificationToken({
       userId: getUserId(user),
+      tenantId,
       tokenHash: hashToken(token),
       otp,
       expiresAt,
@@ -657,7 +688,11 @@ export async function login({
 }) {
   const normalizedEmail = normalizeEmail(email);
 
-  if (!EMAIL_REGEX.test(normalizedEmail) || typeof password !== "string" || !password) {
+  if (
+    !EMAIL_REGEX.test(normalizedEmail) ||
+    typeof password !== "string" ||
+    !password
+  ) {
     throw createAuthError(
       AUTH_MESSAGES.INVALID_CREDENTIALS ||
         "Invalid email or password.",
@@ -677,10 +712,7 @@ export async function login({
 
   const passwordHash = getPasswordHash(user);
 
-  if (
-    typeof passwordHash !== "string" ||
-    !passwordHash
-  ) {
+  if (typeof passwordHash !== "string" || !passwordHash) {
     throw createAuthError(
       "The account has no configured password credential.",
       500
@@ -702,14 +734,10 @@ export async function login({
   const role = validateIdentity(user);
   const tenantId = getTenantId(user);
 
-  let permissions = [];
-
-  if (typeof authRepo.getUserPermissions === "function") {
-    permissions = await authRepo.getUserPermissions(
-      tenantId,
-      getUserRoles(user)
-    );
-  }
+  const permissions = await authRepo.getUserPermissions(
+    tenantId,
+    getUserRoles(user)
+  );
 
   const accessToken = generateAccessToken(
     user,
@@ -717,20 +745,14 @@ export async function login({
     permissions
   );
 
-  // Session tracking is optional only if the repository
-  // does not implement persistent sessions.
-  if (typeof authRepo.createSession === "function") {
-    await authRepo.createSession({
-      userId: getUserId(user),
-      tenantId,
-      tokenHash: hashToken(accessToken),
-      expiresAt: new Date(
-        Date.now() + 8 * 60 * 60 * 1000
-      ),
-      ipAddress,
-      userAgent,
-    });
-  }
+  await authRepo.createSession({
+    userId: getUserId(user),
+    tenantId,
+    tokenHash: hashToken(accessToken),
+    expiresAt: getTokenExpiryDate(),
+    ipAddress,
+    userAgent,
+  });
 
   return {
     success: true,
@@ -811,6 +833,7 @@ export async function forgotPassword({ email }) {
   if (user && getIsActive(user) !== false) {
     const token = generateSecureToken();
     const otp = generateOtp();
+    const tenantId = getTenantId(user);
 
     const expiresAt = new Date(
       Date.now() +
@@ -819,6 +842,7 @@ export async function forgotPassword({ email }) {
 
     await authRepo.createPasswordResetToken({
       userId: getUserId(user),
+      tenantId,
       tokenHash: hashToken(token),
       otp,
       expiresAt,
@@ -848,18 +872,12 @@ export async function verifyResetOtp({ email, otp }) {
   const normalizedEmail = normalizeEmail(email);
   const cleanOtp = String(otp ?? "").trim();
 
-  if (!EMAIL_REGEX.test(normalizedEmail) || !/^\d{6}$/.test(cleanOtp)) {
+  if (
+    !EMAIL_REGEX.test(normalizedEmail) ||
+    !/^\d{6}$/.test(cleanOtp)
+  ) {
     throw createAuthError(
       "A valid email address and six-digit code are required.",
-      400
-    );
-  }
-
-  const user = await authRepo.findUserByEmail(normalizedEmail);
-
-  if (!user) {
-    throw createAuthError(
-      "Invalid or expired verification code.",
       400
     );
   }
@@ -896,6 +914,7 @@ export async function resetPassword({
   confirmPassword,
 }) {
   const hasOtp = Boolean(email && otp);
+
   const hasToken =
     typeof token === "string" && token.trim().length > 0;
 
@@ -946,7 +965,17 @@ export async function resetPassword({
     );
   }
 
-  const user = await authRepo.findUserById(record.userId);
+  if (!record.tenantId) {
+    throw createAuthError(
+      "Password reset record is missing tenant information.",
+      500
+    );
+  }
+
+  const user = await authRepo.findUserById(
+    record.userId,
+    record.tenantId
+  );
 
   if (!user) {
     throw createAuthError("User account not found.", 404);
@@ -954,14 +983,16 @@ export async function resetPassword({
 
   const passwordHash = await bcrypt.hash(newPassword, 12);
 
-  await authRepo.updatePassword(
+  await authRepo.updateUserPassword(
     getUserId(user),
+    record.tenantId,
     passwordHash
   );
 
-  if (typeof authRepo.revokeUserSessions === "function") {
-    await authRepo.revokeUserSessions(getUserId(user));
-  }
+  await authRepo.revokeUserSessions(
+    getUserId(user),
+    record.tenantId
+  );
 
   return {
     success: true,

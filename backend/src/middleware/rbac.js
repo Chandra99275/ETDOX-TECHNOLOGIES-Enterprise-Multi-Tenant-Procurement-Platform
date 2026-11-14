@@ -1,4 +1,10 @@
 
+// ============================================================
+// ETDOX ENTERPRISE RBAC MIDDLEWARE
+// Role-Based Access Control
+// ============================================================
+
+// All supported database roles.
 const VALID_ROLES = new Set([
   "admin",
   "organization_admin",
@@ -12,69 +18,36 @@ const VALID_ROLES = new Set([
   "finance_manager",
   "auditor",
   "supplier_user",
+  "platform_admin",
 ]);
 
-const ROLE_PERMISSIONS = {
-  admin: [
-    "analytics:read",
-    "workflows:manage",
-    "approvals:read",
-    "approvals:act",
-  ],
+// Only genuinely equivalent role names are treated as aliases.
+// Procurement Manager is NOT automatically a Manager.
+// Platform Admin is NOT automatically an Organization Admin.
+const ROLE_ALIASES = {
+  admin: "admin",
+  organization_admin: "admin",
 
-  organization_admin: [
-    "analytics:read",
-    "workflows:manage",
-    "approvals:read",
-    "approvals:act",
-  ],
+  employee: "employee",
+  requester: "employee",
 
-  manager: [
-    "analytics:read",
-    "approvals:read",
-    "approvals:act",
-  ],
+  manager: "manager",
+  department_manager: "manager",
 
-  department_manager: [
-    "analytics:read",
-    "approvals:read",
-    "approvals:act",
-  ],
+  finance: "finance",
+  finance_manager: "finance",
 
-  procurement_manager: [
-    "analytics:read",
-    "workflows:manage",
-    "approvals:read",
-    "approvals:act",
-  ],
+  procurement_manager: "procurement_manager",
+  procurement_specialist: "procurement_specialist",
 
-  procurement_specialist: [
-    "analytics:read",
-    "workflows:manage",
-    "approvals:read",
-  ],
-
-  finance: [
-    "analytics:read",
-    "approvals:read",
-    "approvals:act",
-  ],
-
-  finance_manager: [
-    "analytics:read",
-    "approvals:read",
-    "approvals:act",
-  ],
-
-  auditor: [
-    "analytics:read",
-    "approvals:read",
-  ],
-
-  employee: [],
-  requester: [],
-  supplier_user: [],
+  auditor: "auditor",
+  supplier_user: "supplier_user",
+  platform_admin: "platform_admin",
 };
+
+// ============================================================
+// NORMALIZATION
+// ============================================================
 
 function normalizeRole(role) {
   if (typeof role !== "string") return "";
@@ -87,43 +60,23 @@ function normalizeRole(role) {
 
 function normalizePermission(permission) {
   if (typeof permission !== "string") return "";
+
   return permission.trim().toLowerCase();
 }
 
-function expandRoleAliases(roleSet) {
-  if (
-    roleSet.has("organization_admin") ||
-    roleSet.has("admin")
-  ) {
-    roleSet.add("admin");
-    roleSet.add("organization_admin");
+function canonicalRole(role) {
+  const normalized = normalizeRole(role);
+
+  if (!VALID_ROLES.has(normalized)) {
+    return "";
   }
 
-  if (
-    roleSet.has("requester") ||
-    roleSet.has("employee")
-  ) {
-    roleSet.add("employee");
-    roleSet.add("requester");
-  }
-
-  if (
-    roleSet.has("department_manager") ||
-    roleSet.has("procurement_manager") ||
-    roleSet.has("manager")
-  ) {
-    roleSet.add("manager");
-    roleSet.add("department_manager");
-  }
-
-  if (
-    roleSet.has("finance_manager") ||
-    roleSet.has("finance")
-  ) {
-    roleSet.add("finance");
-    roleSet.add("finance_manager");
-  }
+  return ROLE_ALIASES[normalized] ?? normalized;
 }
+
+// ============================================================
+// EXTRACT USER ROLES
+// ============================================================
 
 function getUserRoles(req) {
   const roles = new Set();
@@ -142,7 +95,9 @@ function getUserRoles(req) {
   ];
 
   for (const source of sources) {
-    if (!source) continue;
+    if (!source || typeof source !== "object") {
+      continue;
+    }
 
     addRole(source.role);
     addRole(source.roleName);
@@ -161,10 +116,12 @@ function getUserRoles(req) {
     }
   }
 
-  expandRoleAliases(roles);
-
   return roles;
 }
+
+// ============================================================
+// EXTRACT EXPLICIT PERMISSIONS
+// ============================================================
 
 function getExplicitPermissions(req) {
   const permissions = new Set();
@@ -175,20 +132,30 @@ function getExplicitPermissions(req) {
   ];
 
   for (const source of sources) {
-    if (!Array.isArray(source)) continue;
+    if (!Array.isArray(source)) {
+      continue;
+    }
 
     for (const permission of source) {
       if (typeof permission === "string") {
         const normalized = normalizePermission(permission);
-        if (normalized) permissions.add(normalized);
-      } else if (permission && typeof permission === "object") {
+
+        if (normalized) {
+          permissions.add(normalized);
+        }
+      } else if (
+        permission &&
+        typeof permission === "object"
+      ) {
         const normalized = normalizePermission(
           permission.name ??
           permission.permission ??
           permission.code
         );
 
-        if (normalized) permissions.add(normalized);
+        if (normalized) {
+          permissions.add(normalized);
+        }
       }
     }
   }
@@ -196,18 +163,22 @@ function getExplicitPermissions(req) {
   return permissions;
 }
 
+// ============================================================
+// EFFECTIVE PERMISSIONS
+// ============================================================
+
+// PostgreSQL role permissions must be loaded into
+// req.user.permissions by the authentication flow.
+//
+// This middleware deliberately does not invent permissions
+// based only on a role name. It follows deny-by-default.
 function getPermissions(req) {
-  const permissions = getExplicitPermissions(req);
-  const roles = getUserRoles(req);
-
-  for (const role of roles) {
-    for (const permission of ROLE_PERMISSIONS[role] ?? []) {
-      permissions.add(permission);
-    }
-  }
-
-  return permissions;
+  return getExplicitPermissions(req);
 }
+
+// ============================================================
+// ERROR RESPONSES
+// ============================================================
 
 function sendForbidden(
   res,
@@ -228,14 +199,20 @@ function sendUnauthorized(res) {
   });
 }
 
+// ============================================================
+// REQUIRE ROLE
+// ============================================================
+
 export function requireRole(...allowedRoles) {
   const normalizedAllowedRoles = allowedRoles
     .flat()
-    .map(normalizeRole)
-    .filter((role) => VALID_ROLES.has(role));
+    .map(canonicalRole)
+    .filter(Boolean);
 
   return function roleMiddleware(req, res, next) {
-    if (!req.user) return sendUnauthorized(res);
+    if (!req.user) {
+      return sendUnauthorized(res);
+    }
 
     if (normalizedAllowedRoles.length === 0) {
       return sendForbidden(
@@ -246,8 +223,14 @@ export function requireRole(...allowedRoles) {
 
     const userRoles = getUserRoles(req);
 
+    const canonicalUserRoles = new Set(
+      [...userRoles]
+        .map(canonicalRole)
+        .filter(Boolean)
+    );
+
     const hasAllowedRole = normalizedAllowedRoles.some(
-      (role) => userRoles.has(role)
+      (role) => canonicalUserRoles.has(role)
     );
 
     if (!hasAllowedRole) {
@@ -261,6 +244,10 @@ export function requireRole(...allowedRoles) {
   };
 }
 
+// ============================================================
+// REQUIRE ALL PERMISSIONS
+// ============================================================
+
 export function requirePermission(...requiredPermissions) {
   const required = requiredPermissions
     .flat()
@@ -268,7 +255,9 @@ export function requirePermission(...requiredPermissions) {
     .filter(Boolean);
 
   return function permissionMiddleware(req, res, next) {
-    if (!req.user) return sendUnauthorized(res);
+    if (!req.user) {
+      return sendUnauthorized(res);
+    }
 
     if (required.length === 0) {
       return sendForbidden(
@@ -296,6 +285,10 @@ export function requirePermission(...requiredPermissions) {
   };
 }
 
+// ============================================================
+// REQUIRE ANY PERMISSION
+// ============================================================
+
 export function requireAnyPermission(...requiredPermissions) {
   const required = requiredPermissions
     .flat()
@@ -303,7 +296,9 @@ export function requireAnyPermission(...requiredPermissions) {
     .filter(Boolean);
 
   return function anyPermissionMiddleware(req, res, next) {
-    if (!req.user) return sendUnauthorized(res);
+    if (!req.user) {
+      return sendUnauthorized(res);
+    }
 
     if (required.length === 0) {
       return sendForbidden(
@@ -330,6 +325,10 @@ export function requireAnyPermission(...requiredPermissions) {
     return next();
   };
 }
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 export default {
   requireRole,

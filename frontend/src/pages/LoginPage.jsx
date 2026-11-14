@@ -1,3 +1,4 @@
+
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -19,73 +20,156 @@ import "./LoginPage.css";
 // --------------------------------------------------
 
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1"
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:5000/api/v1"
 )
   .trim()
   .replace(/\/+$/, "");
 
 const LOGIN_URL = `${API_BASE_URL}/auth/login`;
-const RESEND_VERIFICATION_URL = `${API_BASE_URL}/auth/resend-verification`;
+const RESEND_VERIFICATION_URL =
+  `${API_BASE_URL}/auth/resend-verification`;
 
 const REQUEST_TIMEOUT = 15000;
 
 // --------------------------------------------------
-// ROLE-BASED DASHBOARD ROUTING
+// ALL 9 ETDOX ROLE DASHBOARDS
 // --------------------------------------------------
 
 const ROLE_DASHBOARDS = {
+  // 1. Employee / Requester
+  employee: "/employee/dashboard",
+  requester: "/employee/dashboard",
+
+  // 2. Department Manager
+  manager: "/manager/dashboard",
+  department_manager: "/manager/dashboard",
+
+  // 3. Finance Manager
+  finance: "/finance/dashboard",
+  finance_manager: "/finance/dashboard",
+
+  // 4. Organization Admin
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
 
-  employee: "/employee/dashboard",
-  requester: "/employee/dashboard",
-  supplier_user: "/employee/dashboard",
+  // 5. Procurement Manager
+  procurement_manager: "/procurement-manager/dashboard",
 
-  manager: "/manager/dashboard",
-  department_manager: "/manager/dashboard",
-  procurement_manager: "/manager/dashboard",
+  // 6. Procurement Specialist
+  procurement_specialist: "/procurement-specialist/dashboard",
 
-  procurement_specialist: "/admin/dashboard",
-  auditor: "/admin/dashboard",
+  // 7. Auditor
+  auditor: "/auditor/dashboard",
 
-  finance: "/finance/dashboard",
-  finance_manager: "/finance/dashboard",
+  // 8. Supplier User
+  supplier_user: "/supplier/dashboard",
+
+  // 9. Platform Admin
+  platform_admin: "/platform-admin/dashboard",
 };
 
 // --------------------------------------------------
-// RESPONSE HELPERS
+// ROLE PRIORITY
 // --------------------------------------------------
 
-function getRole(user) {
-  const directRole = user?.role ?? user?.roleName;
+const ROLE_PRIORITY = [
+  "platform_admin",
+  "procurement_manager",
+  "procurement_specialist",
+  "organization_admin",
+  "admin",
+  "finance_manager",
+  "finance",
+  "auditor",
+  "department_manager",
+  "manager",
+  "supplier_user",
+  "requester",
+  "employee",
+];
 
-  if (typeof directRole === "string" && directRole.trim()) {
-    return directRole.trim().toLowerCase();
+// --------------------------------------------------
+// ROLE NORMALIZATION
+// --------------------------------------------------
+
+function normalizeRole(role) {
+  if (!role) return "";
+
+  if (typeof role === "object") {
+    role =
+      role.name ||
+      role.slug ||
+      role.code ||
+      role.role ||
+      "";
   }
 
-  if (Array.isArray(user?.roles)) {
-    const role = user.roles.find((item) => {
-      if (typeof item === "string") {
-        return item.trim().length > 0;
-      }
-
-      return (
-        typeof item?.name === "string" &&
-        item.name.trim().length > 0
-      );
-    });
-
-    if (typeof role === "string") {
-      return role.trim().toLowerCase();
-    }
-
-    if (typeof role?.name === "string") {
-      return role.name.trim().toLowerCase();
-    }
-  }
-
-  return "";
+  return String(role)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
 }
+
+// --------------------------------------------------
+// GET ALL USER ROLES
+// --------------------------------------------------
+
+function getUserRoles(user) {
+  const possibleRoles = [
+    user?.role,
+    user?.roleName,
+    user?.role_name,
+    user?.userRole,
+    user?.user_type,
+    user?.userType,
+    user?.primaryRole,
+    user?.primary_role,
+    user?.roles,
+    user?.account?.role,
+    user?.permissions?.role,
+  ];
+
+  const roles = [];
+
+  possibleRoles.forEach((value) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        const role = normalizeRole(item);
+
+        if (role) {
+          roles.push(role);
+        }
+      });
+    } else {
+      const role = normalizeRole(value);
+
+      if (role) {
+        roles.push(role);
+      }
+    }
+  });
+
+  return [...new Set(roles)];
+}
+
+// --------------------------------------------------
+// GET PRIMARY ROLE
+// --------------------------------------------------
+
+function getPrimaryRole(user) {
+  const roles = getUserRoles(user);
+
+  return (
+    ROLE_PRIORITY.find((role) =>
+      roles.includes(role)
+    ) || ""
+  );
+}
+
+// --------------------------------------------------
+// API RESPONSE HELPERS
+// --------------------------------------------------
 
 async function readResponse(response) {
   const body = await response.text();
@@ -97,19 +181,16 @@ async function readResponse(response) {
   try {
     return JSON.parse(body);
   } catch {
-    return { message: body };
+    return {
+      message: body,
+    };
   }
 }
 
 function getPayload(data) {
   let payload = data;
 
-  // Support common API response formats:
-  // { data: { user, accessToken } }
-  // { success: true, data: { user, token } }
-  // { user, token }
-
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     if (
       payload?.data &&
       typeof payload.data === "object" &&
@@ -127,7 +208,10 @@ function getPayload(data) {
 function getErrorCode(data) {
   const error = data?.error;
 
-  if (typeof error === "object" && error !== null) {
+  if (
+    typeof error === "object" &&
+    error !== null
+  ) {
     return (
       error.code ||
       data?.code ||
@@ -144,7 +228,10 @@ function getErrorCode(data) {
 }
 
 function getErrorMessage(data, fallback) {
-  if (typeof data?.message === "string" && data.message.trim()) {
+  if (
+    typeof data?.message === "string" &&
+    data.message.trim()
+  ) {
     return data.message.trim();
   }
 
@@ -155,7 +242,10 @@ function getErrorMessage(data, fallback) {
     return data.error.message.trim();
   }
 
-  if (typeof data?.error === "string" && data.error.trim()) {
+  if (
+    typeof data?.error === "string" &&
+    data.error.trim()
+  ) {
     return data.error.trim();
   }
 
@@ -174,26 +264,34 @@ function clearSession() {
     "user",
   ];
 
-  for (const key of keys) {
+  keys.forEach((key) => {
     localStorage.removeItem(key);
     sessionStorage.removeItem(key);
-  }
+  });
 }
 
 function saveSession(user, token) {
   clearSession();
 
-  // Some existing ETDOX API clients use different token keys.
-  // Keep them consistent when the API returns a bearer token.
-  if (token && typeof token === "string" && token.trim()) {
-    const normalizedToken = token.trim();
-
-    localStorage.setItem("token", normalizedToken);
-    localStorage.setItem("accessToken", normalizedToken);
-    localStorage.setItem("authToken", normalizedToken);
+  if (
+    typeof token !== "string" ||
+    !token.trim()
+  ) {
+    throw new Error(
+      "The login API did not return a valid access token."
+    );
   }
 
-  localStorage.setItem("user", JSON.stringify(user));
+  const normalizedToken = token.trim();
+
+  localStorage.setItem("token", normalizedToken);
+  localStorage.setItem("accessToken", normalizedToken);
+  localStorage.setItem("authToken", normalizedToken);
+
+  localStorage.setItem(
+    "user",
+    JSON.stringify(user)
+  );
 }
 
 // --------------------------------------------------
@@ -206,6 +304,7 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [showPassword, setShowPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -224,18 +323,20 @@ export default function Login() {
   async function handleSubmit(event) {
     event.preventDefault();
 
-    if (loading) {
-      return;
-    }
+    if (loading) return;
 
     setError("");
     setErrorCode("");
     setResendStatus("");
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = email
+      .trim()
+      .toLowerCase();
 
     if (!normalizedEmail || !password) {
-      setError("Enter your email address and password.");
+      setError(
+        "Enter your email address and password."
+      );
       return;
     }
 
@@ -250,12 +351,12 @@ export default function Login() {
     try {
       const response = await fetch(LOGIN_URL, {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
 
-        // Supports secure HTTP-only cookie authentication.
         credentials: "include",
 
         body: JSON.stringify({
@@ -267,6 +368,10 @@ export default function Login() {
       });
 
       const data = await readResponse(response);
+
+      // --------------------------------------------
+      // HANDLE API ERRORS
+      // --------------------------------------------
 
       if (!response.ok) {
         const code = getErrorCode(data);
@@ -308,20 +413,26 @@ export default function Login() {
         );
       }
 
+      // --------------------------------------------
+      // EXTRACT RESPONSE DATA
+      // --------------------------------------------
+
       const payload = getPayload(data);
 
       const token =
-        payload?.accessToken ??
-        payload?.access_token ??
-        payload?.token ??
-        data?.accessToken ??
-        data?.access_token ??
-        data?.token ??
+        payload?.accessToken ||
+        payload?.access_token ||
+        payload?.token ||
+        data?.accessToken ||
+        data?.access_token ||
+        data?.token ||
         "";
 
       const user =
-        payload?.user ??
-        data?.user;
+        payload?.user ||
+        data?.user ||
+        payload?.account ||
+        null;
 
       if (
         !user ||
@@ -333,37 +444,70 @@ export default function Login() {
         );
       }
 
-      const role = getRole(user);
+      // --------------------------------------------
+      // IDENTIFY ROLE
+      // --------------------------------------------
 
-      const dashboard =
-        data?.redirectTo ||
-        payload?.redirectTo ||
-        ROLE_DASHBOARDS[role] ||
-        "/employee/dashboard";
+      const roles = getUserRoles(user);
+      const role = getPrimaryRole(user);
+
+      if (!role || !ROLE_DASHBOARDS[role]) {
+        throw new Error(
+          "Your account does not have a supported ETDOX role. Contact your administrator to assign the correct role."
+        );
+      }
+
+      // --------------------------------------------
+      // GET ROLE DASHBOARD
+      // --------------------------------------------
+
+      const dashboard = ROLE_DASHBOARDS[role];
+
+      // --------------------------------------------
+      // PREPARE AUTHENTICATED USER
+      // --------------------------------------------
 
       const authenticatedUser = {
         ...user,
+
         email: user.email || normalizedEmail,
+
         role,
+
+        roles,
       };
 
+      // --------------------------------------------
+      // SAVE SESSION
+      // --------------------------------------------
+
       try {
-        saveSession(authenticatedUser, token);
+        saveSession(
+          authenticatedUser,
+          token
+        );
       } catch (storageError) {
+        clearSession();
+
         console.error(
           "[ETDOX Login] Unable to save session:",
           storageError
         );
 
         throw new Error(
-          "Login was accepted, but the browser could not save your session. Check your browser storage settings."
+          storageError?.message ||
+            "Unable to save your login session. Check browser storage settings."
         );
       }
 
-      // Navigate only after a successful API response.
+      // --------------------------------------------
+      // NAVIGATE TO ROLE DASHBOARD
+      // --------------------------------------------
+
       navigate(dashboard, {
         replace: true,
       });
+
     } catch (err) {
       if (err?.name === "AbortError") {
         setError(
@@ -375,7 +519,8 @@ export default function Login() {
         );
       } else {
         setError(
-          err?.message || "Login failed. Please try again."
+          err?.message ||
+            "Login failed. Please try again."
         );
       }
 
@@ -383,6 +528,7 @@ export default function Login() {
         endpoint: LOGIN_URL,
         message: err?.message,
       });
+
     } finally {
       window.clearTimeout(timeoutId);
       setLoading(false);
@@ -394,7 +540,9 @@ export default function Login() {
   // ------------------------------------------------
 
   async function handleResendVerification() {
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = email
+      .trim()
+      .toLowerCase();
 
     if (!normalizedEmail || resending) {
       return;
@@ -410,18 +558,25 @@ export default function Login() {
     }, REQUEST_TIMEOUT);
 
     try {
-      const response = await fetch(RESEND_VERIFICATION_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          email: normalizedEmail,
-        }),
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        RESEND_VERIFICATION_URL,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+
+          credentials: "include",
+
+          body: JSON.stringify({
+            email: normalizedEmail,
+          }),
+
+          signal: controller.signal,
+        }
+      );
 
       const data = await readResponse(response);
 
@@ -440,12 +595,14 @@ export default function Login() {
           )
         );
       }
+
     } catch (err) {
       setResendStatus(
         err?.name === "AbortError"
           ? "The request timed out. Please try again."
           : "Could not contact the server. Check your connection and try again."
       );
+
     } finally {
       window.clearTimeout(timeoutId);
       setResending(false);
@@ -453,7 +610,7 @@ export default function Login() {
   }
 
   // ------------------------------------------------
-  // UI
+  // LOGIN UI
   // ------------------------------------------------
 
   return (
@@ -462,8 +619,10 @@ export default function Login() {
         className="login-card"
         aria-labelledby="login-title"
       >
+        {/* BRAND */}
+
         <Link
-          to="/"
+          to="/landingpage"
           className="login-brand"
           aria-label="ETDOX home"
         >
@@ -480,6 +639,8 @@ export default function Login() {
           </span>
         </Link>
 
+        {/* HEADING */}
+
         <header className="login-heading">
           <span className="login-eyebrow">
             SECURE WORKSPACE ACCESS
@@ -494,6 +655,8 @@ export default function Login() {
           </p>
         </header>
 
+        {/* NOTICE */}
+
         {noticeMessage && (
           <div
             className="login-notice-banner"
@@ -507,6 +670,8 @@ export default function Login() {
             <span>{noticeMessage}</span>
           </div>
         )}
+
+        {/* ERROR */}
 
         {error && (
           <div
@@ -549,10 +714,14 @@ export default function Login() {
           </div>
         )}
 
+        {/* LOGIN FORM */}
+
         <form
           className="login-form"
           onSubmit={handleSubmit}
         >
+          {/* EMAIL */}
+
           <div className="form-group">
             <label htmlFor="email">
               Email address
@@ -585,6 +754,8 @@ export default function Login() {
             </div>
           </div>
 
+          {/* PASSWORD */}
+
           <div className="form-group">
             <div className="label-with-link">
               <label htmlFor="password">
@@ -608,7 +779,11 @@ export default function Login() {
               <input
                 id="password"
                 name="password"
-                type={showPassword ? "text" : "password"}
+                type={
+                  showPassword
+                    ? "text"
+                    : "password"
+                }
                 placeholder="Enter your password"
                 value={password}
                 onChange={(event) => {
@@ -651,6 +826,8 @@ export default function Login() {
             </div>
           </div>
 
+          {/* SUBMIT */}
+
           <button
             type="submit"
             className="login-button"
@@ -679,6 +856,8 @@ export default function Login() {
           </button>
         </form>
 
+        {/* SECURITY */}
+
         <div className="login-security-note">
           <CheckCircle2
             size={16}
@@ -686,9 +865,11 @@ export default function Login() {
           />
 
           <span>
-            Protected with HTTP-only cookie session and enterprise encryption
+            Protected with secure authentication and enterprise encryption
           </span>
         </div>
+
+        {/* FOOTER */}
 
         <footer className="login-footer">
           <p>
@@ -702,7 +883,7 @@ export default function Login() {
             </Link>
           </p>
 
-          <Link to="/">
+          <Link to="/landingpage">
             Back to home
           </Link>
         </footer>

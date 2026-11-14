@@ -42,6 +42,13 @@ import {
   Headphones,
   Smartphone,
   SearchX,
+  CreditCard,
+  FileDown,
+  Filter,
+  Check,
+  CircleDollarSign,
+  History,
+  Tag,
 } from "lucide-react";
 
 import "./EmployeePage.css";
@@ -133,9 +140,30 @@ const STORE_PRODUCTS = [
   },
 ];
 
+// Additional illustrative store catalogue entries. These remain frontend sample data.
+STORE_PRODUCTS.push(
+  { id: "ETD-007", name: "A4 Paper Pack", category: "Office Supplies", description: "Premium A4 copier paper for daily office printing.", price: 420, currency: "INR", icon: Printer, supplier: "ETDOX Approved Supplier", stock: 80 },
+  { id: "ETD-008", name: "Ergonomic Office Chair", category: "Furniture", description: "Adjustable ergonomic chair for workstation comfort.", price: 7800, currency: "INR", icon: Building2, supplier: "ETDOX Approved Supplier", stock: 14 },
+  { id: "ETD-009", name: "Business Software License", category: "Software & Licenses", description: "Annual productivity software license for business use.", price: 5400, currency: "INR", icon: Package, supplier: "ETDOX Approved Supplier", stock: 100 },
+  { id: "ETD-010", name: "Wi-Fi 6 Router", category: "Networking", description: "Dual-band Wi-Fi 6 router for office connectivity.", price: 6900, currency: "INR", icon: Monitor, supplier: "ETDOX Approved Supplier", stock: 18 },
+  { id: "ETD-011", name: "Endpoint Security Suite", category: "Security", description: "Endpoint protection subscription for company devices.", price: 3200, currency: "INR", icon: ShieldCheck, supplier: "ETDOX Approved Supplier", stock: 60 },
+  { id: "ETD-012", name: "Office Maintenance Service", category: "Facilities", description: "Scheduled office equipment maintenance service.", price: 2500, currency: "INR", icon: Building2, supplier: "ETDOX Approved Supplier", stock: 30 },
+  { id: "ETD-013", name: "IT Support Service", category: "Services", description: "On-site IT support and workstation setup service.", price: 1800, currency: "INR", icon: UserCheck, supplier: "ETDOX Approved Supplier", stock: 25 }
+);
+
 const STORE_CATEGORIES = [
   "All",
-  ...new Set(STORE_PRODUCTS.map((product) => product.category)),
+  "Computers",
+  "Accessories",
+  "Office Equipment",
+  "Electronics",
+  "Office Supplies",
+  "Furniture",
+  "Software & Licenses",
+  "Networking",
+  "Security",
+  "Facilities",
+  "Services",
 ];
 
 /* =========================================================
@@ -217,6 +245,7 @@ const STATUS_LABELS = {
   UNPAID: "Unpaid",
   PARTIALLY_PAID: "Partially paid",
   PAID: "Paid",
+  PARTIALLY_PAID: "Partially paid",
   ACTIVE: "Active",
 };
 
@@ -771,6 +800,15 @@ export default function EmployeePage() {
   const [budgets, setBudgets] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [employee, setEmployee] = useState(null);
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("ALL");
+  const [demoPayments, setDemoPayments] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("etdox_demo_invoice_payments") || "{}");
+    } catch {
+      return {};
+    }
+  });
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -2716,120 +2754,352 @@ export default function EmployeePage() {
   );
 
   /* =======================================================
+     INVOICE DOWNLOAD + FRONTEND-ONLY DEMO PAYMENT
+     These actions intentionally do not call or modify the backend.
+  ======================================================= */
+
+  const invoiceIdOf = (invoice, index = 0) =>
+    String(
+      invoice?.id ||
+      invoice?.invoiceId ||
+      invoice?.invoice_id ||
+      invoice?.invoiceNumber ||
+      invoice?.invoice_number ||
+      `invoice-${index}`
+    );
+
+  const invoiceAmountOf = (invoice) =>
+    Number(
+      invoice?.amount ??
+      invoice?.totalAmount ??
+      invoice?.total_amount ??
+      invoice?.total ??
+      0
+    );
+
+  const invoicePaidOf = (invoice, index = 0) => {
+    const id = invoiceIdOf(invoice, index);
+    const backendPaid = Number(invoice?.paidAmount ?? invoice?.paid_amount ?? 0);
+    const demoPaid = Number(demoPayments[id]?.paidAmount || 0);
+    return Math.min(invoiceAmountOf(invoice), Math.max(backendPaid, demoPaid));
+  };
+
+  const invoiceStatusOf = (invoice, index = 0) => {
+    const amount = invoiceAmountOf(invoice);
+    const paid = invoicePaidOf(invoice, index);
+    if (amount > 0 && paid >= amount) return "PAID";
+    if (paid > 0) return "PARTIALLY_PAID";
+    return (
+      invoice.paymentStatus ||
+      invoice.payment_status ||
+      invoice.status ||
+      "UNPAID"
+    );
+  };
+
+  const downloadInvoice = (invoice, index) => {
+    const amount = invoiceAmountOf(invoice);
+    const paid = invoicePaidOf(invoice, index);
+    const currency = invoice.currency || "INR";
+    const number =
+      invoice.invoiceNumber ||
+      invoice.invoice_number ||
+      invoice.number ||
+      invoiceIdOf(invoice, index);
+    const invoiceDate = formatDate(
+      invoice.invoiceDate || invoice.invoice_date || invoice.createdAt || invoice.created_at
+    );
+    const dueDate = formatDate(invoice.dueDate || invoice.due_date);
+    const product =
+      invoice.productName ||
+      invoice.product_name ||
+      invoice.description ||
+      invoice.requestId ||
+      invoice.request_id ||
+      "Procurement purchase";
+    const safe = (value) =>
+      String(value ?? "—").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[char]));
+
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ETDOX Invoice ${safe(number)}</title>
+<style>
+  *{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;padding:36px;background:#f4f6fa}
+  .sheet{max-width:820px;margin:0 auto;background:#fff;padding:48px;border:1px solid #e4e8ef}
+  .top{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid #1d4ed8;padding-bottom:24px}
+  .brand{font-size:26px;font-weight:800;letter-spacing:2px;color:#1d4ed8}.muted{color:#64748b}
+  h1{font-size:30px;margin:24px 0 8px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:26px 0}
+  .meta div{padding:14px;background:#f8fafc;border:1px solid #e8edf4;border-radius:8px}
+  table{width:100%;border-collapse:collapse;margin:24px 0}th,td{text-align:left;padding:14px;border-bottom:1px solid #e8edf4}
+  th{background:#f8fafc;font-size:12px;text-transform:uppercase;color:#64748b}
+  .totals{margin-left:auto;max-width:340px}.totals div{display:flex;justify-content:space-between;padding:9px 0}
+  .grand{font-size:19px;font-weight:800;border-top:2px solid #1d4ed8;margin-top:8px;padding-top:14px!important}
+  .stamp{display:inline-block;padding:7px 12px;border-radius:30px;background:#eff6ff;color:#1d4ed8;font-weight:700;font-size:12px}
+  .foot{margin-top:44px;padding-top:18px;border-top:1px solid #e8edf4;font-size:12px;color:#64748b}
+  @media print{body{padding:0;background:#fff}.sheet{border:0;max-width:none;padding:24px}}
+</style>
+</head>
+<body><main class="sheet">
+  <div class="top"><div><div class="brand">ETDOX</div><div class="muted">PROCUREMENT WORKSPACE</div></div><div style="text-align:right"><strong>INVOICE</strong><div class="muted">Invoice #${safe(number)}</div><div class="stamp">${safe(invoiceStatusOf(invoice, index))}</div></div></div>
+  <h1>Purchase invoice</h1><p class="muted">Generated from the employee invoice view.</p>
+  <div class="meta"><div><small class="muted">Invoice date</small><br><strong>${safe(invoiceDate)}</strong></div><div><small class="muted">Due date</small><br><strong>${safe(dueDate)}</strong></div><div><small class="muted">Employee</small><br><strong>${safe(employee?.name || employee?.firstName || employee?.email || "Employee")}</strong></div><div><small class="muted">Invoice reference</small><br><strong>${safe(invoice.id || invoice.invoice_id || number)}</strong></div></div>
+  <table><thead><tr><th>Description</th><th>Request reference</th><th>Amount</th></tr></thead><tbody><tr><td>${safe(product)}</td><td>${safe(invoice.requestNumber || invoice.request_number || invoice.requestId || invoice.request_id || "—")}</td><td>${safe(money(amount, currency))}</td></tr></tbody></table>
+  <section class="totals"><div><span>Invoice total</span><strong>${safe(money(amount, currency))}</strong></div><div><span>Paid</span><strong>${safe(money(paid, currency))}</strong></div><div><span>Outstanding</span><strong>${safe(money(Math.max(0, amount-paid), currency))}</strong></div><div class="grand"><span>Balance due</span><strong>${safe(money(Math.max(0, amount-paid), currency))}</strong></div></section>
+  <div class="foot">This is a printable copy of invoice information returned to the employee workspace. Payment demo entries are browser-local and are not proof of a real payment.</div>
+</main><script>window.onload=()=>window.print();</script></body></html>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `ETDOX-Invoice-${String(number).replace(/[^a-z0-9_-]/gi, "_")}.html`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const runDemoPayment = (invoice, index) => {
+    const id = invoiceIdOf(invoice, index);
+    const amount = invoiceAmountOf(invoice);
+    const alreadyPaid = invoicePaidOf(invoice, index);
+    const outstanding = Math.max(0, amount - alreadyPaid);
+
+    if (!outstanding) {
+      setSuccess("This invoice is already marked as paid.");
+      return;
+    }
+
+    const accepted = window.confirm(
+      `DEMO PAYMENT ONLY\n\nSimulate payment of ${money(outstanding, invoice.currency || "INR")} for invoice ${invoice.invoiceNumber || invoice.invoice_number || id}?\n\nNo real money will be charged and no backend payment record will be created.`
+    );
+    if (!accepted) return;
+
+    const transactionId = `DEMO-${Date.now().toString(36).toUpperCase()}`;
+    const next = {
+      ...demoPayments,
+      [id]: {
+        paidAmount: amount,
+        transactionId,
+        paidAt: new Date().toISOString(),
+        mode: "DEMO",
+      },
+    };
+
+    setDemoPayments(next);
+    try {
+      localStorage.setItem("etdox_demo_invoice_payments", JSON.stringify(next));
+    } catch (storageError) {
+      console.warn("[ETDOX] Could not persist demo payment in this browser:", storageError);
+    }
+    setSuccess(
+      `Demo payment recorded locally for invoice ${invoice.invoiceNumber || invoice.invoice_number || id}. Transaction: ${transactionId}. This is not a real payment.`
+    );
+  };
+
+  const filteredInvoices = useMemo(() => {
+    const query = invoiceSearch.trim().toLowerCase();
+    return invoices.filter((invoice, index) => {
+      const searchable = [
+        invoice.invoiceNumber,
+        invoice.invoice_number,
+        invoice.number,
+        invoice.id,
+        invoice.productName,
+        invoice.product_name,
+        invoice.requestId,
+        invoice.request_id,
+        invoice.supplier,
+        invoice.vendor,
+      ];
+      const matchesSearch =
+        !query ||
+        searchable.some((value) => String(value || "").toLowerCase().includes(query));
+      const status = normalizeStatus(invoiceStatusOf(invoice, index));
+      const matchesStatus =
+        invoiceStatusFilter === "ALL" ||
+        (invoiceStatusFilter === "OUTSTANDING"
+          ? ["UNPAID", "PARTIALLY_PAID", "PENDING"].includes(status)
+          : status === invoiceStatusFilter);
+      return matchesSearch && matchesStatus;
+    });
+  }, [invoices, invoiceSearch, invoiceStatusFilter, demoPayments]);
+
+  /* =======================================================
      INVOICES
   ======================================================= */
 
-  const renderInvoices = () => (
-    <section className="employee-content-card proc-card">
-      <div className="employee-section-heading">
-        <div>
-          <h2>My invoices</h2>
-          <p>Invoices made available for your purchase requests.</p>
+  const renderInvoices = () => {
+    const paidTotal = invoices.reduce(
+      (sum, invoice, index) => sum + invoicePaidOf(invoice, index),
+      0
+    );
+    const outstandingTotal = invoices.reduce(
+      (sum, invoice, index) =>
+        sum + Math.max(0, invoiceAmountOf(invoice) - invoicePaidOf(invoice, index)),
+      0
+    );
+
+    return (
+      <section className="employee-content-card proc-card">
+        <div className="employee-section-heading">
+          <div>
+            <h2>My invoices</h2>
+            <p>Review invoice details, download printable copies, and test the demo payment flow.</p>
+          </div>
+          <Receipt size={22} />
         </div>
-        <Receipt size={22} />
-      </div>
 
-      <div className="proc-invoice-summary">
-        <div>
-          <span>Total invoices</span>
-          <strong>{invoices.length}</strong>
+        <div className="proc-invoice-summary">
+          <div>
+            <span>Total invoices</span>
+            <strong>{invoices.length}</strong>
+          </div>
+          <div>
+            <span>Total invoiced</span>
+            <strong>{money(totalInvoiced)}</strong>
+          </div>
+          <div>
+            <span>Paid</span>
+            <strong>{money(paidTotal)}</strong>
+          </div>
+          <div>
+            <span>Outstanding</span>
+            <strong>{money(outstandingTotal)}</strong>
+          </div>
         </div>
 
-        <div>
-          <span>Total invoiced</span>
-          <strong>{money(totalInvoiced)}</strong>
+        <div className="proc-invoice-demo-notice">
+          <span className="proc-invoice-demo-icon"><CreditCard size={18} /></span>
+          <div>
+            <strong>Demo payment mode</strong>
+            <p>Payment simulation is stored only in this browser. It does not charge a card, contact a payment gateway, or update the procurement backend.</p>
+          </div>
+          <span className="proc-demo-pill">LOCAL DEMO</span>
         </div>
-      </div>
 
-      <div className="proc-table-wrap">
-        <table className="proc-table">
-          <thead>
-            <tr>
-              <th>Invoice</th>
-              <th>Product / Request</th>
-              <th>Amount</th>
-              <th>Paid</th>
-              <th>Outstanding</th>
-              <th>Status</th>
-            </tr>
-          </thead>
+        <div className="proc-filter-row proc-invoice-filters">
+          <label className="proc-search-box">
+            <Search size={17} />
+            <input
+              value={invoiceSearch}
+              onChange={(event) => setInvoiceSearch(event.target.value)}
+              placeholder="Search invoice, request, supplier..."
+            />
+          </label>
+          <label className="proc-invoice-status-select">
+            <Filter size={16} />
+            <select
+              value={invoiceStatusFilter}
+              onChange={(event) => setInvoiceStatusFilter(event.target.value)}
+              aria-label="Filter invoices by payment status"
+            >
+              <option value="ALL">All invoices</option>
+              <option value="OUTSTANDING">Outstanding</option>
+              <option value="PAID">Paid</option>
+            </select>
+          </label>
+        </div>
 
-          <tbody>
-            {invoices.map((invoice, index) => {
-              const amount = Number(
-                invoice.amount ??
-                  invoice.totalAmount ??
-                  invoice.total_amount ??
-                  0
-              );
+        <div className="proc-table-wrap">
+          <table className="proc-table proc-invoice-table">
+            <thead>
+              <tr>
+                <th>Invoice</th>
+                <th>Product / Request</th>
+                <th>Amount</th>
+                <th>Paid</th>
+                <th>Outstanding</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredInvoices.map((invoice) => {
+                const index = invoices.indexOf(invoice);
+                const amount = invoiceAmountOf(invoice);
+                const paid = invoicePaidOf(invoice, index);
+                const outstanding = Math.max(0, amount - paid);
+                const status = invoiceStatusOf(invoice, index);
+                const id = invoiceIdOf(invoice, index);
+                const demoPayment = demoPayments[id];
 
-              const paid = Number(
-                invoice.paidAmount ??
-                  invoice.paid_amount ??
-                  0
-              );
+                return (
+                  <tr key={id}>
+                    <td>
+                      <strong>
+                        {invoice.invoiceNumber ||
+                          invoice.invoice_number ||
+                          invoice.number ||
+                          "—"}
+                      </strong>
+                      <small>{invoice.id || invoice.invoice_id || "—"}</small>
+                      {demoPayment?.transactionId && (
+                        <small className="proc-demo-transaction">
+                          Demo ref: {demoPayment.transactionId}
+                        </small>
+                      )}
+                    </td>
+                    <td>
+                      <strong>{invoice.productName || invoice.product_name || invoice.requestId || invoice.request_id || "—"}</strong>
+                      <small>{invoice.supplier || invoice.vendor || invoice.requestNumber || invoice.request_number || ""}</small>
+                    </td>
+                    <td>{money(amount, invoice.currency)}</td>
+                    <td>{money(paid, invoice.currency)}</td>
+                    <td>{money(outstanding, invoice.currency)}</td>
+                    <td><StatusBadge status={status} /></td>
+                    <td>
+                      <div className="proc-invoice-actions">
+                        <button
+                          type="button"
+                          className="proc-invoice-download"
+                          onClick={() => downloadInvoice(invoice, index)}
+                          title="Download printable invoice"
+                        >
+                          <FileDown size={15} />
+                          Download
+                        </button>
+                        <button
+                          type="button"
+                          className="proc-invoice-pay"
+                          onClick={() => runDemoPayment(invoice, index)}
+                          disabled={outstanding <= 0}
+                          title="Simulate a local demo payment; no real charge"
+                        >
+                          {outstanding <= 0 ? <Check size={15} /> : <CreditCard size={15} />}
+                          {outstanding <= 0 ? "Paid" : "Pay (Demo)"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
 
-              return (
-                <tr
-                  key={
-                    invoice.id ||
-                    invoice.invoiceNumber ||
-                    index
-                  }
-                >
-                  <td>
-                    <strong>
-                      {invoice.invoiceNumber ||
-                        invoice.invoice_number ||
-                        invoice.number ||
-                        "—"}
-                    </strong>
-                    <small>{invoice.id || "—"}</small>
-                  </td>
-
-                  <td>
-                    {invoice.productName ||
-                      invoice.product_name ||
-                      invoice.requestId ||
-                      invoice.request_id ||
-                      "—"}
-                  </td>
-
-                  <td>{money(amount, invoice.currency)}</td>
-                  <td>{money(paid, invoice.currency)}</td>
-
-                  <td>
-                    {money(
-                      Math.max(0, amount - paid),
-                      invoice.currency
-                    )}
-                  </td>
-
-                  <td>
-                    <StatusBadge
-                      status={
-                        invoice.paymentStatus ||
-                        invoice.payment_status ||
-                        invoice.status
-                      }
-                    />
+              {!filteredInvoices.length && (
+                <tr>
+                  <td colSpan={7} className="proc-empty">
+                    {invoices.length
+                      ? "No invoices match your search or status filter."
+                      : "No invoices are available yet. Invoices appear here when Finance or Procurement makes them available."}
                   </td>
                 </tr>
-              );
-            })}
+              )}
+            </tbody>
+          </table>
+        </div>
 
-            {!invoices.length && (
-              <tr>
-                <td colSpan={6} className="proc-empty">
-                  No invoices are available.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
+        <div className="proc-invoice-footer-note">
+          <History size={16} />
+          <span>Backend invoice data remains authoritative. Local demo payment records can be cleared by clearing this browser's site data.</span>
+        </div>
+      </section>
+    );
+  };
 
   /* =======================================================
      PROFILE
