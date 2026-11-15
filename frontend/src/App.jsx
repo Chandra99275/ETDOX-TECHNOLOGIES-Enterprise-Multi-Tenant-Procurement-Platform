@@ -10,22 +10,26 @@ import {
 
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
+
 import EmployeePage from "./pages/employeepage";
 import ManagerPage from "./pages/ManagerPage";
 import FinancePage from "./pages/FinancePage";
 import AdminPage from "./pages/AdminPage";
 
-// Procurement pages are directly inside src/pages
 import ProcurementManagerPage from "./pages/ProcurementManagerPage";
 import ProcurementSpecialistPage from "./pages/ProcurementSpecialistPage";
+
+import PlatformAdminPage from "./pages/PlatformAdminPage";
+import SupplierPage from "./pages/SupplierPage";
+import AuditorPage from "./pages/AuditorPage";
 
 // ============================================================
 // AUTH HELPERS
 // ============================================================
 
 const getToken = () =>
-  localStorage.getItem("token") ||
   localStorage.getItem("accessToken") ||
+  localStorage.getItem("token") ||
   localStorage.getItem("authToken");
 
 const getUser = () => {
@@ -111,20 +115,34 @@ const getUserRoles = () => {
 // ============================================================
 
 const roleRoutes = {
-  employee: "/employee/dashboard",
-  requester: "/employee/dashboard",
+  // Platform Admin
+  platform_admin: "/platform-admin/dashboard",
 
-  manager: "/manager/dashboard",
-  department_manager: "/manager/dashboard",
-
-  finance: "/finance/dashboard",
-  finance_manager: "/finance/dashboard",
-
+  // Organization Admin
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
 
+  // Procurement
   procurement_manager: "/procurement-manager/dashboard",
   procurement_specialist: "/procurement-specialist/dashboard",
+
+  // Auditor
+  auditor: "/auditor/dashboard",
+
+  // Supplier
+  supplier_user: "/supplier/dashboard",
+
+  // Finance
+  finance: "/finance/dashboard",
+  finance_manager: "/finance/dashboard",
+
+  // Manager
+  manager: "/manager/dashboard",
+  department_manager: "/manager/dashboard",
+
+  // Employee
+  employee: "/employee/dashboard",
+  requester: "/employee/dashboard",
 };
 
 // ============================================================
@@ -133,10 +151,12 @@ const roleRoutes = {
 
 const rolePriority = [
   "platform_admin",
-  "procurement_manager",
-  "procurement_specialist",
   "organization_admin",
   "admin",
+  "procurement_manager",
+  "procurement_specialist",
+  "auditor",
+  "supplier_user",
   "finance_manager",
   "finance",
   "department_manager",
@@ -175,6 +195,12 @@ const rolePermissions = {
   procurementManager: ["procurement_manager"],
 
   procurementSpecialist: ["procurement_specialist"],
+
+  platformAdmin: ["platform_admin"],
+
+  supplier: ["supplier_user"],
+
+  auditor: ["auditor"],
 };
 
 // ============================================================
@@ -190,7 +216,6 @@ function ProtectedRoute({
   const token = getToken();
   const roles = getUserRoles();
 
-  // No token means the user is not logged in.
   if (!token) {
     return (
       <Navigate
@@ -201,8 +226,6 @@ function ProtectedRoute({
     );
   }
 
-  // Do not allow dashboard access when role information
-  // is missing from localStorage.
   if (roles.length === 0) {
     return (
       <Navigate
@@ -213,12 +236,10 @@ function ProtectedRoute({
     );
   }
 
-  // Check whether the logged-in user has permission.
   const hasAccess = allowedRoles.some((role) =>
     roles.includes(role)
   );
 
-  // Prevent users from opening another role's dashboard.
   if (!hasAccess) {
     const dashboard = getDashboardForUser();
 
@@ -244,11 +265,9 @@ function DashboardRedirect() {
     return <Navigate to="/login" replace />;
   }
 
-  const dashboard = getDashboardForUser();
-
   return (
     <Navigate
-      to={dashboard}
+      to={getDashboardForUser()}
       replace
     />
   );
@@ -267,12 +286,7 @@ export default function App() {
 
         <Route
           path="/"
-          element={
-            <Navigate
-              to="/landingpage"
-              replace
-            />
-          }
+          element={<Navigate to="/landingpage" replace />}
         />
 
         <Route
@@ -285,101 +299,118 @@ export default function App() {
           element={<LoginPage />}
         />
 
-        {/* EMPLOYEE DASHBOARD */}
+        {/* EMPLOYEE */}
 
         <Route
           path="/employee/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.employee}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.employee}>
               <EmployeePage />
             </ProtectedRoute>
           }
         />
 
-        {/* MANAGER DASHBOARD */}
+        {/* MANAGER */}
 
         <Route
           path="/manager/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.manager}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.manager}>
               <ManagerPage />
             </ProtectedRoute>
           }
         />
 
-        {/* FINANCE DASHBOARD */}
+        {/* FINANCE */}
 
         <Route
           path="/finance/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.finance}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.finance}>
               <FinancePage />
             </ProtectedRoute>
           }
         />
 
-        {/* ORGANIZATION ADMIN DASHBOARD */}
+        {/* ORGANIZATION ADMIN */}
 
         <Route
           path="/admin/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.admin}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.admin}>
               <AdminPage />
             </ProtectedRoute>
           }
         />
 
-        {/* PROCUREMENT MANAGER DASHBOARD */}
+        {/* PROCUREMENT MANAGER */}
 
         <Route
           path="/procurement-manager/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.procurementManager}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.procurementManager}>
               <ProcurementManagerPage />
             </ProtectedRoute>
           }
         />
 
-        {/* PROCUREMENT SPECIALIST DASHBOARD */}
+        {/* PROCUREMENT SPECIALIST */}
 
         <Route
           path="/procurement-specialist/dashboard"
           element={
-            <ProtectedRoute
-              allowedRoles={rolePermissions.procurementSpecialist}
-            >
+            <ProtectedRoute allowedRoles={rolePermissions.procurementSpecialist}>
               <ProcurementSpecialistPage />
             </ProtectedRoute>
           }
         />
 
-        {/* OLD PROCUREMENT URL REDIRECT */}
+        {/* PLATFORM ADMIN */}
+
+        <Route
+          path="/platform-admin/dashboard"
+          element={
+            <ProtectedRoute allowedRoles={rolePermissions.platformAdmin}>
+              <PlatformAdminPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* SUPPLIER */}
+
+        <Route
+          path="/supplier/dashboard"
+          element={
+            <ProtectedRoute allowedRoles={rolePermissions.supplier}>
+              <SupplierPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* AUDITOR */}
+
+        <Route
+          path="/auditor/dashboard"
+          element={
+            <ProtectedRoute allowedRoles={rolePermissions.auditor}>
+              <AuditorPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* OLD PROCUREMENT URLS */}
 
         <Route
           path="/procurement"
-          element={
-            <DashboardRedirect />
-          }
+          element={<DashboardRedirect />}
         />
 
         <Route
           path="/procurement/dashboard"
-          element={
-            <DashboardRedirect />
-          }
+          element={<DashboardRedirect />}
         />
 
-        {/* DASHBOARD REDIRECT */}
+        {/* GENERAL DASHBOARD REDIRECT */}
 
         <Route
           path="/dashboard"
@@ -390,12 +421,7 @@ export default function App() {
 
         <Route
           path="*"
-          element={
-            <Navigate
-              to="/landingpage"
-              replace
-            />
-          }
+          element={<Navigate to="/landingpage" replace />}
         />
 
       </Routes>

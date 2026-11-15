@@ -1,25 +1,82 @@
 
-import { z } from 'zod';
+import { z } from "zod";
 
 export const auditSearchSchema = z
   .object({
-    action: z.string().trim().min(1).max(200).optional(),
-    resourceType: z.string().trim().min(1).max(100).optional(),
-    resourceId: z.string().uuid().optional(),
-    actorId: z.string().uuid().optional(),
-    from: z.string().datetime({ offset: true }).optional(),
-    to: z.string().datetime({ offset: true }).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(50),
-    offset: z.coerce.number().int().min(0).max(100000).default(0),
+    // Filter by audit action.
+    action: z
+      .string()
+      .trim()
+      .min(1)
+      .max(50)
+      .optional(),
+
+    // Filter by entity/resource type.
+    resourceType: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .optional(),
+
+    // Filter by resource/entity ID.
+    resourceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .optional(),
+
+    // Filter by the user who performed the action.
+    actorId: z
+      .string()
+      .uuid()
+      .optional(),
+
+    // Filter events from this date/time.
+    from: z
+      .string()
+      .datetime({ offset: true })
+      .optional(),
+
+    // Filter events until this date/time.
+    to: z
+      .string()
+      .datetime({ offset: true })
+      .optional(),
+
+    // Maximum number of records returned.
+    limit: z
+      .coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(50),
+
+    // Number of records to skip.
+    offset: z
+      .coerce
+      .number()
+      .int()
+      .min(0)
+      .max(100000)
+      .default(0),
   })
   .strict()
   .refine(
-    (value) =>
-      !value.from ||
-      !value.to ||
-      value.from <= value.to,
+    (value) => {
+      if (!value.from || !value.to) {
+        return true;
+      }
+
+      return (
+        Date.parse(value.from) <= Date.parse(value.to)
+      );
+    },
     {
-      message: 'from must be earlier than or equal to to',
-      path: ['from'],
+      message:
+        "from must be earlier than or equal to to",
+      path: ["from"],
     }
   );

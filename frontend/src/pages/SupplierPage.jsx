@@ -9,15 +9,12 @@ import {
   Search,
   RefreshCw,
   LogOut,
-  Bell,
   Menu,
   X,
   Package,
-  Clock3,
   CheckCircle2,
   AlertCircle,
   IndianRupee,
-  Eye,
   Send,
   CalendarDays,
   MapPin,
@@ -26,9 +23,13 @@ import {
   UserRound,
   ChevronRight,
   ClipboardList,
+  Plus,
+  Pencil,
+  Trash2,
+  Boxes,
 } from "lucide-react";
 
-import "./SupplierUserPage.css";
+import "./SupplierPage.css";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1";
@@ -56,11 +57,15 @@ const unwrapList = (response, keys = []) => {
 const formatCurrency = (value, currency = "INR") => {
   const amount = Number(value || 0);
 
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(amount);
+  try {
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
 };
 
 const formatDate = (value) => {
@@ -84,7 +89,8 @@ const getStatusClass = (status) => {
     value.includes("approved") ||
     value.includes("completed") ||
     value.includes("delivered") ||
-    value.includes("accepted")
+    value.includes("accepted") ||
+    value === "active"
   ) {
     return "success";
   }
@@ -93,7 +99,9 @@ const getStatusClass = (status) => {
     value.includes("reject") ||
     value.includes("cancel") ||
     value.includes("overdue") ||
-    value.includes("failed")
+    value.includes("failed") ||
+    value === "inactive" ||
+    value === "out_of_stock"
   ) {
     return "danger";
   }
@@ -131,6 +139,21 @@ function EmptyState({ title, description }) {
   );
 }
 
+const EMPTY_PRODUCT_FORM = {
+  sku: "",
+  name: "",
+  description: "",
+  category: "",
+  brand: "",
+  unitOfMeasure: "unit",
+  unitPrice: "",
+  currency: "INR",
+  stockQuantity: "0",
+  minimumOrderQuantity: "1",
+  status: "ACTIVE",
+  imageUrl: "",
+};
+
 export default function SupplierUserPage() {
   const [activeTab, setActiveTab] = useState("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -140,6 +163,7 @@ export default function SupplierUserPage() {
   const [rfqs, setRfqs] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
+  const [products, setProducts] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -155,6 +179,15 @@ export default function SupplierUserPage() {
   const [submittingQuote, setSubmittingQuote] = useState(false);
   const [quoteMessage, setQuoteMessage] = useState("");
 
+  // Product catalog state
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [productForm, setProductForm] = useState(EMPTY_PRODUCT_FORM);
+  const [productSaving, setProductSaving] = useState(false);
+  const [productDeletingId, setProductDeletingId] = useState(null);
+  const [productError, setProductError] = useState("");
+  const [productNotice, setProductNotice] = useState("");
+
   const authHeaders = useMemo(
     () => ({
       Authorization: `Bearer ${getToken()}`,
@@ -168,6 +201,31 @@ export default function SupplierUserPage() {
       const response = await fetch(`${API_BASE}${path}`, {
         method: "GET",
         headers: authHeaders,
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            `Request failed (${response.status})`
+        );
+      }
+
+      return result;
+    },
+    [authHeaders]
+  );
+
+  const mutate = useCallback(
+    async (path, method, body) => {
+      const response = await fetch(`${API_BASE}${path}`, {
+        method,
+        headers: authHeaders,
+        ...(body !== undefined
+          ? { body: JSON.stringify(body) }
+          : {}),
       });
 
       const result = await response.json().catch(() => ({}));
@@ -203,9 +261,16 @@ export default function SupplierUserPage() {
         request("/supplier/rfqs?limit=100&offset=0"),
         request("/supplier/purchase-orders?limit=100&offset=0"),
         request("/supplier/deliveries?limit=100&offset=0"),
+        request("/supplier/products?limit=100&offset=0"),
       ]);
 
-      const [userResult, rfqResult, poResult, deliveryResult] = results;
+      const [
+        userResult,
+        rfqResult,
+        poResult,
+        deliveryResult,
+        productResult,
+      ] = results;
 
       if (userResult.status === "fulfilled") {
         const userData =
@@ -235,10 +300,22 @@ export default function SupplierUserPage() {
 
       if (deliveryResult.status === "fulfilled") {
         setDeliveries(
-          unwrapList(deliveryResult.value, ["deliveries", "shipments", "items"])
+          unwrapList(deliveryResult.value, [
+            "deliveries",
+            "shipments",
+            "items",
+          ])
         );
       } else {
         setDeliveries([]);
+      }
+
+      if (productResult.status === "fulfilled") {
+        setProducts(
+          unwrapList(productResult.value, ["products", "items"])
+        );
+      } else {
+        setProducts([]);
       }
 
       const failedRequests = results.filter(
@@ -353,9 +430,26 @@ export default function SupplierUserPage() {
       )
         .toLowerCase()
         .includes(search) ||
-      String(delivery.poNumber || delivery.po_number || "").toLowerCase().includes(search) ||
+      String(delivery.poNumber || delivery.po_number || "")
+        .toLowerCase()
+        .includes(search) ||
       String(delivery.status || "").toLowerCase().includes(search)
     );
+  });
+
+  const filteredProducts = products.filter((product) => {
+    const search = searchTerm.trim().toLowerCase();
+
+    if (!search) return true;
+
+    return [
+      product.sku,
+      product.name,
+      product.description,
+      product.category,
+      product.brand,
+      product.status,
+    ].some((value) => String(value || "").toLowerCase().includes(search));
   });
 
   const submitQuote = async (event) => {
@@ -367,7 +461,8 @@ export default function SupplierUserPage() {
     setQuoteMessage("");
 
     try {
-      const rfqId = selectedRfq.id || selectedRfq.rfqId || selectedRfq.rfq_id;
+      const rfqId =
+        selectedRfq.id || selectedRfq.rfqId || selectedRfq.rfq_id;
 
       const response = await fetch(
         `${API_BASE}/supplier/rfqs/${rfqId}/quotes`,
@@ -408,6 +503,165 @@ export default function SupplierUserPage() {
     }
   };
 
+  // Product catalog actions
+  const openAddProduct = () => {
+    setEditingProduct(null);
+    setProductForm({ ...EMPTY_PRODUCT_FORM });
+    setProductError("");
+    setProductNotice("");
+    setShowProductModal(true);
+  };
+
+  const openEditProduct = (product) => {
+    setEditingProduct(product);
+
+    setProductForm({
+      sku: product.sku || "",
+      name: product.name || "",
+      description: product.description || "",
+      category: product.category || "",
+      brand: product.brand || "",
+      unitOfMeasure:
+        product.unitOfMeasure ||
+        product.unit_of_measure ||
+        "unit",
+      unitPrice: String(
+        product.unitPrice ?? product.unit_price ?? ""
+      ),
+      currency: product.currency || "INR",
+      stockQuantity: String(
+        product.stockQuantity ?? product.stock_quantity ?? 0
+      ),
+      minimumOrderQuantity: String(
+        product.minimumOrderQuantity ??
+          product.minimum_order_quantity ??
+          1
+      ),
+      status: product.status || "ACTIVE",
+      imageUrl: product.imageUrl || product.image_url || "",
+    });
+
+    setProductError("");
+    setProductNotice("");
+    setShowProductModal(true);
+  };
+
+  const handleProductFormChange = (event) => {
+    const { name, value } = event.target;
+
+    setProductForm((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  };
+
+  const saveProduct = async (event) => {
+    event.preventDefault();
+
+    setProductSaving(true);
+    setProductError("");
+    setProductNotice("");
+
+    try {
+      const payload = {
+        sku: productForm.sku.trim(),
+        name: productForm.name.trim(),
+        description: productForm.description.trim(),
+        category: productForm.category.trim(),
+        brand: productForm.brand.trim(),
+        unitOfMeasure: productForm.unitOfMeasure.trim() || "unit",
+        unitPrice: Number(productForm.unitPrice),
+        currency: productForm.currency.trim().toUpperCase(),
+        stockQuantity: Number(productForm.stockQuantity),
+        minimumOrderQuantity: Number(
+          productForm.minimumOrderQuantity
+        ),
+        status: productForm.status,
+        imageUrl: productForm.imageUrl.trim() || null,
+      };
+
+      if (
+        !payload.sku ||
+        !payload.name ||
+        !Number.isFinite(payload.unitPrice) ||
+        payload.unitPrice < 0 ||
+        !Number.isFinite(payload.stockQuantity) ||
+        payload.stockQuantity < 0 ||
+        !Number.isFinite(payload.minimumOrderQuantity) ||
+        payload.minimumOrderQuantity <= 0
+      ) {
+        throw new Error("Please enter valid product details.");
+      }
+
+      if (!/^[A-Z]{3}$/.test(payload.currency)) {
+        throw new Error("Currency must be a valid 3-letter code, such as INR.");
+      }
+
+      if (editingProduct) {
+        const productId = editingProduct.id;
+
+        if (!productId) {
+          throw new Error("Product ID is missing. Refresh and try again.");
+        }
+
+        await mutate(
+          `/supplier/products/${productId}`,
+          "PUT",
+          payload
+        );
+
+        setProductNotice("Product updated successfully.");
+      } else {
+        await mutate("/supplier/products", "POST", payload);
+        setProductNotice("Product added successfully.");
+      }
+
+      setShowProductModal(false);
+      setEditingProduct(null);
+      setProductForm({ ...EMPTY_PRODUCT_FORM });
+
+      await loadDashboard(true);
+    } catch (err) {
+      setProductError(err.message || "Unable to save product.");
+    } finally {
+      setProductSaving(false);
+    }
+  };
+
+  const deleteProduct = async (product) => {
+    const productId = product.id;
+
+    if (!productId) {
+      setProductNotice("");
+      setProductError("Product ID is missing. Refresh and try again.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${product.name}"?`
+    );
+
+    if (!confirmed) return;
+
+    setProductDeletingId(productId);
+    setProductError("");
+    setProductNotice("");
+
+    try {
+      await mutate(`/supplier/products/${productId}`, "DELETE");
+
+      setProducts((previous) =>
+        previous.filter((item) => item.id !== productId)
+      );
+
+      setProductNotice("Product deleted successfully.");
+    } catch (err) {
+      setProductError(err.message || "Unable to delete product.");
+    } finally {
+      setProductDeletingId(null);
+    }
+  };
+
   const logout = () => {
     [
       "token",
@@ -422,23 +676,55 @@ export default function SupplierUserPage() {
 
   const navigation = [
     { id: "overview", label: "Overview", icon: LayoutDashboard },
-    { id: "rfqs", label: "RFQ Invitations", icon: FileText, count: openRfqs.length },
+    {
+      id: "rfqs",
+      label: "RFQ Invitations",
+      icon: FileText,
+      count: openRfqs.length,
+    },
     { id: "orders", label: "Purchase Orders", icon: ShoppingCart },
     { id: "deliveries", label: "Deliveries", icon: Truck },
+    {
+      id: "products",
+      label: "Product Catalog",
+      icon: Boxes,
+      count: products.length,
+    },
     { id: "profile", label: "Company Profile", icon: Building2 },
   ];
 
   const pageTitles = {
-    overview: ["Supplier Overview", "Monitor your invitations, orders and deliveries."],
-    rfqs: ["RFQ Invitations", "Review procurement requests and submit quotations."],
-    orders: ["Purchase Orders", "Track purchase orders assigned to your company."],
-    deliveries: ["Delivery Tracking", "Review delivery progress and shipment records."],
-    profile: ["Company Profile", "View your supplier account information."],
+    overview: [
+      "Supplier Overview",
+      "Monitor your invitations, orders and deliveries.",
+    ],
+    rfqs: [
+      "RFQ Invitations",
+      "Review procurement requests and submit quotations.",
+    ],
+    orders: [
+      "Purchase Orders",
+      "Track purchase orders assigned to your company.",
+    ],
+    deliveries: [
+      "Delivery Tracking",
+      "Review delivery progress and shipment records.",
+    ],
+    products: [
+      "Product Catalog",
+      "Manage the products and services offered by your company.",
+    ],
+    profile: [
+      "Company Profile",
+      "View your supplier account information.",
+    ],
   };
 
   const changeTab = (tab) => {
     setActiveTab(tab);
     setSearchTerm("");
+    setProductError("");
+    setProductNotice("");
     setSidebarOpen(false);
   };
 
@@ -490,7 +776,9 @@ export default function SupplierUserPage() {
                     setQuoteMessage("");
                     setQuoteForm({
                       unitPrice: "",
-                      quantity: String(rfq.quantity || rfq.requiredQuantity || ""),
+                      quantity: String(
+                        rfq.quantity || rfq.requiredQuantity || ""
+                      ),
                       deliveryDays: "",
                       remarks: "",
                     });
@@ -545,7 +833,13 @@ export default function SupplierUserPage() {
                   </span>
                 </div>
               </td>
-              <td>{formatDate(order.orderDate || order.order_date || order.createdAt)}</td>
+              <td>
+                {formatDate(
+                  order.orderDate ||
+                    order.order_date ||
+                    order.createdAt
+                )}
+              </td>
               <td>
                 {formatDate(
                   order.expectedDelivery ||
@@ -605,7 +899,11 @@ export default function SupplierUserPage() {
                       delivery.reference ||
                       "Delivery"}
                   </strong>
-                  <span>{delivery.carrier || delivery.transportMode || "Shipment"}</span>
+                  <span>
+                    {delivery.carrier ||
+                      delivery.transportMode ||
+                      "Shipment"}
+                  </span>
                 </div>
               </td>
               <td>
@@ -645,6 +943,105 @@ export default function SupplierUserPage() {
     </div>
   );
 
+  const renderProductsTable = (items) => (
+    <div className="supplier-table-wrap">
+      <table className="supplier-table">
+        <thead>
+          <tr>
+            <th>PRODUCT</th>
+            <th>SKU</th>
+            <th>CATEGORY</th>
+            <th>UNIT PRICE</th>
+            <th>STOCK</th>
+            <th>STATUS</th>
+            <th>ACTIONS</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {items.map((product, index) => {
+            const unitPrice =
+              product.unitPrice ?? product.unit_price ?? 0;
+
+            const stock =
+              product.stockQuantity ??
+              product.stock_quantity ??
+              0;
+
+            return (
+              <tr key={product.id || product.sku || index}>
+                <td>
+                  <div className="supplier-primary-cell">
+                    <strong>{product.name || "Unnamed product"}</strong>
+                    <span>
+                      {product.brand || product.description || "—"}
+                    </span>
+                  </div>
+                </td>
+
+                <td>{product.sku || "—"}</td>
+
+                <td>{product.category || "Uncategorized"}</td>
+
+                <td>
+                  <strong>
+                    {formatCurrency(
+                      unitPrice,
+                      product.currency || "INR"
+                    )}
+                  </strong>
+                  <span>
+                    / {product.unitOfMeasure || product.unit_of_measure || "unit"}
+                  </span>
+                </td>
+
+                <td>{stock}</td>
+
+                <td>
+                  <StatusBadge status={product.status || "ACTIVE"} />
+                </td>
+
+                <td>
+                  <div className="supplier-product-actions">
+                    <button
+                      type="button"
+                      className="supplier-action-btn"
+                      title="Edit product"
+                      onClick={() => openEditProduct(product)}
+                    >
+                      <Pencil size={14} />
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
+                      className="supplier-action-btn supplier-product-delete"
+                      title="Delete product"
+                      disabled={productDeletingId === product.id}
+                      onClick={() => deleteProduct(product)}
+                    >
+                      <Trash2 size={14} />
+                      {productDeletingId === product.id
+                        ? "Deleting..."
+                        : "Delete"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {items.length === 0 && (
+        <EmptyState
+          title="No products found"
+          description="Add your first product to make it available in your supplier catalog."
+        />
+      )}
+    </div>
+  );
+
   if (loading) {
     return (
       <div className="supplier-loading-screen">
@@ -664,15 +1061,21 @@ export default function SupplierUserPage() {
         />
       )}
 
-      <aside className={`supplier-sidebar ${sidebarOpen ? "supplier-sidebar-open" : ""}`}>
+      <aside
+        className={`supplier-sidebar ${
+          sidebarOpen ? "supplier-sidebar-open" : ""
+        }`}
+      >
         <div className="supplier-brand">
           <div className="supplier-brand-mark">
             <Building2 size={22} />
           </div>
+
           <div>
             <strong>ETDOX</strong>
             <span>Supplier Portal</span>
           </div>
+
           <button
             className="supplier-mobile-close"
             onClick={() => setSidebarOpen(false)}
@@ -698,8 +1101,11 @@ export default function SupplierUserPage() {
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
+
                 {item.count > 0 && (
-                  <small className="supplier-nav-count">{item.count}</small>
+                  <small className="supplier-nav-count">
+                    {item.count}
+                  </small>
                 )}
               </button>
             );
@@ -712,7 +1118,9 @@ export default function SupplierUserPage() {
               <AlertCircle size={17} />
             </div>
             <strong>Need assistance?</strong>
-            <p>Contact your procurement administrator for portal support.</p>
+            <p>
+              Contact your procurement administrator for portal support.
+            </p>
           </div>
 
           <button className="supplier-logout" onClick={logout}>
@@ -747,7 +1155,10 @@ export default function SupplierUserPage() {
               title="Refresh data"
               disabled={refreshing}
             >
-              <RefreshCw size={18} className={refreshing ? "supplier-spin" : ""} />
+              <RefreshCw
+                size={18}
+                className={refreshing ? "supplier-spin" : ""}
+              />
             </button>
 
             <div className="supplier-topbar-divider" />
@@ -756,6 +1167,7 @@ export default function SupplierUserPage() {
               <div className="supplier-avatar">
                 {String(displayName).charAt(0).toUpperCase()}
               </div>
+
               <div className="supplier-user-info">
                 <strong>{displayName}</strong>
                 <span>Supplier User</span>
@@ -767,7 +1179,9 @@ export default function SupplierUserPage() {
         <div className="supplier-content">
           <section className="supplier-page-heading">
             <div>
-              <div className="supplier-eyebrow">ETDOX / SUPPLIER WORKSPACE</div>
+              <div className="supplier-eyebrow">
+                ETDOX / SUPPLIER WORKSPACE
+              </div>
               <h1>{pageTitles[activeTab][0]}</h1>
               <p>{pageTitles[activeTab][1]}</p>
             </div>
@@ -792,17 +1206,36 @@ export default function SupplierUserPage() {
             </div>
           )}
 
+          {productNotice && (
+            <div className="supplier-alert supplier-product-notice">
+              <CheckCircle2 size={18} />
+              <span>{productNotice}</span>
+              <button onClick={() => setProductNotice("")}>Dismiss</button>
+            </div>
+          )}
+
+          {productError && !showProductModal && (
+            <div className="supplier-alert">
+              <AlertCircle size={18} />
+              <span>{productError}</span>
+              <button onClick={() => setProductError("")}>Dismiss</button>
+            </div>
+          )}
+
           {activeTab === "overview" && (
             <>
               <section className="supplier-welcome-card">
                 <div>
-                  <span className="supplier-welcome-label">SUPPLIER WORKSPACE</span>
+                  <span className="supplier-welcome-label">
+                    SUPPLIER WORKSPACE
+                  </span>
                   <h2>Welcome, {displayName}</h2>
                   <p>
                     Manage your RFQ invitations, purchase orders and deliveries
                     from one place.
                   </p>
                 </div>
+
                 <div className="supplier-welcome-art">
                   <Building2 size={65} strokeWidth={1.2} />
                 </div>
@@ -861,7 +1294,9 @@ export default function SupplierUserPage() {
                   <div className="supplier-panel-heading">
                     <div>
                       <h3>Recent RFQ Invitations</h3>
-                      <p>Latest opportunities shared with your company</p>
+                      <p>
+                        Latest opportunities shared with your company
+                      </p>
                     </div>
                     <button
                       className="supplier-text-link"
@@ -924,7 +1359,9 @@ export default function SupplierUserPage() {
                 <div className="supplier-panel-heading">
                   <div>
                     <h3>Recent Purchase Orders</h3>
-                    <p>Latest orders issued to your supplier account</p>
+                    <p>
+                      Latest orders issued to your supplier account
+                    </p>
                   </div>
                   <button
                     className="supplier-text-link"
@@ -933,7 +1370,33 @@ export default function SupplierUserPage() {
                     View all <ChevronRight size={15} />
                   </button>
                 </div>
+
                 {renderOrdersTable(purchaseOrders.slice(0, 5))}
+              </section>
+
+              <section className="supplier-panel">
+                <div className="supplier-panel-heading">
+                  <div>
+                    <h3>Product Catalog</h3>
+                    <p>Your currently listed products</p>
+                  </div>
+                  <button
+                    className="supplier-text-link"
+                    onClick={() => changeTab("products")}
+                  >
+                    Manage products <ChevronRight size={15} />
+                  </button>
+                </div>
+
+                <div className="supplier-quick-item">
+                  <div className="supplier-quick-icon blue">
+                    <Boxes size={18} />
+                  </div>
+                  <div>
+                    <strong>{products.length} products listed</strong>
+                    <span>Products in your supplier catalog</span>
+                  </div>
+                </div>
               </section>
             </>
           )}
@@ -943,8 +1406,11 @@ export default function SupplierUserPage() {
               <div className="supplier-panel-heading supplier-list-heading">
                 <div>
                   <h3>RFQ Invitations</h3>
-                  <p>Review invitations and submit your quotations.</p>
+                  <p>
+                    Review invitations and submit your quotations.
+                  </p>
                 </div>
+
                 <div className="supplier-search">
                   <Search size={17} />
                   <input
@@ -954,6 +1420,7 @@ export default function SupplierUserPage() {
                   />
                 </div>
               </div>
+
               {renderRfqTable(filteredRfqs)}
             </section>
           )}
@@ -965,6 +1432,7 @@ export default function SupplierUserPage() {
                   <h3>Purchase Orders</h3>
                   <p>Review orders issued to your company.</p>
                 </div>
+
                 <div className="supplier-search">
                   <Search size={17} />
                   <input
@@ -974,6 +1442,7 @@ export default function SupplierUserPage() {
                   />
                 </div>
               </div>
+
               {renderOrdersTable(filteredOrders)}
             </section>
           )}
@@ -985,6 +1454,7 @@ export default function SupplierUserPage() {
                   <h3>Delivery Tracking</h3>
                   <p>Monitor shipment and delivery records.</p>
                 </div>
+
                 <div className="supplier-search">
                   <Search size={17} />
                   <input
@@ -994,7 +1464,47 @@ export default function SupplierUserPage() {
                   />
                 </div>
               </div>
+
               {renderDeliveriesTable(filteredDeliveries)}
+            </section>
+          )}
+
+          {activeTab === "products" && (
+            <section className="supplier-panel">
+              <div className="supplier-panel-heading supplier-list-heading">
+                <div>
+                  <h3>Product Catalog</h3>
+                  <p>
+                    Add and manage the products offered by your company.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="supplier-primary-btn"
+                  onClick={openAddProduct}
+                >
+                  <Plus size={16} />
+                  Add Product
+                </button>
+              </div>
+
+              <div className="supplier-product-toolbar">
+                <div className="supplier-search">
+                  <Search size={17} />
+                  <input
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Search products by name, SKU, category..."
+                  />
+                </div>
+
+                <span className="supplier-product-count">
+                  {filteredProducts.length} of {products.length} products
+                </span>
+              </div>
+
+              {renderProductsTable(filteredProducts)}
             </section>
           )}
 
@@ -1013,15 +1523,23 @@ export default function SupplierUserPage() {
 
                   <div className="supplier-profile-info-grid">
                     <div className="supplier-profile-info">
-                      <span><UserRound size={16} /> ACCOUNT HOLDER</span>
+                      <span>
+                        <UserRound size={16} /> ACCOUNT HOLDER
+                      </span>
                       <strong>{displayName}</strong>
                     </div>
+
                     <div className="supplier-profile-info">
-                      <span><Mail size={16} /> EMAIL ADDRESS</span>
+                      <span>
+                        <Mail size={16} /> EMAIL ADDRESS
+                      </span>
                       <strong>{email}</strong>
                     </div>
+
                     <div className="supplier-profile-info">
-                      <span><Phone size={16} /> PHONE NUMBER</span>
+                      <span>
+                        <Phone size={16} /> PHONE NUMBER
+                      </span>
                       <strong>
                         {supplier?.phone ||
                           supplier?.phoneNumber ||
@@ -1029,8 +1547,11 @@ export default function SupplierUserPage() {
                           "Not provided"}
                       </strong>
                     </div>
+
                     <div className="supplier-profile-info">
-                      <span><MapPin size={16} /> ADDRESS</span>
+                      <span>
+                        <MapPin size={16} /> ADDRESS
+                      </span>
                       <strong>
                         {supplier?.address ||
                           supplier?.supplier?.address ||
@@ -1043,14 +1564,17 @@ export default function SupplierUserPage() {
 
               <div className="supplier-panel supplier-account-panel">
                 <h3>Account Information</h3>
+
                 <div className="supplier-account-row">
                   <span>Account role</span>
                   <strong>Supplier User</strong>
                 </div>
+
                 <div className="supplier-account-row">
                   <span>Account status</span>
                   <StatusBadge status={supplier?.status || "Active"} />
                 </div>
+
                 <div className="supplier-account-row">
                   <span>Supplier ID</span>
                   <strong>
@@ -1060,10 +1584,16 @@ export default function SupplierUserPage() {
                       "—"}
                   </strong>
                 </div>
+
                 <div className="supplier-account-row">
                   <span>Member since</span>
-                  <strong>{formatDate(supplier?.createdAt || supplier?.created_at)}</strong>
+                  <strong>
+                    {formatDate(
+                      supplier?.createdAt || supplier?.created_at
+                    )}
+                  </strong>
                 </div>
+
                 <p className="supplier-profile-note">
                   For changes to company registration details, contact your
                   ETDOX procurement administrator.
@@ -1079,6 +1609,234 @@ export default function SupplierUserPage() {
         </div>
       </main>
 
+      {/* Product Add/Edit Modal */}
+      {showProductModal && (
+        <div className="supplier-modal-backdrop">
+          <div className="supplier-modal supplier-product-modal">
+            <div className="supplier-modal-header">
+              <div>
+                <span>SUPPLIER PRODUCT CATALOG</span>
+                <h2>
+                  {editingProduct ? "Edit Product" : "Add New Product"}
+                </h2>
+                <p>
+                  {editingProduct
+                    ? "Update your product information."
+                    : "Enter the details of the product you want to list."}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="supplier-modal-close"
+                onClick={() => {
+                  setShowProductModal(false);
+                  setProductError("");
+                }}
+                aria-label="Close product form"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {productError && (
+              <div className="supplier-modal-message">
+                <AlertCircle size={16} />
+                {productError}
+              </div>
+            )}
+
+            <form
+              onSubmit={saveProduct}
+              className="supplier-quote-form supplier-product-form"
+            >
+              <div className="supplier-product-form-grid">
+                <label>
+                  Product SKU *
+                  <input
+                    name="sku"
+                    value={productForm.sku}
+                    onChange={handleProductFormChange}
+                    placeholder="e.g. ETD-PROD-001"
+                    required
+                    maxLength={100}
+                  />
+                </label>
+
+                <label>
+                  Product Name *
+                  <input
+                    name="name"
+                    value={productForm.name}
+                    onChange={handleProductFormChange}
+                    placeholder="Enter product name"
+                    required
+                    maxLength={200}
+                  />
+                </label>
+
+                <label>
+                  Category
+                  <input
+                    name="category"
+                    value={productForm.category}
+                    onChange={handleProductFormChange}
+                    placeholder="e.g. Electronics"
+                    maxLength={120}
+                  />
+                </label>
+
+                <label>
+                  Brand
+                  <input
+                    name="brand"
+                    value={productForm.brand}
+                    onChange={handleProductFormChange}
+                    placeholder="Enter brand"
+                    maxLength={120}
+                  />
+                </label>
+
+                <label>
+                  Unit of Measure *
+                  <input
+                    name="unitOfMeasure"
+                    value={productForm.unitOfMeasure}
+                    onChange={handleProductFormChange}
+                    placeholder="e.g. unit, kg, box"
+                    required
+                    maxLength={40}
+                  />
+                </label>
+
+                <label>
+                  Unit Price *
+                  <input
+                    type="number"
+                    name="unitPrice"
+                    value={productForm.unitPrice}
+                    onChange={handleProductFormChange}
+                    placeholder="Enter price"
+                    min="0"
+                    step="0.01"
+                    required
+                  />
+                </label>
+
+                <label>
+                  Currency *
+                  <select
+                    name="currency"
+                    value={productForm.currency}
+                    onChange={handleProductFormChange}
+                    required
+                  >
+                    <option value="INR">INR - Indian Rupee</option>
+                    <option value="USD">USD - US Dollar</option>
+                    <option value="EUR">EUR - Euro</option>
+                    <option value="GBP">GBP - British Pound</option>
+                  </select>
+                </label>
+
+                <label>
+                  Stock Quantity *
+                  <input
+                    type="number"
+                    name="stockQuantity"
+                    value={productForm.stockQuantity}
+                    onChange={handleProductFormChange}
+                    placeholder="Available stock"
+                    min="0"
+                    step="0.01"
+                    required
+                  />
+                </label>
+
+                <label>
+                  Minimum Order Quantity *
+                  <input
+                    type="number"
+                    name="minimumOrderQuantity"
+                    value={productForm.minimumOrderQuantity}
+                    onChange={handleProductFormChange}
+                    placeholder="Minimum order quantity"
+                    min="0.01"
+                    step="0.01"
+                    required
+                  />
+                </label>
+
+                <label>
+                  Product Status *
+                  <select
+                    name="status"
+                    value={productForm.status}
+                    onChange={handleProductFormChange}
+                    required
+                  >
+                    <option value="ACTIVE">Active</option>
+                    <option value="INACTIVE">Inactive</option>
+                    <option value="OUT_OF_STOCK">Out of Stock</option>
+                  </select>
+                </label>
+
+                <label className="supplier-product-full-width">
+                  Image URL
+                  <input
+                    type="url"
+                    name="imageUrl"
+                    value={productForm.imageUrl}
+                    onChange={handleProductFormChange}
+                    placeholder="https://example.com/product-image.jpg"
+                  />
+                </label>
+
+                <label className="supplier-product-full-width">
+                  Description
+                  <textarea
+                    name="description"
+                    rows="3"
+                    value={productForm.description}
+                    onChange={handleProductFormChange}
+                    placeholder="Describe your product..."
+                  />
+                </label>
+              </div>
+
+              <div className="supplier-modal-actions">
+                <button
+                  type="button"
+                  className="supplier-secondary-btn"
+                  onClick={() => {
+                    setShowProductModal(false);
+                    setProductError("");
+                  }}
+                  disabled={productSaving}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="supplier-primary-btn"
+                  disabled={productSaving}
+                >
+                  {productSaving ? (
+                    "Saving..."
+                  ) : (
+                    <>
+                      <CheckCircle2 size={16} />
+                      {editingProduct ? "Update Product" : "Save Product"}
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* RFQ Quotation Modal */}
       {selectedRfq && (
         <div className="supplier-modal-backdrop">
           <div className="supplier-modal">
@@ -1093,6 +1851,7 @@ export default function SupplierUserPage() {
                     "RFQ invitation"}
                 </p>
               </div>
+
               <button
                 className="supplier-modal-close"
                 onClick={() => setSelectedRfq(null)}
@@ -1185,13 +1944,16 @@ export default function SupplierUserPage() {
                 >
                   Cancel
                 </button>
+
                 <button
                   type="submit"
                   className="supplier-primary-btn"
                   disabled={submittingQuote}
                 >
                   <Send size={16} />
-                  {submittingQuote ? "Submitting..." : "Submit quotation"}
+                  {submittingQuote
+                    ? "Submitting..."
+                    : "Submit quotation"}
                 </button>
               </div>
             </form>

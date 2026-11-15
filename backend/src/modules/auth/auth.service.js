@@ -86,7 +86,6 @@ function validatePasswordPolicy(password) {
 }
 
 function getTokenExpiryDate() {
-  // Keep session expiry consistent with the JWT configuration.
   const configured = env.jwtExpiresIn || "8h";
 
   if (typeof configured === "number") {
@@ -117,24 +116,66 @@ function getTokenExpiryDate() {
 // --------------------------------------------------
 
 export const ROLE_DASHBOARDS = Object.freeze({
+  platform_admin: "/platform-admin/dashboard",
+
   admin: "/admin/dashboard",
   organization_admin: "/admin/dashboard",
+
   employee: "/employee/dashboard",
   requester: "/employee/dashboard",
+
   manager: "/manager/dashboard",
   department_manager: "/manager/dashboard",
+
   procurement_specialist: "/admin/dashboard",
   procurement_manager: "/manager/dashboard",
+
   finance: "/finance/dashboard",
   finance_manager: "/finance/dashboard",
+
   auditor: "/admin/dashboard",
   supplier_user: "/employee/dashboard",
 });
 
+/**
+ * Normalize role values returned by the repository.
+ * Supports:
+ * - "platform_admin"
+ * - { name: "platform_admin" }
+ * - { role: "platform_admin" }
+ */
+function normalizeRoleName(role) {
+  if (typeof role === "string") {
+    return role.toLowerCase().trim();
+  }
+
+  if (role && typeof role === "object") {
+    return String(
+      role.name ??
+      role.role ??
+      role.role_name ??
+      ""
+    )
+      .toLowerCase()
+      .trim();
+  }
+
+  return "";
+}
+
 export function resolvePrimaryRole(roles = []) {
-  const normalized = roles.map((role) =>
-    String(role).toLowerCase().trim()
-  );
+  const normalized = Array.isArray(roles)
+    ? roles.map(normalizeRoleName).filter(Boolean)
+    : [];
+
+  // Platform administrator has the highest priority.
+  if (normalized.includes("platform_admin")) {
+    return "platform_admin";
+  }
+
+  if (normalized.includes("superadmin")) {
+    return "platform_admin";
+  }
 
   if (
     normalized.includes("organization_admin") ||
@@ -182,6 +223,7 @@ export function resolvePrimaryRole(roles = []) {
 
 export function resolveDashboardRoute(roles = []) {
   const role = resolvePrimaryRole(roles);
+
   return ROLE_DASHBOARDS[role] || "/employee/dashboard";
 }
 
@@ -235,11 +277,9 @@ function getFullName(user) {
 
 function getUserRoles(user) {
   if (Array.isArray(user?.roles) && user.roles.length > 0) {
-    return user.roles.map((role) =>
-      String(typeof role === "string" ? role : role?.name ?? "")
-        .toLowerCase()
-        .trim()
-    ).filter(Boolean);
+    return user.roles
+      .map(normalizeRoleName)
+      .filter(Boolean);
   }
 
   const role =
@@ -247,9 +287,9 @@ function getUserRoles(user) {
     user?.directRole ??
     user?.role;
 
-  return role
-    ? [String(role).toLowerCase().trim()]
-    : [];
+  const normalized = normalizeRoleName(role);
+
+  return normalized ? [normalized] : [];
 }
 
 function validateIdentity(user) {
@@ -290,17 +330,22 @@ function toPublicUser(user) {
     id: getUserId(user),
     email: getUserEmail(user),
     name: getFullName(user),
+
     firstName: getField(user, "first_name", "firstName"),
     lastName: getField(user, "last_name", "lastName"),
+
     tenantId: getTenantId(user),
+
     organizationName: getField(
       user,
       "organization_name",
       "organizationName"
     ),
+
     role: primaryRole,
     roleName: primaryRole,
     roles,
+
     status: getUserStatus(user),
   };
 }
@@ -353,19 +398,25 @@ function generateAccessToken(user, role, permissions = []) {
     sub: String(userId),
     email: getUserEmail(user),
     name: getFullName(user),
+
     tenantId: String(tenantId),
     tenant_id: String(tenantId),
+
     role,
+
     roles: getUserRoles(user),
+
     permissions,
   };
 
   return jwt.sign(payload, env.jwtSecret, {
     algorithm: "HS256",
+
     expiresIn:
       env.jwtExpiresIn ||
       AUTH_CONSTANTS.DEFAULT_TOKEN_EXPIRES_IN ||
       "8h",
+
     issuer: env.jwtIssuer || "etdox-api",
     audience: env.jwtAudience || "etdox-frontend",
   });
@@ -434,7 +485,10 @@ export async function register({
     .toLowerCase()
     .trim();
 
-  if (["platform_admin", "superadmin"].includes(normalizedRole)) {
+  // Never allow public registration as a platform administrator.
+  if (
+    ["platform_admin", "superadmin"].includes(normalizedRole)
+  ) {
     throw createAuthError(
       "Platform administrator cannot be registered publicly.",
       403
@@ -461,6 +515,7 @@ export async function register({
 
     tenantId = tenant.id;
     tenantName = tenant.name;
+
     assignedRoles = ["organization_admin", "admin"];
   } else {
     const tenant = await authRepo.findDefaultTenant();
@@ -520,12 +575,14 @@ export async function register({
   return {
     success: true,
     message: "Verification email sent successfully.",
+
     user: {
       id: user.id,
       email: user.email,
       organizationName: tenantName,
       status: "PENDING_VERIFICATION",
       requestedRole: normalizedRole,
+
       requiresAdminApproval:
         organizationMode === "join" &&
         !["requester", "employee"].includes(normalizedRole),
@@ -610,6 +667,7 @@ export async function verifyEmail({ token, otp, email }) {
     success: true,
     status,
     emailVerified: true,
+
     message:
       status === "ACTIVE"
         ? "Email verified successfully. You can now sign in."
@@ -736,7 +794,7 @@ export async function login({
 
   const permissions = await authRepo.getUserPermissions(
     tenantId,
-    getUserRoles(user)
+    getUserId(user)
   );
 
   const accessToken = generateAccessToken(
@@ -756,12 +814,17 @@ export async function login({
 
   return {
     success: true,
+
     message: AUTH_MESSAGES.LOGIN_SUCCESS || "Login successful.",
+
     accessToken,
     token: accessToken,
     tokenType: "Bearer",
+
     expiresIn: env.jwtExpiresIn || "8h",
+
     user: toPublicUser(user),
+
     redirectTo: resolveDashboardRoute(getUserRoles(user)),
   };
 }
