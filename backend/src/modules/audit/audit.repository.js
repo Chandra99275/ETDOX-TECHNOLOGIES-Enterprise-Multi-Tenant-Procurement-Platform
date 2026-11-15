@@ -1,6 +1,10 @@
 
 import { pool } from "../../config/database.js";
 
+// ============================================================
+// AUDIT TABLE CONFIGURATION
+// ============================================================
+
 const AUDIT_TABLE_CANDIDATES = [
   "audit_logs",
   "audit_log",
@@ -29,6 +33,10 @@ const JSON_FIELDS = new Set([
   "metadata",
 ]);
 
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
+
 function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
@@ -49,6 +57,10 @@ function toSafeInteger(value, fallback, minimum, maximum) {
 
   return Math.min(maximum, Math.max(minimum, parsed));
 }
+
+// ============================================================
+// DATABASE SCHEMA DISCOVERY
+// ============================================================
 
 async function getSchema(client) {
   const result = await client.query(
@@ -104,6 +116,10 @@ function findAuditTable(schema) {
   );
 }
 
+// ============================================================
+// TENANT-SCOPED DATABASE TRANSACTION
+// ============================================================
+
 async function withTenantClient(
   tenantId,
   callback,
@@ -130,7 +146,7 @@ async function withTenantClient(
       readOnly ? "BEGIN READ ONLY" : "BEGIN"
     );
 
-    // This setting is transaction-local.
+    // Transaction-local tenant context.
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true)",
       [String(tenantId)]
@@ -157,41 +173,71 @@ async function withTenantClient(
   }
 }
 
+// ============================================================
+// NORMALIZE AUDIT RECORD
+// ============================================================
+
 function normalizeAuditRow(row, columns) {
   return {
     id: columns.id ? row[columns.id] : null,
+
     tenantId: row[columns.tenantId],
-    actorId: columns.actorId ? row[columns.actorId] : null,
+
+    actorId: columns.actorId
+      ? row[columns.actorId]
+      : null,
+
     action: row[columns.action],
+
     entityType: columns.entityType
       ? row[columns.entityType]
       : null,
+
+    resourceType: columns.entityType
+      ? row[columns.entityType]
+      : null,
+
     entityId: columns.entityId
       ? row[columns.entityId]
       : null,
+
+    resourceId: columns.entityId
+      ? row[columns.entityId]
+      : null,
+
     description: columns.description
       ? row[columns.description]
       : null,
+
     oldValues: columns.oldValues
       ? row[columns.oldValues]
       : null,
+
     newValues: columns.newValues
       ? row[columns.newValues]
       : null,
+
     metadata: columns.metadata
       ? row[columns.metadata]
       : null,
+
     ipAddress: columns.ipAddress
       ? row[columns.ipAddress]
       : null,
+
     userAgent: columns.userAgent
       ? row[columns.userAgent]
       : null,
+
     createdAt: columns.createdAt
       ? row[columns.createdAt]
       : null,
   };
 }
+
+// ============================================================
+// INSERT HELPERS
+// ============================================================
 
 function addInsertField(fields, columns, fieldName, value) {
   const column = columns[fieldName];
@@ -246,19 +292,24 @@ function buildInsertQuery(tableName, fields) {
   };
 }
 
-/**
- * Create an audit event.
- */
+// ============================================================
+// CREATE AUDIT EVENT
+// ============================================================
+
 export async function createAuditEvent(event) {
   if (!event || typeof event !== "object") {
-    throw new TypeError("An audit event object is required.");
+    throw new TypeError(
+      "An audit event object is required."
+    );
   }
 
   if (
     typeof event.action !== "string" ||
     !event.action.trim()
   ) {
-    throw new TypeError("An audit action is required.");
+    throw new TypeError(
+      "An audit action is required."
+    );
   }
 
   return withTenantClient(
@@ -292,14 +343,14 @@ export async function createAuditEvent(event) {
         fields,
         columns,
         "entityType",
-        event.entityType ?? null
+        event.entityType ?? event.resourceType ?? null
       );
 
       addInsertField(
         fields,
         columns,
         "entityId",
-        event.entityId ?? null
+        event.entityId ?? event.resourceId ?? null
       );
 
       addInsertField(
@@ -379,12 +430,17 @@ export async function createAuditEvent(event) {
   );
 }
 
-/**
- * List audit events belonging to one tenant.
- *
- * Supported filters:
- * action, entityType, entityId, actorId, from, to, page, limit.
- */
+// ============================================================
+// LIST AUDIT EVENTS
+//
+// Supported filters:
+// action, resourceType, resourceId, actorId,
+// from, to, limit, offset.
+//
+// Backward compatibility:
+// entityType, entityId, page.
+// ============================================================
+
 export async function listAuditEvents(
   tenantId,
   filters = {}
@@ -404,6 +460,7 @@ export async function listAuditEvents(
         );
       }
 
+      // Action filter.
       if (filters.action && columns.action) {
         addCondition(
           `${quoteIdentifier(columns.action)}::text = ?`,
@@ -411,26 +468,37 @@ export async function listAuditEvents(
         );
       }
 
-      if (filters.entityType && columns.entityType) {
+      // Resource type / entity type filter.
+      const resourceType =
+        filters.resourceType ?? filters.entityType;
+
+      if (resourceType && columns.entityType) {
         addCondition(
           `${quoteIdentifier(columns.entityType)}::text = ?`,
-          filters.entityType
+          resourceType
         );
       }
 
+      // Resource ID / entity ID filter.
+      const resourceId =
+        filters.resourceId ?? filters.entityId;
+
       if (
-        filters.entityId !== undefined &&
-        filters.entityId !== "" &&
+        resourceId !== undefined &&
+        resourceId !== null &&
+        resourceId !== "" &&
         columns.entityId
       ) {
         addCondition(
           `${quoteIdentifier(columns.entityId)}::text = ?`,
-          String(filters.entityId)
+          String(resourceId)
         );
       }
 
+      // Actor filter.
       if (
         filters.actorId !== undefined &&
+        filters.actorId !== null &&
         filters.actorId !== "" &&
         columns.actorId
       ) {
@@ -440,6 +508,7 @@ export async function listAuditEvents(
         );
       }
 
+      // Start date filter.
       if (filters.from && columns.createdAt) {
         addCondition(
           `${quoteIdentifier(columns.createdAt)} >= ?::timestamptz`,
@@ -447,6 +516,7 @@ export async function listAuditEvents(
         );
       }
 
+      // End date filter.
       if (filters.to && columns.createdAt) {
         addCondition(
           `${quoteIdentifier(columns.createdAt)} <= ?::timestamptz`,
@@ -458,22 +528,37 @@ export async function listAuditEvents(
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
 
-      const page = toSafeInteger(
-        filters.page,
-        1,
-        1,
-        1000000
-      );
-
+      // Pagination.
       const limit = toSafeInteger(
         filters.limit,
-        25,
+        50,
         1,
         100
       );
 
-      const offset = (page - 1) * limit;
+      let offset;
 
+      if (filters.offset !== undefined) {
+        offset = toSafeInteger(
+          filters.offset,
+          0,
+          0,
+          100000
+        );
+      } else if (filters.page !== undefined) {
+        const page = toSafeInteger(
+          filters.page,
+          1,
+          1,
+          1000000
+        );
+
+        offset = (page - 1) * limit;
+      } else {
+        offset = 0;
+      }
+
+      // Total matching records.
       const countResult = await client.query(
         `SELECT COUNT(*)::bigint AS total
          FROM ${quoteIdentifier(table.name)}
@@ -481,9 +566,14 @@ export async function listAuditEvents(
         values
       );
 
+      // Stable ordering.
       let orderBy = "";
 
-      if (columns.createdAt) {
+      if (columns.createdAt && columns.id) {
+        orderBy =
+          `ORDER BY ${quoteIdentifier(columns.createdAt)} DESC NULLS LAST,
+           ${quoteIdentifier(columns.id)} DESC`;
+      } else if (columns.createdAt) {
         orderBy =
           `ORDER BY ${quoteIdentifier(columns.createdAt)} DESC NULLS LAST`;
       } else if (columns.id) {
@@ -491,6 +581,7 @@ export async function listAuditEvents(
           `ORDER BY ${quoteIdentifier(columns.id)} DESC`;
       }
 
+      // Fetch current page.
       const dataValues = [
         ...values,
         limit,
@@ -517,10 +608,11 @@ export async function listAuditEvents(
         ),
 
         pagination: {
-          page,
           limit,
+          offset,
           total,
           totalPages: Math.ceil(total / limit),
+          hasMore: offset + dataResult.rows.length < total,
         },
       };
     },
@@ -528,9 +620,11 @@ export async function listAuditEvents(
   );
 }
 
-/**
- * Compatibility export used by audit.controller.js.
- */
+// ============================================================
+// SEARCH AUDIT EVENTS
+// Compatibility export used by audit.controller.js.
+// ============================================================
+
 export async function searchAuditEvents(
   tenantId,
   options = {}
@@ -538,9 +632,10 @@ export async function searchAuditEvents(
   return listAuditEvents(tenantId, options);
 }
 
-/**
- * Get a single audit event by ID within the current tenant.
- */
+// ============================================================
+// GET SINGLE AUDIT EVENT
+// ============================================================
+
 export async function getAuditEventById(
   tenantId,
   auditId

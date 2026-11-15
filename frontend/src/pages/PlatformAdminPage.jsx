@@ -1,5 +1,5 @@
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Building2,
@@ -11,13 +11,11 @@ import {
   LogOut,
   Menu,
   X,
-  Bell,
   Server,
   Database,
   Globe,
   AlertTriangle,
   CheckCircle2,
-  Clock3,
   ChevronRight,
   Eye,
   Layers3,
@@ -25,18 +23,29 @@ import {
   Cpu,
   HardDrive,
   CalendarDays,
-  ArrowUpRight,
   CircleHelp,
 } from "lucide-react";
 
 import "./PlatformAdminPage.css";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1";
+// ============================================================
+// API CONFIGURATION
+// ============================================================
+
+const API_BASE_ENV = (
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000"
+).replace(/\/+$/, "");
+
+const API_BASE = /\/api\/v1$/i.test(API_BASE_ENV)
+  ? API_BASE_ENV
+  : /\/api$/i.test(API_BASE_ENV)
+    ? `${API_BASE_ENV}/v1`
+    : `${API_BASE_ENV}/api/v1`;
 
 const getToken = () =>
-  localStorage.getItem("token") ||
   localStorage.getItem("accessToken") ||
+  localStorage.getItem("access_token") ||
+  localStorage.getItem("token") ||
   localStorage.getItem("authToken");
 
 const unwrapList = (response, keys = []) => {
@@ -91,7 +100,8 @@ const statusClass = (status) => {
     value.includes("inactive") ||
     value.includes("failed") ||
     value.includes("critical") ||
-    value.includes("blocked")
+    value.includes("blocked") ||
+    value.includes("unhealthy")
   ) {
     return "danger";
   }
@@ -148,46 +158,88 @@ export default function PlatformAdminPage() {
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [recordType, setRecordType] = useState("");
 
-  const headers = useMemo(
-    () => ({
-      Authorization: `Bearer ${getToken()}`,
-      "Content-Type": "application/json",
-    }),
-    []
-  );
+  // ============================================================
+  // API REQUEST HELPER
+  // ============================================================
 
-  const apiGet = useCallback(
-    async (path) => {
-      const response = await fetch(`${API_BASE}${path}`, {
+  const apiGet = useCallback(async (path) => {
+    const token = getToken();
+
+    if (!token) {
+      throw new Error(
+        "Authentication token not found. Please sign in again."
+      );
+    }
+
+    const endpoint = `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+
+    let response;
+
+    try {
+      response = await fetch(endpoint, {
         method: "GET",
-        headers,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
       });
+    } catch {
+      throw new Error(
+        "Unable to connect to the ETDOX backend. Check whether the backend server is running."
+      );
+    }
 
-      const result = await response.json().catch(() => ({}));
+    const result = await response.json().catch(() => ({}));
 
-      if (!response.ok) {
+    if (!response.ok) {
+      const message =
+        result?.message ||
+        result?.error ||
+        result?.details ||
+        `Request failed (${response.status})`;
+
+      if (response.status === 401) {
         throw new Error(
-          result?.message ||
-            result?.error ||
-            `Request failed (${response.status})`
+          "Your session has expired or is invalid. Please sign in again."
         );
       }
 
-      return result;
-    },
-    [headers]
-  );
+      if (response.status === 403) {
+        throw new Error(
+          "Access denied. Your account does not have permission to access this platform resource."
+        );
+      }
+
+      if (response.status === 404) {
+        throw new Error(
+          `API endpoint not found: ${path}. The backend route may not be implemented yet.`
+        );
+      }
+
+      throw new Error(message);
+    }
+
+    return result;
+  }, []);
+
+  // ============================================================
+  // LOAD PLATFORM DATA
+  // ============================================================
 
   const loadPlatformData = useCallback(
     async (isRefresh = false) => {
       if (!getToken()) {
         setError("Your session has expired. Please sign in again.");
         setLoading(false);
+        setRefreshing(false);
         return;
       }
 
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
 
       setError("");
 
@@ -209,69 +261,106 @@ export default function PlatformAdminPage() {
         healthResult,
       ] = results;
 
+      // Authenticated user
       if (userResult.status === "fulfilled") {
+        const response = userResult.value;
+
         const data =
-          userResult.value?.user ||
-          userResult.value?.data?.user ||
-          userResult.value?.data ||
-          userResult.value;
+          response?.user ||
+          response?.data?.user ||
+          response?.data ||
+          response;
 
         setPlatformUser(data);
+      } else {
+        setPlatformUser(null);
       }
 
+      // Platform overview
       if (overviewResult.status === "fulfilled") {
+        const response = overviewResult.value;
+
         setOverview(
-          overviewResult.value?.overview ||
-            overviewResult.value?.data?.overview ||
-            overviewResult.value?.data ||
-            overviewResult.value ||
+          response?.overview ||
+            response?.data?.overview ||
+            response?.data ||
+            response ||
             {}
         );
       } else {
         setOverview({});
       }
 
+      // Tenant organizations
       if (tenantResult.status === "fulfilled") {
-        setTenants(unwrapList(tenantResult.value, ["tenants", "items"]));
+        setTenants(
+          unwrapList(tenantResult.value, ["tenants", "items"])
+        );
       } else {
         setTenants([]);
       }
 
+      // Platform users
       if (userListResult.status === "fulfilled") {
-        setUsers(unwrapList(userListResult.value, ["users", "items"]));
+        setUsers(
+          unwrapList(userListResult.value, ["users", "items"])
+        );
       } else {
         setUsers([]);
       }
 
+      // Audit events
       if (auditResult.status === "fulfilled") {
         setAuditEvents(
-          unwrapList(auditResult.value, ["events", "auditEvents", "items"])
+          unwrapList(auditResult.value, [
+            "events",
+            "auditEvents",
+            "audit_events",
+            "items",
+          ])
         );
       } else {
         setAuditEvents([]);
       }
 
+      // System health
       if (healthResult.status === "fulfilled") {
+        const response = healthResult.value;
+
         setSystemHealth(
-          healthResult.value?.health ||
-            healthResult.value?.data?.health ||
-            healthResult.value?.data ||
-            healthResult.value ||
+          response?.health ||
+            response?.data?.health ||
+            response?.data ||
+            response ||
             {}
         );
       } else {
         setSystemHealth({});
       }
 
-      const failed = results.filter((item) => item.status === "rejected");
+      const failed = results.filter(
+        (item) => item.status === "rejected"
+      );
 
-      if (failed.length === results.length) {
+      const authFailed = userResult.status === "rejected";
+
+      if (authFailed) {
         setError(
-          "Unable to load platform data. Verify the platform API routes and your platform administrator session."
+          `Unable to verify your platform administrator session: ${userResult.reason?.message || "Authentication failed."}`
+        );
+      } else if (failed.length === results.length) {
+        setError(
+          "Unable to load platform data. Verify that the platform API routes are implemented and your administrator account has access."
         );
       } else if (failed.length > 0) {
+        const failedMessages = failed
+          .map((item) => item.reason?.message)
+          .filter(Boolean);
+
         setError(
-          "Some platform sections could not be loaded. Check the API routes listed in the integration notes."
+          failedMessages.length > 0
+            ? `Some platform sections could not be loaded. ${failedMessages[0]}`
+            : "Some platform sections could not be loaded. Check the backend API routes."
         );
       }
 
@@ -285,36 +374,49 @@ export default function PlatformAdminPage() {
     loadPlatformData();
   }, [loadPlatformData]);
 
+  // ============================================================
+  // USER INFORMATION
+  // ============================================================
+
   const adminName =
     platformUser?.fullName ||
+    platformUser?.full_name ||
     platformUser?.name ||
     platformUser?.user?.fullName ||
     platformUser?.email ||
     "Platform Administrator";
 
-  const filteredTenants = tenants.filter((tenant) => {
-    const search = searchTerm.toLowerCase();
+  // ============================================================
+  // SEARCH FILTERS
+  // ============================================================
 
+  const search = searchTerm.trim().toLowerCase();
+
+  const filteredTenants = tenants.filter((tenant) => {
     return (
-      String(tenant.name || tenant.companyName || "")
+      String(tenant.name || tenant.companyName || tenant.company_name || "")
         .toLowerCase()
         .includes(search) ||
       String(tenant.slug || tenant.code || "")
         .toLowerCase()
         .includes(search) ||
-      String(tenant.status || "").toLowerCase().includes(search)
+      String(tenant.status || "")
+        .toLowerCase()
+        .includes(search)
     );
   });
 
   const filteredUsers = users.filter((user) => {
-    const search = searchTerm.toLowerCase();
-
     return (
-      String(user.name || user.fullName || "")
+      String(user.name || user.fullName || user.full_name || "")
         .toLowerCase()
         .includes(search) ||
-      String(user.email || "").toLowerCase().includes(search) ||
-      String(user.role || user.roleName || "").toLowerCase().includes(search) ||
+      String(user.email || "")
+        .toLowerCase()
+        .includes(search) ||
+      String(user.role || user.roleName || user.role_name || "")
+        .toLowerCase()
+        .includes(search) ||
       String(user.tenantName || user.tenant_name || "")
         .toLowerCase()
         .includes(search)
@@ -322,13 +424,17 @@ export default function PlatformAdminPage() {
   });
 
   const filteredAuditEvents = auditEvents.filter((event) => {
-    const search = searchTerm.toLowerCase();
-
     return (
       String(event.action || event.eventType || event.event_type || "")
         .toLowerCase()
         .includes(search) ||
-      String(event.actorEmail || event.actor_email || event.userEmail || "")
+      String(
+        event.actorEmail ||
+          event.actor_email ||
+          event.userEmail ||
+          event.user_email ||
+          ""
+      )
         .toLowerCase()
         .includes(search) ||
       String(event.description || event.resource || "")
@@ -336,6 +442,10 @@ export default function PlatformAdminPage() {
         .includes(search)
     );
   });
+
+  // ============================================================
+  // OVERVIEW METRICS
+  // ============================================================
 
   const tenantCount =
     overview.totalTenants ??
@@ -369,12 +479,36 @@ export default function PlatformAdminPage() {
       String(user.status || "").toLowerCase().includes("active")
     ).length;
 
+  // ============================================================
+  // NAVIGATION
+  // ============================================================
+
   const navigation = [
-    { id: "overview", label: "Platform Overview", icon: LayoutDashboard },
-    { id: "tenants", label: "Tenant Organizations", icon: Building2 },
-    { id: "users", label: "Platform Users", icon: Users },
-    { id: "audit", label: "Audit & Security", icon: ShieldCheck },
-    { id: "system", label: "System Health", icon: Activity },
+    {
+      id: "overview",
+      label: "Platform Overview",
+      icon: LayoutDashboard,
+    },
+    {
+      id: "tenants",
+      label: "Tenant Organizations",
+      icon: Building2,
+    },
+    {
+      id: "users",
+      label: "Platform Users",
+      icon: Users,
+    },
+    {
+      id: "audit",
+      label: "Audit & Security",
+      icon: ShieldCheck,
+    },
+    {
+      id: "system",
+      label: "System Health",
+      icon: Activity,
+    },
   ];
 
   const pageInfo = {
@@ -406,10 +540,15 @@ export default function PlatformAdminPage() {
     setSidebarOpen(false);
   };
 
+  // ============================================================
+  // LOGOUT
+  // ============================================================
+
   const logout = () => {
     [
       "token",
       "accessToken",
+      "access_token",
       "authToken",
       "refreshToken",
       "user",
@@ -418,10 +557,18 @@ export default function PlatformAdminPage() {
     window.location.href = "/login";
   };
 
+  // ============================================================
+  // RECORD DETAILS
+  // ============================================================
+
   const openRecord = (record, type) => {
     setSelectedRecord(record);
     setRecordType(type);
   };
+
+  // ============================================================
+  // TENANTS TABLE
+  // ============================================================
 
   const renderTenantsTable = (items) => (
     <div className="platform-table-wrap">
@@ -436,24 +583,34 @@ export default function PlatformAdminPage() {
             <th>ACTION</th>
           </tr>
         </thead>
+
         <tbody>
           {items.map((tenant, index) => (
             <tr key={tenant.id || tenant.tenantId || index}>
               <td>
                 <div className="platform-primary-cell">
                   <div className="platform-table-avatar">
-                    {String(tenant.name || tenant.companyName || "T")
+                    {String(
+                      tenant.name || tenant.companyName || "T"
+                    )
                       .charAt(0)
                       .toUpperCase()}
                   </div>
+
                   <div>
                     <strong>
-                      {tenant.name || tenant.companyName || "Unnamed organization"}
+                      {tenant.name ||
+                        tenant.companyName ||
+                        tenant.company_name ||
+                        "Unnamed organization"}
                     </strong>
-                    <span>{tenant.domain || tenant.email || "—"}</span>
+                    <span>
+                      {tenant.domain || tenant.email || "—"}
+                    </span>
                   </div>
                 </div>
               </td>
+
               <td>
                 <span className="platform-id">
                   {tenant.slug ||
@@ -463,13 +620,30 @@ export default function PlatformAdminPage() {
                     "—"}
                 </span>
               </td>
-              <td>{tenant.planName || tenant.plan_name || tenant.plan || "—"}</td>
-              <td>{formatDate(tenant.createdAt || tenant.created_at)}</td>
-              <td><PlatformStatus status={tenant.status} /></td>
+
+              <td>
+                {tenant.planName ||
+                  tenant.plan_name ||
+                  tenant.plan ||
+                  "—"}
+              </td>
+
+              <td>
+                {formatDate(
+                  tenant.createdAt || tenant.created_at
+                )}
+              </td>
+
+              <td>
+                <PlatformStatus status={tenant.status} />
+              </td>
+
               <td>
                 <button
                   className="platform-view-btn"
-                  onClick={() => openRecord(tenant, "Tenant details")}
+                  onClick={() =>
+                    openRecord(tenant, "Tenant details")
+                  }
                 >
                   <Eye size={14} /> View
                 </button>
@@ -488,6 +662,10 @@ export default function PlatformAdminPage() {
     </div>
   );
 
+  // ============================================================
+  // USERS TABLE
+  // ============================================================
+
   const renderUsersTable = (items) => (
     <div className="platform-table-wrap">
       <table className="platform-table">
@@ -501,34 +679,61 @@ export default function PlatformAdminPage() {
             <th>ACTION</th>
           </tr>
         </thead>
+
         <tbody>
           {items.map((user, index) => (
             <tr key={user.id || user.userId || index}>
               <td>
                 <div className="platform-primary-cell">
                   <div className="platform-table-avatar user">
-                    {String(user.name || user.fullName || user.email || "U")
+                    {String(
+                      user.name || user.fullName || user.email || "U"
+                    )
                       .charAt(0)
                       .toUpperCase()}
                   </div>
+
                   <div>
-                    <strong>{user.name || user.fullName || "Unnamed user"}</strong>
+                    <strong>
+                      {user.name ||
+                        user.fullName ||
+                        user.full_name ||
+                        "Unnamed user"}
+                    </strong>
                     <span>{user.email || "—"}</span>
                   </div>
                 </div>
               </td>
+
               <td>
                 <span className="platform-role-label">
-                  {user.roleName || user.role_name || user.role || "—"}
+                  {user.roleName ||
+                    user.role_name ||
+                    user.role ||
+                    "—"}
                 </span>
               </td>
-              <td>{user.tenantName || user.tenant_name || "—"}</td>
-              <td>{formatDate(user.lastLogin || user.last_login)}</td>
-              <td><PlatformStatus status={user.status} /></td>
+
+              <td>
+                {user.tenantName || user.tenant_name || "—"}
+              </td>
+
+              <td>
+                {formatDate(
+                  user.lastLogin || user.last_login
+                )}
+              </td>
+
+              <td>
+                <PlatformStatus status={user.status} />
+              </td>
+
               <td>
                 <button
                   className="platform-view-btn"
-                  onClick={() => openRecord(user, "User details")}
+                  onClick={() =>
+                    openRecord(user, "User details")
+                  }
                 >
                   <Eye size={14} /> View
                 </button>
@@ -547,6 +752,10 @@ export default function PlatformAdminPage() {
     </div>
   );
 
+  // ============================================================
+  // AUDIT TABLE
+  // ============================================================
+
   const renderAuditTable = (items) => (
     <div className="platform-table-wrap">
       <table className="platform-table">
@@ -560,6 +769,7 @@ export default function PlatformAdminPage() {
             <th>SEVERITY</th>
           </tr>
         </thead>
+
         <tbody>
           {items.map((event, index) => (
             <tr key={event.id || event.eventId || index}>
@@ -571,9 +781,12 @@ export default function PlatformAdminPage() {
                       event.event_type ||
                       "Platform event"}
                   </strong>
-                  <span>{event.description || event.message || "—"}</span>
+                  <span>
+                    {event.description || event.message || "—"}
+                  </span>
                 </div>
               </td>
+
               <td>
                 {event.actorEmail ||
                   event.actor_email ||
@@ -581,12 +794,31 @@ export default function PlatformAdminPage() {
                   event.user_email ||
                   "System"}
               </td>
-              <td>{event.resource || event.resourceType || "—"}</td>
-              <td>{event.ipAddress || event.ip_address || "—"}</td>
-              <td>{formatDate(event.createdAt || event.created_at || event.timestamp)}</td>
+
+              <td>
+                {event.resource || event.resourceType || "—"}
+              </td>
+
+              <td>
+                {event.ipAddress || event.ip_address || "—"}
+              </td>
+
+              <td>
+                {formatDate(
+                  event.createdAt ||
+                    event.created_at ||
+                    event.timestamp
+                )}
+              </td>
+
               <td>
                 <PlatformStatus
-                  status={event.severity || event.level || event.status || "Info"}
+                  status={
+                    event.severity ||
+                    event.level ||
+                    event.status ||
+                    "Info"
+                  }
                 />
               </td>
             </tr>
@@ -603,10 +835,17 @@ export default function PlatformAdminPage() {
     </div>
   );
 
+  // ============================================================
+  // SYSTEM HEALTH SERVICES
+  // ============================================================
+
   const serviceItems = [
     {
       name: "Application API",
-      value: systemHealth.api?.status || systemHealth.apiStatus || systemHealth.api_status,
+      value:
+        systemHealth.api?.status ||
+        systemHealth.apiStatus ||
+        systemHealth.api_status,
       detail: systemHealth.api?.message || "API service status",
       icon: Server,
     },
@@ -616,7 +855,9 @@ export default function PlatformAdminPage() {
         systemHealth.database?.status ||
         systemHealth.databaseStatus ||
         systemHealth.database_status,
-      detail: systemHealth.database?.message || "Database connectivity",
+      detail:
+        systemHealth.database?.message ||
+        "Database connectivity",
       icon: Database,
     },
     {
@@ -625,7 +866,9 @@ export default function PlatformAdminPage() {
         systemHealth.storage?.status ||
         systemHealth.storageStatus ||
         systemHealth.storage_status,
-      detail: systemHealth.storage?.message || "File storage service",
+      detail:
+        systemHealth.storage?.message ||
+        "File storage service",
       icon: HardDrive,
     },
     {
@@ -634,10 +877,16 @@ export default function PlatformAdminPage() {
         systemHealth.jobs?.status ||
         systemHealth.jobsStatus ||
         systemHealth.jobs_status,
-      detail: systemHealth.jobs?.message || "Background worker status",
+      detail:
+        systemHealth.jobs?.message ||
+        "Background worker status",
       icon: Cpu,
     },
   ];
+
+  // ============================================================
+  // LOADING SCREEN
+  // ============================================================
 
   if (loading) {
     return (
@@ -647,6 +896,10 @@ export default function PlatformAdminPage() {
       </div>
     );
   }
+
+  // ============================================================
+  // MAIN UI
+  // ============================================================
 
   return (
     <div className="platform-app">
@@ -667,10 +920,12 @@ export default function PlatformAdminPage() {
           <div className="platform-brand-mark">
             <Globe size={22} />
           </div>
+
           <div>
             <strong>ETDOX</strong>
             <span>Platform Console</span>
           </div>
+
           <button
             className="platform-mobile-close"
             onClick={() => setSidebarOpen(false)}
@@ -680,7 +935,9 @@ export default function PlatformAdminPage() {
           </button>
         </div>
 
-        <div className="platform-console-label">GLOBAL ADMINISTRATION</div>
+        <div className="platform-console-label">
+          GLOBAL ADMINISTRATION
+        </div>
 
         <nav className="platform-nav">
           {navigation.map((item) => {
@@ -706,10 +963,12 @@ export default function PlatformAdminPage() {
             <div className="platform-access-icon">
               <LockKeyhole size={17} />
             </div>
+
             <strong>Platform-level access</strong>
+
             <p>
-              Global operations console. All actions should be authorized by
-              platform-level permissions.
+              Global operations console. All actions should be
+              authorized by platform-level permissions.
             </p>
           </div>
 
@@ -757,6 +1016,7 @@ export default function PlatformAdminPage() {
               <div className="platform-admin-avatar">
                 {String(adminName).charAt(0).toUpperCase()}
               </div>
+
               <div>
                 <strong>{adminName}</strong>
                 <span>Platform Administrator</span>
@@ -771,6 +1031,7 @@ export default function PlatformAdminPage() {
               <div className="platform-eyebrow">
                 ETDOX / GLOBAL OPERATIONS
               </div>
+
               <h1>{pageInfo[activeTab][0]}</h1>
               <p>{pageInfo[activeTab][1]}</p>
             </div>
@@ -789,9 +1050,18 @@ export default function PlatformAdminPage() {
             <div className="platform-alert">
               <AlertTriangle size={18} />
               <span>{error}</span>
-              <button onClick={() => loadPlatformData(true)}>Retry</button>
+              <button
+                onClick={() => loadPlatformData(true)}
+                disabled={refreshing}
+              >
+                Retry
+              </button>
             </div>
           )}
+
+          {/* ================================================== */}
+          {/* OVERVIEW */}
+          {/* ================================================== */}
 
           {activeTab === "overview" && (
             <>
@@ -800,10 +1070,12 @@ export default function PlatformAdminPage() {
                   <span>GLOBAL PLATFORM CONTROL</span>
                   <h2>Welcome to ETDOX Platform Console</h2>
                   <p>
-                    Monitor tenant organizations, user accounts, platform
-                    security and service availability from one workspace.
+                    Monitor tenant organizations, user accounts,
+                    platform security and service availability from
+                    one workspace.
                   </p>
                 </div>
+
                 <div className="platform-welcome-art">
                   <Globe size={72} strokeWidth={1.2} />
                 </div>
@@ -817,6 +1089,7 @@ export default function PlatformAdminPage() {
                       <Building2 size={20} />
                     </div>
                   </div>
+
                   <strong>{formatNumber(tenantCount)}</strong>
                   <small>Registered tenant organizations</small>
                 </div>
@@ -828,6 +1101,7 @@ export default function PlatformAdminPage() {
                       <CheckCircle2 size={20} />
                     </div>
                   </div>
+
                   <strong>{formatNumber(activeTenantCount)}</strong>
                   <small>Organizations currently active</small>
                 </div>
@@ -839,8 +1113,11 @@ export default function PlatformAdminPage() {
                       <Users size={20} />
                     </div>
                   </div>
+
                   <strong>{formatNumber(userCount)}</strong>
-                  <small>{formatNumber(activeUsers)} active user accounts</small>
+                  <small>
+                    {formatNumber(activeUsers)} active user accounts
+                  </small>
                 </div>
 
                 <div className="platform-stat-card">
@@ -850,6 +1127,7 @@ export default function PlatformAdminPage() {
                       <ShieldCheck size={20} />
                     </div>
                   </div>
+
                   <strong>{formatNumber(eventCount)}</strong>
                   <small>Platform activity records</small>
                 </div>
@@ -860,8 +1138,11 @@ export default function PlatformAdminPage() {
                   <div className="platform-panel-heading">
                     <div>
                       <h3>Recent Tenant Organizations</h3>
-                      <p>Latest organizations registered on the platform</p>
+                      <p>
+                        Latest organizations registered on the platform
+                      </p>
                     </div>
+
                     <button
                       className="platform-text-link"
                       onClick={() => changeTab("tenants")}
@@ -869,6 +1150,7 @@ export default function PlatformAdminPage() {
                       View all <ChevronRight size={15} />
                     </button>
                   </div>
+
                   {renderTenantsTable(tenants.slice(0, 5))}
                 </div>
 
@@ -884,8 +1166,11 @@ export default function PlatformAdminPage() {
                     <div className="platform-snapshot-icon blue">
                       <Building2 size={18} />
                     </div>
+
                     <div>
-                      <strong>{formatNumber(tenantCount)} organizations</strong>
+                      <strong>
+                        {formatNumber(tenantCount)} organizations
+                      </strong>
                       <span>Tenant registry</span>
                     </div>
                   </div>
@@ -894,8 +1179,11 @@ export default function PlatformAdminPage() {
                     <div className="platform-snapshot-icon purple">
                       <Users size={18} />
                     </div>
+
                     <div>
-                      <strong>{formatNumber(userCount)} users</strong>
+                      <strong>
+                        {formatNumber(userCount)} users
+                      </strong>
                       <span>Across tenant accounts</span>
                     </div>
                   </div>
@@ -904,6 +1192,7 @@ export default function PlatformAdminPage() {
                     <div className="platform-snapshot-icon green">
                       <Activity size={18} />
                     </div>
+
                     <div>
                       <strong>
                         {systemHealth.status ||
@@ -918,8 +1207,8 @@ export default function PlatformAdminPage() {
                   <div className="platform-snapshot-note">
                     <CircleHelp size={16} />
                     <span>
-                      Metrics depend on the platform API response and are not
-                      estimated by the dashboard.
+                      Metrics depend on the platform API response and
+                      are not estimated by the dashboard.
                     </span>
                   </div>
                 </div>
@@ -931,6 +1220,7 @@ export default function PlatformAdminPage() {
                     <h3>Recent Security & Audit Activity</h3>
                     <p>Latest platform-wide events</p>
                   </div>
+
                   <button
                     className="platform-text-link"
                     onClick={() => changeTab("audit")}
@@ -938,10 +1228,15 @@ export default function PlatformAdminPage() {
                     View audit log <ChevronRight size={15} />
                   </button>
                 </div>
+
                 {renderAuditTable(auditEvents.slice(0, 5))}
               </section>
             </>
           )}
+
+          {/* ================================================== */}
+          {/* TENANTS */}
+          {/* ================================================== */}
 
           {activeTab === "tenants" && (
             <section className="platform-panel">
@@ -950,58 +1245,87 @@ export default function PlatformAdminPage() {
                   <h3>Tenant Organizations</h3>
                   <p>Platform-wide organization directory.</p>
                 </div>
+
                 <div className="platform-search">
                   <Search size={17} />
                   <input
                     value={searchTerm}
-                    onChange={(event) => setSearchTerm(event.target.value)}
+                    onChange={(event) =>
+                      setSearchTerm(event.target.value)
+                    }
                     placeholder="Search organizations..."
                   />
                 </div>
               </div>
+
               {renderTenantsTable(filteredTenants)}
             </section>
           )}
+
+          {/* ================================================== */}
+          {/* USERS */}
+          {/* ================================================== */}
 
           {activeTab === "users" && (
             <section className="platform-panel">
               <div className="platform-panel-heading platform-list-heading">
                 <div>
                   <h3>Platform Users</h3>
-                  <p>Directory of user accounts across all tenants.</p>
+                  <p>
+                    Directory of user accounts across all tenants.
+                  </p>
                 </div>
+
                 <div className="platform-search">
                   <Search size={17} />
                   <input
                     value={searchTerm}
-                    onChange={(event) => setSearchTerm(event.target.value)}
+                    onChange={(event) =>
+                      setSearchTerm(event.target.value)
+                    }
                     placeholder="Search users..."
                   />
                 </div>
               </div>
+
               {renderUsersTable(filteredUsers)}
             </section>
           )}
+
+          {/* ================================================== */}
+          {/* AUDIT */}
+          {/* ================================================== */}
 
           {activeTab === "audit" && (
             <section className="platform-panel">
               <div className="platform-panel-heading platform-list-heading">
                 <div>
                   <h3>Platform Audit Events</h3>
-                  <p>Security, authentication and platform activity records.</p>
+                  <p>
+                    Security, authentication and platform activity
+                    records.
+                  </p>
                 </div>
+
                 <div className="platform-search">
                   <Search size={17} />
                   <input
                     value={searchTerm}
-                    onChange={(event) => setSearchTerm(event.target.value)}
+                    onChange={(event) =>
+                      setSearchTerm(event.target.value)
+                    }
                     placeholder="Search audit events..."
                   />
                 </div>
               </div>
+
               {renderAuditTable(filteredAuditEvents)}
             </section>
           )}
+
+          {/* ================================================== */}
+          {/* SYSTEM HEALTH */}
+          {/* ================================================== */}
 
           {activeTab === "system" && (
             <>
@@ -1009,13 +1333,15 @@ export default function PlatformAdminPage() {
                 <div className="platform-system-banner-icon">
                   <Activity size={24} />
                 </div>
+
                 <div>
                   <strong>System health report</strong>
                   <p>
-                    Service status is displayed only when reported by the
-                    platform health API.
+                    Service status is displayed only when reported
+                    by the platform health API.
                   </p>
                 </div>
+
                 <PlatformStatus
                   status={
                     systemHealth.status ||
@@ -1031,13 +1357,20 @@ export default function PlatformAdminPage() {
                   const Icon = service.icon;
 
                   return (
-                    <div className="platform-service-card" key={service.name}>
+                    <div
+                      className="platform-service-card"
+                      key={service.name}
+                    >
                       <div className="platform-service-top">
                         <div className="platform-service-icon">
                           <Icon size={21} />
                         </div>
-                        <PlatformStatus status={service.value || "Not reported"} />
+
+                        <PlatformStatus
+                          status={service.value || "Not reported"}
+                        />
                       </div>
+
                       <h3>{service.name}</h3>
                       <p>{service.detail}</p>
                     </div>
@@ -1049,7 +1382,9 @@ export default function PlatformAdminPage() {
                 <div className="platform-panel-heading">
                   <div>
                     <h3>System Information</h3>
-                    <p>Additional health information returned by the API.</p>
+                    <p>
+                      Additional health information returned by the API.
+                    </p>
                   </div>
                 </div>
 
@@ -1063,6 +1398,7 @@ export default function PlatformAdminPage() {
                         "Not reported"}
                     </strong>
                   </div>
+
                   <div>
                     <span>API version</span>
                     <strong>
@@ -1072,12 +1408,14 @@ export default function PlatformAdminPage() {
                         "Not reported"}
                     </strong>
                   </div>
+
                   <div>
                     <span>Environment</span>
                     <strong>
                       {systemHealth.environment || "Not reported"}
                     </strong>
                   </div>
+
                   <div>
                     <span>Last checked</span>
                     <strong>
@@ -1088,12 +1426,14 @@ export default function PlatformAdminPage() {
                       )}
                     </strong>
                   </div>
+
                   <div>
                     <span>Uptime</span>
                     <strong>
                       {systemHealth.uptime || "Not reported"}
                     </strong>
                   </div>
+
                   <div>
                     <span>Database latency</span>
                     <strong>
@@ -1115,12 +1455,25 @@ export default function PlatformAdminPage() {
             </>
           )}
 
+          {/* ================================================== */}
+          {/* FOOTER */}
+          {/* ================================================== */}
+
           <footer className="platform-footer">
-            <span>© {new Date().getFullYear()} ETDOX Technologies</span>
-            <span>Platform Administration · Global operations</span>
+            <span>
+              © {new Date().getFullYear()} ETDOX Technologies
+            </span>
+
+            <span>
+              Platform Administration · Global operations
+            </span>
           </footer>
         </div>
       </main>
+
+      {/* ====================================================== */}
+      {/* RECORD DETAILS MODAL */}
+      {/* ====================================================== */}
 
       {selectedRecord && (
         <div
@@ -1137,6 +1490,7 @@ export default function PlatformAdminPage() {
                 <h2>{recordType}</h2>
                 <p>Read-only record details</p>
               </div>
+
               <button
                 className="platform-modal-close"
                 onClick={() => setSelectedRecord(null)}
@@ -1153,9 +1507,15 @@ export default function PlatformAdminPage() {
                     value !== null &&
                     value !== undefined &&
                     typeof value !== "object" &&
-                    !String(key).toLowerCase().includes("password") &&
-                    !String(key).toLowerCase().includes("secret") &&
-                    !String(key).toLowerCase().includes("token")
+                    !String(key)
+                      .toLowerCase()
+                      .includes("password") &&
+                    !String(key)
+                      .toLowerCase()
+                      .includes("secret") &&
+                    !String(key)
+                      .toLowerCase()
+                      .includes("token")
                 )
                 .map(([key, value]) => (
                   <div className="platform-record-row" key={key}>

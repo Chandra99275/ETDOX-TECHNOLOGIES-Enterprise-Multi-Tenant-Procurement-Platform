@@ -15,19 +15,29 @@ import {
   Eye,
   CheckCircle2,
   Clock,
-  XCircle,
-  IndianRupee,
-  TrendingUp,
-  ShieldCheck,
   AlertCircle,
   ChevronDown,
-  UserPlus,
-  Filter,
+  Plus,
+  Mail,
+  Phone,
+  MapPin,
+  Truck,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
+// ============================================================
+// API CONFIGURATION
+// ============================================================
+
+const API_BASE_ENV = (
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000"
+).replace(/\/+$/, "");
+
+const API_BASE = /\/api\/v1$/i.test(API_BASE_ENV)
+  ? API_BASE_ENV
+  : /\/api$/i.test(API_BASE_ENV)
+    ? `${API_BASE_ENV}/v1`
+    : `${API_BASE_ENV}/api/v1`;
 
 const getToken = () =>
   localStorage.getItem("token") ||
@@ -40,10 +50,38 @@ const getArray = (response, keys = []) => {
   for (const key of keys) {
     if (Array.isArray(response?.[key])) return response[key];
     if (Array.isArray(response?.data?.[key])) return response.data[key];
+    if (Array.isArray(response?.data?.data?.[key])) {
+      return response.data.data[key];
+    }
   }
 
   if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.data?.data)) return response.data.data;
+  if (Array.isArray(response?.result)) return response.result;
+
   return [];
+};
+
+const normalizeRole = (role) => {
+  if (typeof role === "string") {
+    return role.toLowerCase().trim().replaceAll(" ", "_");
+  }
+
+  if (role && typeof role === "object") {
+    return String(
+      role.name ||
+        role.role ||
+        role.roleName ||
+        role.role_name ||
+        role.slug ||
+        ""
+    )
+      .toLowerCase()
+      .trim()
+      .replaceAll(" ", "_");
+  }
+
+  return "";
 };
 
 const formatCurrency = (value) =>
@@ -55,7 +93,9 @@ const formatCurrency = (value) =>
 
 const formatDate = (value) => {
   if (!value) return "—";
+
   const date = new Date(value);
+
   return Number.isNaN(date.getTime())
     ? "—"
     : date.toLocaleDateString("en-IN");
@@ -90,6 +130,48 @@ const getAmount = (request) =>
         Number(request.unitPrice || request.unit_price || 0)
   );
 
+const getSupplierName = (supplier) =>
+  supplier.legalName ||
+  supplier.legal_name ||
+  supplier.name ||
+  supplier.tradingName ||
+  supplier.trading_name ||
+  "Unnamed supplier";
+
+const getSupplierCode = (supplier) =>
+  supplier.code ||
+  supplier.supplierCode ||
+  supplier.supplier_code ||
+  "—";
+
+const getSupplierStatus = (supplier) =>
+  String(
+    supplier.status ||
+      supplier.onboardingStatus ||
+      supplier.onboarding_status ||
+      "PENDING"
+  )
+    .toUpperCase()
+    .replaceAll(" ", "_");
+
+const initialSupplierForm = {
+  name: "",
+  code: "",
+  email: "",
+  phone: "",
+  contactPerson: "",
+  address: "",
+  city: "",
+  state: "",
+  country: "India",
+  postalCode: "",
+  taxId: "",
+  category: "",
+  paymentTerms: "",
+  notes: "",
+  status: "pending",
+};
+
 export default function AdminPage() {
   const navigate = useNavigate();
 
@@ -97,96 +179,235 @@ export default function AdminPage() {
   const [requests, setRequests] = useState([]);
   const [budgets, setBudgets] = useState([]);
   const [users, setUsers] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+
   const [adminName, setAdminName] = useState("Administrator");
+  const [currentRole, setCurrentRole] = useState("");
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+
   const [loading, setLoading] = useState(true);
+  const [supplierLoading, setSupplierLoading] = useState(false);
+  const [supplierSaving, setSupplierSaving] = useState(false);
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
+
+  const [showSupplierModal, setShowSupplierModal] = useState(false);
+  const [supplierForm, setSupplierForm] = useState(initialSupplierForm);
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const headers = {
-    Authorization: `Bearer ${getToken()}`,
-    "Content-Type": "application/json",
-  };
+  // ============================================================
+  // API REQUEST HELPER
+  // ============================================================
 
   const apiRequest = async (endpoint, options = {}) => {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const token = getToken();
+
+    const normalizedEndpoint = endpoint.startsWith("/")
+      ? endpoint
+      : `/${endpoint}`;
+
+    const response = await fetch(`${API_BASE}${normalizedEndpoint}`, {
       ...options,
-      headers: { ...headers, ...options.headers },
+      headers: {
+        Accept: "application/json",
+        ...(options.body
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
     });
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+      const validationErrors = Array.isArray(data.errors)
+        ? data.errors
+            .map((item) => item.message)
+            .filter(Boolean)
+            .join(", ")
+        : "";
+
       throw new Error(
-        data.message || data.error || `Request failed (${response.status})`
+        data.message ||
+          data.error ||
+          validationErrors ||
+          data.details ||
+          `API request failed (${response.status})`
       );
     }
 
     return data;
   };
 
+  // ============================================================
+  // SUPPLIER API
+  // ============================================================
+
+  const loadSuppliers = async (showLoader = false) => {
+    if (showLoader) setSupplierLoading(true);
+
+    try {
+      const result = await apiRequest(
+        "/suppliers?page=1&limit=100"
+      );
+
+      const supplierList = getArray(result, [
+        "suppliers",
+        "items",
+        "results",
+      ]);
+
+      setSuppliers(supplierList);
+
+      return supplierList;
+    } catch (err) {
+      setSuppliers([]);
+      throw err;
+    } finally {
+      if (showLoader) setSupplierLoading(false);
+    }
+  };
+
+  // ============================================================
+  // DASHBOARD DATA
+  // ============================================================
+
   const loadDashboard = async () => {
     setLoading(true);
     setError("");
 
-    try {
-      const results = await Promise.allSettled([
-        apiRequest("/procurement/requests"),
-        apiRequest("/budgets"),
-        apiRequest("/users"),
-        apiRequest("/auth/me"),
-      ]);
+    const results = await Promise.allSettled([
+      apiRequest("/procurement/requests"),
+      apiRequest("/budgets"),
+      apiRequest("/users"),
+      apiRequest("/auth/me"),
+      apiRequest("/suppliers?page=1&limit=100"),
+    ]);
 
-      if (results[0].status === "fulfilled") {
-        setRequests(
-          getArray(results[0].value, ["requests", "items", "results"])
-        );
-      } else {
-        setRequests([]);
-      }
-
-      if (results[1].status === "fulfilled") {
-        setBudgets(
-          getArray(results[1].value, ["budgets", "items", "results"])
-        );
-      } else {
-        setBudgets([]);
-      }
-
-      if (results[2].status === "fulfilled") {
-        setUsers(getArray(results[2].value, ["users", "items", "results"]));
-      } else {
-        setUsers([]);
-      }
-
-      if (results[3].status === "fulfilled") {
-        const result = results[3].value;
-        const user =
-          result?.user || result?.data?.user || result?.data || result;
-
-        if (user?.name || user?.fullName) {
-          setAdminName(user.name || user.fullName);
-        }
-      }
-
-      const failures = results.filter((result) => result.status === "rejected");
-
-      if (failures.length === results.length) {
-        setError("Unable to connect to the admin APIs. Check your backend.");
-      } else if (failures.length > 0) {
-        setError(
-          "Some dashboard information could not be loaded. Check your API routes and permissions."
-        );
-      }
-    } catch (err) {
-      setError(err.message || "Unable to load admin dashboard.");
-    } finally {
-      setLoading(false);
+    // Procurement requests
+    if (results[0].status === "fulfilled") {
+      setRequests(
+        getArray(results[0].value, [
+          "requests",
+          "items",
+          "results",
+        ])
+      );
+    } else {
+      setRequests([]);
     }
+
+    // Budgets
+    if (results[1].status === "fulfilled") {
+      setBudgets(
+        getArray(results[1].value, [
+          "budgets",
+          "items",
+          "results",
+        ])
+      );
+    } else {
+      setBudgets([]);
+    }
+
+    // Employees / users
+    if (results[2].status === "fulfilled") {
+      setUsers(
+        getArray(results[2].value, [
+          "users",
+          "employees",
+          "items",
+          "results",
+        ])
+      );
+    } else {
+      setUsers([]);
+    }
+
+    // Authenticated user
+    if (results[3].status === "fulfilled") {
+      const result = results[3].value;
+
+      const user =
+        result?.user ||
+        result?.data?.user ||
+        result?.data ||
+        result;
+
+      const fullName =
+        user?.name ||
+        user?.fullName ||
+        user?.full_name ||
+        [
+          user?.first_name,
+          user?.last_name,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+      if (fullName) {
+        setAdminName(fullName);
+      }
+
+      const roles = Array.isArray(user?.roles)
+        ? user.roles.map(normalizeRole)
+        : [];
+
+      const role = normalizeRole(
+        user?.role ||
+          user?.roleName ||
+          user?.role_name ||
+          user?.primaryRole ||
+          user?.primary_role ||
+          roles[0] ||
+          ""
+      );
+
+      setCurrentRole(role);
+    } else {
+      setCurrentRole("");
+    }
+
+    // Suppliers
+    if (results[4].status === "fulfilled") {
+      setSuppliers(
+        getArray(results[4].value, [
+          "suppliers",
+          "items",
+          "results",
+        ])
+      );
+    } else {
+      setSuppliers([]);
+    }
+
+    const coreFailures = results
+      .slice(0, 4)
+      .filter((result) => result.status === "rejected");
+
+    if (coreFailures.length === 4) {
+      setError(
+        "Unable to connect to the admin APIs. Check your backend."
+      );
+    } else if (coreFailures.length > 0) {
+      setError(
+        "Some dashboard information could not be loaded. Check your API routes and permissions."
+      );
+    } else if (results[4].status === "rejected") {
+      setError(
+        "Dashboard loaded, but suppliers could not be fetched. Check the supplier API."
+      );
+    }
+
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -197,6 +418,21 @@ export default function AdminPage() {
 
     loadDashboard();
   }, []);
+
+  // ============================================================
+  // PERMISSIONS
+  // ============================================================
+
+  const canManageSuppliers = [
+    "admin",
+    "finance",
+    "organization_admin",
+    "finance_manager",
+  ].includes(currentRole);
+
+  // ============================================================
+  // DASHBOARD CALCULATIONS
+  // ============================================================
 
   const pendingRequests = useMemo(
     () =>
@@ -216,7 +452,11 @@ export default function AdminPage() {
   const approvedRequests = useMemo(
     () =>
       requests.filter((r) =>
-        ["APPROVED", "FINANCE_APPROVED", "COMPLETED"].includes(getStatus(r))
+        [
+          "APPROVED",
+          "FINANCE_APPROVED",
+          "COMPLETED",
+        ].includes(getStatus(r))
       ),
     [requests]
   );
@@ -224,9 +464,11 @@ export default function AdminPage() {
   const rejectedRequests = useMemo(
     () =>
       requests.filter((r) =>
-        ["REJECTED", "MANAGER_REJECTED", "FINANCE_REJECTED"].includes(
-          getStatus(r)
-        )
+        [
+          "REJECTED",
+          "MANAGER_REJECTED",
+          "FINANCE_REJECTED",
+        ].includes(getStatus(r))
       ),
     [requests]
   );
@@ -253,17 +495,28 @@ export default function AdminPage() {
       budgets.reduce(
         (sum, b) =>
           sum +
-          Number(b.spent ?? b.used ?? b.committed ?? 0),
+          Number(
+            b.spent ??
+              b.used ??
+              b.committed ??
+              0
+          ),
         0
       ),
     [budgets]
   );
 
+  // ============================================================
+  // FILTERING
+  // ============================================================
+
   const filteredRequests = useMemo(() => {
     let list = [...requests];
 
     if (statusFilter !== "ALL") {
-      list = list.filter((r) => getStatus(r) === statusFilter);
+      list = list.filter(
+        (r) => getStatus(r) === statusFilter
+      );
     }
 
     const query = search.toLowerCase().trim();
@@ -295,6 +548,7 @@ export default function AdminPage() {
       [
         user.name,
         user.fullName,
+        user.full_name,
         user.email,
         user.role,
         user.department,
@@ -306,21 +560,65 @@ export default function AdminPage() {
     );
   }, [users, search]);
 
+  const filteredSuppliers = useMemo(() => {
+    const query = search.toLowerCase().trim();
+
+    if (!query) return suppliers;
+
+    return suppliers.filter((supplier) =>
+      [
+        getSupplierName(supplier),
+        getSupplierCode(supplier),
+        supplier.email,
+        supplier.phone,
+        supplier.contactPerson,
+        supplier.contact_person,
+        supplier.category,
+        supplier.city,
+        supplier.status,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [suppliers, search]);
+
+  // ============================================================
+  // STATUS STYLING
+  // ============================================================
+
   const statusStyle = (status) => {
     if (
-      ["APPROVED", "FINANCE_APPROVED", "COMPLETED"].includes(status)
+      [
+        "APPROVED",
+        "FINANCE_APPROVED",
+        "COMPLETED",
+        "ACTIVE",
+      ].includes(status)
     ) {
       return "approved";
     }
 
     if (
-      ["REJECTED", "MANAGER_REJECTED", "FINANCE_REJECTED"].includes(status)
+      [
+        "REJECTED",
+        "MANAGER_REJECTED",
+        "FINANCE_REJECTED",
+        "INACTIVE",
+        "SUSPENDED",
+        "ARCHIVED",
+      ].includes(status)
     ) {
       return "rejected";
     }
 
     return "pending";
   };
+
+  // ============================================================
+  // LOGOUT
+  // ============================================================
 
   const logout = () => {
     localStorage.removeItem("token");
@@ -329,17 +627,117 @@ export default function AdminPage() {
     navigate("/login");
   };
 
+  // ============================================================
+  // SUPPLIER FORM
+  // ============================================================
+
+  const updateSupplierField = (event) => {
+    const { name, value } = event.target;
+
+    setSupplierForm((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  };
+
+  const submitSupplier = async (event) => {
+    event.preventDefault();
+
+    setError("");
+    setSuccess("");
+
+    if (!canManageSuppliers) {
+      setError(
+        "Only Admin and Finance users can register suppliers."
+      );
+      return;
+    }
+
+    if (
+      !supplierForm.name.trim() ||
+      supplierForm.name.trim().length < 2
+    ) {
+      setError("Supplier name must contain at least 2 characters.");
+      return;
+    }
+
+    const payload = {
+      name: supplierForm.name.trim(),
+      status: supplierForm.status,
+    };
+
+    // Supplier code is optional in the backend route.
+    if (supplierForm.code.trim()) {
+      payload.code = supplierForm.code.trim();
+    }
+
+    const optionalFields = [
+      "email",
+      "phone",
+      "contactPerson",
+      "address",
+      "city",
+      "state",
+      "country",
+      "postalCode",
+      "taxId",
+      "category",
+      "paymentTerms",
+      "notes",
+    ];
+
+    optionalFields.forEach((field) => {
+      const value = supplierForm[field]?.trim();
+
+      if (value) {
+        payload[field] = value;
+      }
+    });
+
+    setSupplierSaving(true);
+
+    try {
+      await apiRequest("/suppliers", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      setSupplierForm(initialSupplierForm);
+      setShowSupplierModal(false);
+
+      setSuccess("Supplier registered successfully.");
+
+      try {
+        await loadSuppliers(true);
+      } catch (refreshError) {
+        setError(
+          "Supplier was created, but the supplier list could not be refreshed. Please refresh the page."
+        );
+      }
+    } catch (err) {
+      setError(
+        err.message || "Unable to register supplier."
+      );
+    } finally {
+      setSupplierSaving(false);
+    }
+  };
+
+  // ============================================================
+  // NAVIGATION
+  // ============================================================
+
   const navItems = [
     { name: "Overview", icon: LayoutDashboard },
     { name: "All Requests", icon: ClipboardList },
     { name: "Employees", icon: Users },
     { name: "Budgets", icon: Wallet },
+    { name: "Suppliers", icon: Truck },
   ];
 
-  const userRoleCount = (role) =>
-    users.filter(
-      (u) => String(u.role || "").toLowerCase() === role.toLowerCase()
-    ).length;
+  // ============================================================
+  // UI
+  // ============================================================
 
   return (
     <div className="admin-app">
@@ -613,8 +1011,17 @@ export default function AdminPage() {
           color: #3675f5;
           font-weight: 700;
         }
-        .admin-person strong { display: block; color: #27344a; font-size: 12px; margin-bottom: 4px; }
-        .admin-person small { display: block; color: #9aa4b4; font-size: 10px; }
+        .admin-person strong {
+          display: block;
+          color: #27344a;
+          font-size: 12px;
+          margin-bottom: 4px;
+        }
+        .admin-person small {
+          display: block;
+          color: #9aa4b4;
+          font-size: 10px;
+        }
         .admin-status {
           display: inline-block;
           padding: 6px 9px;
@@ -681,7 +1088,7 @@ export default function AdminPage() {
         }
         .admin-modal {
           width: 100%;
-          max-width: 500px;
+          max-width: 560px;
           max-height: 90vh;
           overflow-y: auto;
           padding: 24px;
@@ -715,9 +1122,127 @@ export default function AdminPage() {
           border: 1px solid #edf0f5;
           border-radius: 9px;
         }
-        .admin-detail small { display: block; margin-bottom: 6px; color: #929daf; font-size: 10px; }
-        .admin-detail strong { color: #27344a; font-size: 12px; overflow-wrap: anywhere; }
+        .admin-detail small {
+          display: block;
+          margin-bottom: 6px;
+          color: #929daf;
+          font-size: 10px;
+        }
+        .admin-detail strong {
+          color: #27344a;
+          font-size: 12px;
+          overflow-wrap: anywhere;
+        }
         .admin-mobile-menu { display: none; }
+        .supplier-primary-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 10px 15px;
+          border: 0;
+          border-radius: 8px;
+          background: #3675f5;
+          color: white;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        .supplier-primary-btn:disabled {
+          opacity: .6;
+          cursor: not-allowed;
+        }
+        .supplier-form-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 14px;
+        }
+        .supplier-form-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .supplier-form-field.full { grid-column: 1 / -1; }
+        .supplier-form-field label {
+          color: #58657b;
+          font-size: 11px;
+          font-weight: 700;
+        }
+        .supplier-form-field input,
+        .supplier-form-field select,
+        .supplier-form-field textarea {
+          width: 100%;
+          padding: 11px 12px;
+          border: 1px solid #e2e7ef;
+          border-radius: 8px;
+          outline: none;
+          background: white;
+          color: #26344b;
+          font-family: inherit;
+          font-size: 12px;
+        }
+        .supplier-form-field input:focus,
+        .supplier-form-field select:focus,
+        .supplier-form-field textarea:focus {
+          border-color: #3675f5;
+          box-shadow: 0 0 0 3px rgba(54,117,245,.1);
+        }
+        .supplier-form-field textarea {
+          min-height: 75px;
+          resize: vertical;
+        }
+        .supplier-form-field input::placeholder,
+        .supplier-form-field textarea::placeholder {
+          color: #a4adbb;
+        }
+        .supplier-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 10px;
+          margin-top: 20px;
+        }
+        .supplier-secondary-btn {
+          padding: 10px 15px;
+          border: 1px solid #e2e7ef;
+          border-radius: 8px;
+          background: white;
+          color: #58657b;
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        .supplier-section-title {
+          grid-column: 1 / -1;
+          margin: 5px 0 -3px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #edf0f5;
+          color: #3675f5;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: .6px;
+          text-transform: uppercase;
+        }
+        .supplier-contact {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .supplier-contact span {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: #718097;
+          font-size: 11px;
+        }
+        .supplier-code {
+          display: inline-block;
+          padding: 5px 8px;
+          border-radius: 6px;
+          background: #edf3ff;
+          color: #3675f5;
+          font-size: 10px;
+          font-weight: 800;
+        }
         @media(max-width: 1050px) {
           .admin-stats { grid-template-columns: repeat(2, 1fr); }
           .admin-budget-grid { grid-template-columns: repeat(2, 1fr); }
@@ -740,13 +1265,20 @@ export default function AdminPage() {
           .admin-stat { padding: 13px; }
           .admin-stat h2 { font-size: 21px; }
           .admin-secondary-stats { grid-template-columns: 1fr; }
-          .admin-panel-head { align-items: flex-start; flex-direction: column; }
+          .admin-panel-head {
+            align-items: flex-start;
+            flex-direction: column;
+          }
           .admin-search input { width: 130px; }
           .admin-budget-grid { grid-template-columns: 1fr; }
           .admin-details { grid-template-columns: 1fr; }
+          .supplier-form-grid { grid-template-columns: 1fr; }
+          .supplier-form-field.full,
+          .supplier-section-title { grid-column: auto; }
         }
       `}</style>
 
+      {/* SIDEBAR */}
       <aside className={`admin-sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="admin-brand">
           <div className="admin-brand-icon">
@@ -787,6 +1319,7 @@ export default function AdminPage() {
         </div>
       </aside>
 
+      {/* MAIN CONTENT */}
       <main className="admin-main">
         <header className="admin-topbar">
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -803,7 +1336,9 @@ export default function AdminPage() {
                   ? "Admin Dashboard"
                   : activeTab}
               </h1>
-              <p>Manage organization procurement and monitor operations.</p>
+              <p>
+                Manage organization procurement and monitor operations.
+              </p>
             </div>
           </div>
 
@@ -826,20 +1361,26 @@ export default function AdminPage() {
               </div>
               <div>
                 <strong>{adminName}</strong>
-                <small>Administrator</small>
+                <small>{currentRole || "Administrator"}</small>
               </div>
               <ChevronDown size={14} color="#8490a4" />
             </div>
           </div>
         </header>
 
+        {/* ALERTS */}
         {error && (
           <div className="admin-alert error">
             <AlertCircle size={16} />
             {error}
             <button
               onClick={() => setError("")}
-              style={{ marginLeft: "auto", border: 0, background: "none", cursor: "pointer" }}
+              style={{
+                marginLeft: "auto",
+                border: 0,
+                background: "none",
+                cursor: "pointer",
+              }}
             >
               <X size={15} />
             </button>
@@ -852,13 +1393,19 @@ export default function AdminPage() {
             {success}
             <button
               onClick={() => setSuccess("")}
-              style={{ marginLeft: "auto", border: 0, background: "none", cursor: "pointer" }}
+              style={{
+                marginLeft: "auto",
+                border: 0,
+                background: "none",
+                cursor: "pointer",
+              }}
             >
               <X size={15} />
             </button>
           </div>
         )}
 
+        {/* OVERVIEW STATS */}
         {activeTab === "Overview" && (
           <>
             <section className="admin-stats">
@@ -916,7 +1463,10 @@ export default function AdminPage() {
                     style={{
                       width: `${
                         totalBudget > 0
-                          ? Math.min((totalSpent / totalBudget) * 100, 100)
+                          ? Math.min(
+                              (totalSpent / totalBudget) * 100,
+                              100
+                            )
                           : 0
                       }%`,
                     }}
@@ -938,13 +1488,18 @@ export default function AdminPage() {
           </>
         )}
 
+        {/* RECENT REQUESTS */}
         {activeTab === "Overview" && (
-          <section className="admin-panel" style={{ marginBottom: 22 }}>
+          <section
+            className="admin-panel"
+            style={{ marginBottom: 22 }}
+          >
             <div className="admin-panel-head">
               <div>
                 <h2>Recent Procurement Requests</h2>
                 <p>Latest requests across the organization.</p>
               </div>
+
               <button
                 className="admin-icon-btn"
                 title="View all requests"
@@ -955,7 +1510,9 @@ export default function AdminPage() {
             </div>
 
             {loading ? (
-              <div className="admin-loading">Loading requests...</div>
+              <div className="admin-loading">
+                Loading requests...
+              </div>
             ) : requests.length === 0 ? (
               <div className="admin-empty">
                 <ClipboardList size={32} />
@@ -975,35 +1532,56 @@ export default function AdminPage() {
                       <th>Details</th>
                     </tr>
                   </thead>
+
                   <tbody>
                     {requests.slice(0, 6).map((request, index) => {
                       const status = getStatus(request);
 
                       return (
-                        <tr key={request.id || request.requestId || index}>
+                        <tr
+                          key={
+                            request.id ||
+                            request.requestId ||
+                            index
+                          }
+                        >
                           <td>
                             <div className="admin-person">
                               <div className="admin-person-avatar">
-                                {getEmployee(request).charAt(0).toUpperCase()}
+                                {getEmployee(request)
+                                  .charAt(0)
+                                  .toUpperCase()}
                               </div>
                               <div>
-                                <strong>{getEmployee(request)}</strong>
-                                <small>{request.employeeEmail || "Employee"}</small>
+                                <strong>
+                                  {getEmployee(request)}
+                                </strong>
+                                <small>
+                                  {request.employeeEmail || "Employee"}
+                                </small>
                               </div>
                             </div>
                           </td>
+
                           <td>{getProduct(request)}</td>
+
                           <td>
                             {request.department ||
                               request.departmentName ||
                               "—"}
                           </td>
-                          <td>{formatCurrency(getAmount(request))}</td>
+
+                          <td>
+                            {formatCurrency(getAmount(request))}
+                          </td>
+
                           <td>
                             {formatDate(
-                              request.createdAt || request.created_at
+                              request.createdAt ||
+                                request.created_at
                             )}
                           </td>
+
                           <td>
                             <span
                               className={`admin-status ${statusStyle(status)}`}
@@ -1011,10 +1589,13 @@ export default function AdminPage() {
                               {status.replaceAll("_", " ")}
                             </span>
                           </td>
+
                           <td>
                             <button
                               className="admin-action"
-                              onClick={() => setSelectedRequest(request)}
+                              onClick={() =>
+                                setSelectedRequest(request)
+                              }
                             >
                               <Eye size={15} />
                             </button>
@@ -1029,12 +1610,15 @@ export default function AdminPage() {
           </section>
         )}
 
+        {/* ALL REQUESTS */}
         {activeTab === "All Requests" && (
           <section className="admin-panel">
             <div className="admin-panel-head">
               <div>
                 <h2>All Procurement Requests</h2>
-                <p>Monitor requests submitted by employees.</p>
+                <p>
+                  Monitor requests submitted by employees.
+                </p>
               </div>
 
               <div className="admin-controls">
@@ -1050,22 +1634,38 @@ export default function AdminPage() {
                 <select
                   className="admin-select"
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
+                  onChange={(e) =>
+                    setStatusFilter(e.target.value)
+                  }
                 >
                   <option value="ALL">All statuses</option>
-                  <option value="PENDING_MANAGER">Pending Manager</option>
-                  <option value="MANAGER_APPROVED">Manager Approved</option>
-                  <option value="MANAGER_REJECTED">Manager Rejected</option>
-                  <option value="PENDING_FINANCE">Pending Finance</option>
-                  <option value="FINANCE_APPROVED">Finance Approved</option>
-                  <option value="FINANCE_REJECTED">Finance Rejected</option>
+                  <option value="PENDING_MANAGER">
+                    Pending Manager
+                  </option>
+                  <option value="MANAGER_APPROVED">
+                    Manager Approved
+                  </option>
+                  <option value="MANAGER_REJECTED">
+                    Manager Rejected
+                  </option>
+                  <option value="PENDING_FINANCE">
+                    Pending Finance
+                  </option>
+                  <option value="FINANCE_APPROVED">
+                    Finance Approved
+                  </option>
+                  <option value="FINANCE_REJECTED">
+                    Finance Rejected
+                  </option>
                   <option value="COMPLETED">Completed</option>
                 </select>
               </div>
             </div>
 
             {loading ? (
-              <div className="admin-loading">Loading requests...</div>
+              <div className="admin-loading">
+                Loading requests...
+              </div>
             ) : filteredRequests.length === 0 ? (
               <div className="admin-empty">
                 <ClipboardList size={32} />
@@ -1085,33 +1685,55 @@ export default function AdminPage() {
                       <th>Action</th>
                     </tr>
                   </thead>
+
                   <tbody>
                     {filteredRequests.map((request, index) => {
                       const status = getStatus(request);
 
                       return (
-                        <tr key={request.id || request.requestId || index}>
+                        <tr
+                          key={
+                            request.id ||
+                            request.requestId ||
+                            index
+                          }
+                        >
                           <td>
                             <div className="admin-person">
                               <div className="admin-person-avatar">
-                                {getEmployee(request).charAt(0).toUpperCase()}
+                                {getEmployee(request)
+                                  .charAt(0)
+                                  .toUpperCase()}
                               </div>
                               <div>
-                                <strong>{getEmployee(request)}</strong>
-                                <small>{request.employeeEmail || "Employee"}</small>
+                                <strong>
+                                  {getEmployee(request)}
+                                </strong>
+                                <small>
+                                  {request.employeeEmail || "Employee"}
+                                </small>
                               </div>
                             </div>
                           </td>
+
                           <td>{getProduct(request)}</td>
+
                           <td>
-                            {request.supplier || request.supplierName || "—"}
+                            {request.supplier ||
+                              request.supplierName ||
+                              "—"}
                           </td>
+
                           <td>
                             {request.department ||
                               request.departmentName ||
                               "—"}
                           </td>
-                          <td>{formatCurrency(getAmount(request))}</td>
+
+                          <td>
+                            {formatCurrency(getAmount(request))}
+                          </td>
+
                           <td>
                             <span
                               className={`admin-status ${statusStyle(status)}`}
@@ -1119,10 +1741,13 @@ export default function AdminPage() {
                               {status.replaceAll("_", " ")}
                             </span>
                           </td>
+
                           <td>
                             <button
                               className="admin-action"
-                              onClick={() => setSelectedRequest(request)}
+                              onClick={() =>
+                                setSelectedRequest(request)
+                              }
                             >
                               <Eye size={15} />
                             </button>
@@ -1137,6 +1762,7 @@ export default function AdminPage() {
           </section>
         )}
 
+        {/* EMPLOYEES */}
         {activeTab === "Employees" && (
           <section className="admin-panel">
             <div className="admin-panel-head">
@@ -1156,7 +1782,9 @@ export default function AdminPage() {
             </div>
 
             {loading ? (
-              <div className="admin-loading">Loading users...</div>
+              <div className="admin-loading">
+                Loading users...
+              </div>
             ) : filteredUsers.length === 0 ? (
               <div className="admin-empty">
                 <Users size={32} />
@@ -1178,51 +1806,82 @@ export default function AdminPage() {
                       <th>Details</th>
                     </tr>
                   </thead>
+
                   <tbody>
-                    {filteredUsers.map((user, index) => (
-                      <tr key={user.id || user.userId || index}>
-                        <td>
-                          <div className="admin-person">
-                            <div className="admin-person-avatar">
-                              {(user.name || user.fullName || "U")
-                                .charAt(0)
-                                .toUpperCase()}
+                    {filteredUsers.map((user, index) => {
+                      const userName =
+                        user.name ||
+                        user.fullName ||
+                        user.full_name ||
+                        "Unnamed user";
+
+                      const userRole =
+                        normalizeRole(
+                          user.role ||
+                            user.roleName ||
+                            user.role_name ||
+                            user.roles?.[0]
+                        ) || "—";
+
+                      const isInactive =
+                        user.isActive === false ||
+                        user.is_active === false ||
+                        user.active === false;
+
+                      return (
+                        <tr
+                          key={user.id || user.userId || index}
+                        >
+                          <td>
+                            <div className="admin-person">
+                              <div className="admin-person-avatar">
+                                {userName.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <strong>{userName}</strong>
+                                <small>
+                                  {user.employeeId ||
+                                    user.employee_id ||
+                                    user.id ||
+                                    "—"}
+                                </small>
+                              </div>
                             </div>
-                            <div>
-                              <strong>
-                                {user.name || user.fullName || "Unnamed user"}
-                              </strong>
-                              <small>{user.employeeId || user.id || "—"}</small>
-                            </div>
-                          </div>
-                        </td>
-                        <td>{user.email || "—"}</td>
-                        <td>{user.department || "—"}</td>
-                        <td>{user.role || "—"}</td>
-                        <td>
-                          <span
-                            className={`admin-status ${
-                              user.isActive === false ||
-                              user.active === false
-                                ? "rejected"
-                                : "approved"
-                            }`}
-                          >
-                            {user.isActive === false || user.active === false
-                              ? "INACTIVE"
-                              : "ACTIVE"}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            className="admin-action"
-                            onClick={() => setSelectedUser(user)}
-                          >
-                            <Eye size={15} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+
+                          <td>{user.email || "—"}</td>
+
+                          <td>
+                            {user.department ||
+                              user.departmentName ||
+                              "—"}
+                          </td>
+
+                          <td>{userRole}</td>
+
+                          <td>
+                            <span
+                              className={`admin-status ${
+                                isInactive
+                                  ? "rejected"
+                                  : "approved"
+                              }`}
+                            >
+                              {isInactive ? "INACTIVE" : "ACTIVE"}
+                            </span>
+                          </td>
+
+                          <td>
+                            <button
+                              className="admin-action"
+                              onClick={() => setSelectedUser(user)}
+                            >
+                              <Eye size={15} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1230,17 +1889,22 @@ export default function AdminPage() {
           </section>
         )}
 
+        {/* BUDGETS */}
         {activeTab === "Budgets" && (
           <section className="admin-panel">
             <div className="admin-panel-head">
               <div>
                 <h2>Organization Budgets</h2>
-                <p>View allocated and used budget information.</p>
+                <p>
+                  View allocated and used budget information.
+                </p>
               </div>
             </div>
 
             {loading ? (
-              <div className="admin-loading">Loading budgets...</div>
+              <div className="admin-loading">
+                Loading budgets...
+              </div>
             ) : budgets.length === 0 ? (
               <div className="admin-empty">
                 <Wallet size={32} />
@@ -1256,12 +1920,20 @@ export default function AdminPage() {
                       budget.amount ??
                       0
                   );
+
                   const spent = Number(
-                    budget.spent ?? budget.used ?? budget.committed ?? 0
+                    budget.spent ??
+                      budget.used ??
+                      budget.committed ??
+                      0
                   );
+
                   const percentage =
                     allocated > 0
-                      ? Math.min((spent / allocated) * 100, 100)
+                      ? Math.min(
+                          (spent / allocated) * 100,
+                          100
+                        )
                       : 0;
 
                   return (
@@ -1275,17 +1947,26 @@ export default function AdminPage() {
                           budget.name ||
                           `Budget ${index + 1}`}
                       </h3>
+
                       <p>
                         {budget.fiscalYear ||
                           budget.fiscal_year ||
                           "Current fiscal year"}
                       </p>
-                      <strong>{formatCurrency(allocated)}</strong>
+
+                      <strong>
+                        {formatCurrency(allocated)}
+                      </strong>
+
                       <div className="admin-progress">
-                        <span style={{ width: `${percentage}%` }} />
+                        <span
+                          style={{ width: `${percentage}%` }}
+                        />
                       </div>
+
                       <p style={{ marginTop: 10, marginBottom: 0 }}>
-                        Used: {formatCurrency(spent)} ({percentage.toFixed(0)}%)
+                        Used: {formatCurrency(spent)} (
+                        {percentage.toFixed(0)}%)
                       </p>
                     </div>
                   );
@@ -1294,14 +1975,476 @@ export default function AdminPage() {
             )}
           </section>
         )}
+
+        {/* SUPPLIERS */}
+        {activeTab === "Suppliers" && (
+          <section className="admin-panel">
+            <div className="admin-panel-head">
+              <div>
+                <h2>Supplier Management</h2>
+                <p>
+                  View and manage suppliers registered in your organization.
+                </p>
+              </div>
+
+              <div className="admin-controls">
+                <div className="admin-search">
+                  <Search size={15} color="#8d98aa" />
+                  <input
+                    placeholder="Search suppliers..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+
+                <button
+                  className="supplier-primary-btn"
+                  onClick={() => {
+                    setError("");
+                    setSupplierForm(initialSupplierForm);
+                    setShowSupplierModal(true);
+                  }}
+                  disabled={!canManageSuppliers}
+                  title={
+                    canManageSuppliers
+                      ? "Register a supplier"
+                      : "Only Admin and Finance users can register suppliers"
+                  }
+                >
+                  <Plus size={16} />
+                  Add Supplier
+                </button>
+              </div>
+            </div>
+
+            {!canManageSuppliers && currentRole && (
+              <div
+                style={{
+                  padding: "12px 20px",
+                  color: "#9a6a16",
+                  fontSize: 11,
+                }}
+              >
+                You can view suppliers, but only Admin and Finance users
+                can register or update them.
+              </div>
+            )}
+
+            {loading || supplierLoading ? (
+              <div className="admin-loading">
+                Loading suppliers...
+              </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div className="admin-empty">
+                <Truck size={32} />
+
+                <p>
+                  {search
+                    ? "No suppliers match your search."
+                    : "No suppliers registered yet."}
+                </p>
+
+                {canManageSuppliers && !search && (
+                  <button
+                    className="supplier-primary-btn"
+                    onClick={() => {
+                      setSupplierForm(initialSupplierForm);
+                      setShowSupplierModal(true);
+                    }}
+                  >
+                    <Plus size={15} />
+                    Register First Supplier
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="admin-table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Supplier</th>
+                      <th>Supplier Code</th>
+                      <th>Contact</th>
+                      <th>Category</th>
+                      <th>Location</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {filteredSuppliers.map((supplier, index) => {
+                      const status = getSupplierStatus(supplier);
+
+                      const contactPerson =
+                        supplier.contactPerson ||
+                        supplier.contact_person;
+
+                      const taxId =
+                        supplier.taxId ||
+                        supplier.tax_id ||
+                        supplier.tax_identifier;
+
+                      return (
+                        <tr
+                          key={
+                            supplier.id ||
+                            supplier.supplierId ||
+                            index
+                          }
+                        >
+                          <td>
+                            <div className="admin-person">
+                              <div className="admin-person-avatar">
+                                <Building2 size={15} />
+                              </div>
+
+                              <div>
+                                <strong>
+                                  {getSupplierName(supplier)}
+                                </strong>
+                                <small>{taxId || "Supplier"}</small>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td>
+                            <span className="supplier-code">
+                              {getSupplierCode(supplier)}
+                            </span>
+                          </td>
+
+                          <td>
+                            <div className="supplier-contact">
+                              {supplier.email && (
+                                <span>
+                                  <Mail size={12} />
+                                  {supplier.email}
+                                </span>
+                              )}
+
+                              {(supplier.phone || contactPerson) && (
+                                <span>
+                                  <Phone size={12} />
+                                  {supplier.phone || contactPerson}
+                                </span>
+                              )}
+
+                              {!supplier.email &&
+                                !supplier.phone &&
+                                !contactPerson &&
+                                "—"}
+                            </div>
+                          </td>
+
+                          <td>{supplier.category || "—"}</td>
+
+                          <td>
+                            <span
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                              }}
+                            >
+                              <MapPin size={12} />
+                              {[
+                                supplier.city,
+                                supplier.state,
+                                supplier.country,
+                              ]
+                                .filter(Boolean)
+                                .join(", ") || "—"}
+                            </span>
+                          </td>
+
+                          <td>
+                            <span
+                              className={`admin-status ${statusStyle(status)}`}
+                            >
+                              {status.replaceAll("_", " ")}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
       </main>
 
+      {/* ADD SUPPLIER MODAL */}
+      {showSupplierModal && (
+        <div
+          className="admin-modal-backdrop"
+          onClick={() => {
+            if (!supplierSaving) {
+              setShowSupplierModal(false);
+            }
+          }}
+        >
+          <div
+            className="admin-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="admin-modal-head">
+              <div>
+                <h2>Register New Supplier</h2>
+                <p
+                  style={{
+                    margin: "5px 0 0",
+                    color: "#929daf",
+                    fontSize: 11,
+                  }}
+                >
+                  Enter the supplier's business and contact information.
+                </p>
+              </div>
+
+              <button
+                className="admin-close"
+                onClick={() => setShowSupplierModal(false)}
+                disabled={supplierSaving}
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <form onSubmit={submitSupplier}>
+              <div className="supplier-form-grid">
+                <div className="supplier-section-title">
+                  Basic Information
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Supplier Name *</label>
+                  <input
+                    name="name"
+                    value={supplierForm.name}
+                    onChange={updateSupplierField}
+                    placeholder="Enter legal supplier name"
+                    required
+                    minLength={2}
+                    maxLength={200}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Supplier Code</label>
+                  <input
+                    name="code"
+                    value={supplierForm.code}
+                    onChange={updateSupplierField}
+                    placeholder="e.g. SUP-001 (optional)"
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Category</label>
+                  <input
+                    name="category"
+                    value={supplierForm.category}
+                    onChange={updateSupplierField}
+                    placeholder="e.g. IT Equipment"
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Tax ID / GSTIN</label>
+                  <input
+                    name="taxId"
+                    value={supplierForm.taxId}
+                    onChange={updateSupplierField}
+                    placeholder="Enter GSTIN or tax ID"
+                    maxLength={50}
+                  />
+                </div>
+
+                <div className="supplier-section-title">
+                  Contact Information
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Contact Person</label>
+                  <input
+                    name="contactPerson"
+                    value={supplierForm.contactPerson}
+                    onChange={updateSupplierField}
+                    placeholder="Contact person's name"
+                    maxLength={150}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Email Address</label>
+                  <input
+                    type="email"
+                    name="email"
+                    value={supplierForm.email}
+                    onChange={updateSupplierField}
+                    placeholder="supplier@example.com"
+                    maxLength={254}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Phone Number</label>
+                  <input
+                    name="phone"
+                    value={supplierForm.phone}
+                    onChange={updateSupplierField}
+                    placeholder="Enter phone number"
+                    maxLength={30}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Payment Terms</label>
+                  <input
+                    name="paymentTerms"
+                    value={supplierForm.paymentTerms}
+                    onChange={updateSupplierField}
+                    placeholder="e.g. Net 30"
+                    maxLength={200}
+                  />
+                </div>
+
+                <div className="supplier-section-title">
+                  Business Address
+                </div>
+
+                <div className="supplier-form-field full">
+                  <label>Address</label>
+                  <input
+                    name="address"
+                    value={supplierForm.address}
+                    onChange={updateSupplierField}
+                    placeholder="Street address"
+                    maxLength={500}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>City</label>
+                  <input
+                    name="city"
+                    value={supplierForm.city}
+                    onChange={updateSupplierField}
+                    placeholder="City"
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>State</label>
+                  <input
+                    name="state"
+                    value={supplierForm.state}
+                    onChange={updateSupplierField}
+                    placeholder="State"
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Country</label>
+                  <input
+                    name="country"
+                    value={supplierForm.country}
+                    onChange={updateSupplierField}
+                    placeholder="Country"
+                    maxLength={100}
+                  />
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Postal Code</label>
+                  <input
+                    name="postalCode"
+                    value={supplierForm.postalCode}
+                    onChange={updateSupplierField}
+                    placeholder="Postal code"
+                    maxLength={20}
+                  />
+                </div>
+
+                <div className="supplier-section-title">
+                  Registration Settings
+                </div>
+
+                <div className="supplier-form-field">
+                  <label>Supplier Status</label>
+                  <select
+                    name="status"
+                    value={supplierForm.status}
+                    onChange={updateSupplierField}
+                  >
+                    <option value="pending">Pending</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="suspended">Suspended</option>
+                  </select>
+                </div>
+
+                <div className="supplier-form-field full">
+                  <label>Notes</label>
+                  <textarea
+                    name="notes"
+                    value={supplierForm.notes}
+                    onChange={updateSupplierField}
+                    placeholder="Additional supplier information..."
+                    maxLength={2000}
+                  />
+                </div>
+              </div>
+
+              <div className="supplier-modal-actions">
+                <button
+                  type="button"
+                  className="supplier-secondary-btn"
+                  onClick={() => setShowSupplierModal(false)}
+                  disabled={supplierSaving}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="supplier-primary-btn"
+                  disabled={supplierSaving}
+                >
+                  {supplierSaving ? (
+                    <>
+                      <RefreshCw size={14} />
+                      Registering...
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={15} />
+                      Register Supplier
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* REQUEST DETAILS MODAL */}
       {selectedRequest && (
         <div
           className="admin-modal-backdrop"
           onClick={() => setSelectedRequest(null)}
         >
-          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="admin-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="admin-modal-head">
               <h2>Procurement Request Details</h2>
               <button
@@ -1317,10 +2460,12 @@ export default function AdminPage() {
                 <small>Employee</small>
                 <strong>{getEmployee(selectedRequest)}</strong>
               </div>
+
               <div className="admin-detail">
                 <small>Product</small>
                 <strong>{getProduct(selectedRequest)}</strong>
               </div>
+
               <div className="admin-detail">
                 <small>Supplier</small>
                 <strong>
@@ -1329,6 +2474,7 @@ export default function AdminPage() {
                     "—"}
                 </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Department</small>
                 <strong>
@@ -1337,18 +2483,28 @@ export default function AdminPage() {
                     "—"}
                 </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Quantity</small>
-                <strong>{selectedRequest.quantity ?? "—"}</strong>
+                <strong>
+                  {selectedRequest.quantity ?? "—"}
+                </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Total Amount</small>
-                <strong>{formatCurrency(getAmount(selectedRequest))}</strong>
+                <strong>
+                  {formatCurrency(getAmount(selectedRequest))}
+                </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Status</small>
-                <strong>{getStatus(selectedRequest).replaceAll("_", " ")}</strong>
+                <strong>
+                  {getStatus(selectedRequest).replaceAll("_", " ")}
+                </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Submitted Date</small>
                 <strong>
@@ -1360,7 +2516,10 @@ export default function AdminPage() {
               </div>
             </div>
 
-            <div className="admin-detail" style={{ marginTop: 12 }}>
+            <div
+              className="admin-detail"
+              style={{ marginTop: 12 }}
+            >
               <small>Justification</small>
               <strong>
                 {selectedRequest.justification ||
@@ -1373,12 +2532,16 @@ export default function AdminPage() {
         </div>
       )}
 
+      {/* USER DETAILS MODAL */}
       {selectedUser && (
         <div
           className="admin-modal-backdrop"
           onClick={() => setSelectedUser(null)}
         >
-          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="admin-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="admin-modal-head">
               <h2>User Details</h2>
               <button
@@ -1393,20 +2556,35 @@ export default function AdminPage() {
               <div className="admin-detail">
                 <small>Name</small>
                 <strong>
-                  {selectedUser.name || selectedUser.fullName || "—"}
+                  {selectedUser.name ||
+                    selectedUser.fullName ||
+                    selectedUser.full_name ||
+                    "—"}
                 </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Email</small>
                 <strong>{selectedUser.email || "—"}</strong>
               </div>
+
               <div className="admin-detail">
                 <small>Role</small>
-                <strong>{selectedUser.role || "—"}</strong>
+                <strong>
+                  {normalizeRole(
+                    selectedUser.role ||
+                      selectedUser.roleName ||
+                      selectedUser.role_name ||
+                      selectedUser.roles?.[0]
+                  ) || "—"}
+                </strong>
               </div>
+
               <div className="admin-detail">
                 <small>Department</small>
-                <strong>{selectedUser.department || "—"}</strong>
+                <strong>
+                  {selectedUser.department || "—"}
+                </strong>
               </div>
             </div>
           </div>

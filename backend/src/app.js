@@ -40,6 +40,7 @@ import approvalsRoutes from "./modules/approvals/approvals.routes.js";
 import budgetsRoutes from "./modules/budgets/budgets.routes.js";
 import invoicesRoutes from "./modules/invoices/invoices.routes.js";
 import suppliersRoutes from "./modules/suppliers/suppliers.routes.js";
+import supplierPortalRoutes from "./modules/suppliers/supplier-portal.routes.js";
 import purchaseOrdersRoutes from "./modules/purchase-orders/purchase-orders.routes.js";
 import receiptsRoutes from "./modules/receipts/receipts.routes.js";
 import employeesRoutes from "./modules/employees/employees.routes.js";
@@ -252,6 +253,9 @@ app.use(
   `${API_PREFIX}/suppliers`,
   suppliersRoutes
 );
+
+// Supplier portal API (singular)
+app.use(`${API_PREFIX}/supplier`, supplierPortalRoutes);
 
 // Purchase orders
 app.use(

@@ -12,6 +12,15 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
+  TrendingUp,
+  ShoppingCart,
+  Users,
+  Wallet,
+  Building2,
+  BarChart3,
+  ArrowUpRight,
+  Activity,
+  ChevronRight,
 } from "lucide-react";
 import "./LoginPage.css";
 
@@ -22,63 +31,38 @@ import "./LoginPage.css";
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ||
   "http://localhost:5000/api/v1"
-)
-  .trim()
-  .replace(/\/+$/, "");
+).trim().replace(/\/+$/, "");
 
 const LOGIN_URL = `${API_BASE_URL}/auth/login`;
-const RESEND_VERIFICATION_URL =
-  `${API_BASE_URL}/auth/resend-verification`;
-
+const RESEND_VERIFICATION_URL = `${API_BASE_URL}/auth/resend-verification`;
 const REQUEST_TIMEOUT = 15000;
 
 // --------------------------------------------------
-// ALL 9 ETDOX ROLE DASHBOARDS
+// ROLE DASHBOARDS
 // --------------------------------------------------
 
-const ROLE_DASHBOARDS = {
-  // 1. Employee / Requester
-  employee: "/employee/dashboard",
-  requester: "/employee/dashboard",
-
-  // 2. Department Manager
-  manager: "/manager/dashboard",
-  department_manager: "/manager/dashboard",
-
-  // 3. Finance Manager
-  finance: "/finance/dashboard",
-  finance_manager: "/finance/dashboard",
-
-  // 4. Organization Admin
-  admin: "/admin/dashboard",
-  organization_admin: "/admin/dashboard",
-
-  // 5. Procurement Manager
-  procurement_manager: "/procurement-manager/dashboard",
-
-  // 6. Procurement Specialist
-  procurement_specialist: "/procurement-specialist/dashboard",
-
-  // 7. Auditor
-  auditor: "/auditor/dashboard",
-
-  // 8. Supplier User
-  supplier_user: "/supplier/dashboard",
-
-  // 9. Platform Admin
+const ROLE_DASHBOARDS = Object.freeze({
   platform_admin: "/platform-admin/dashboard",
-};
-
-// --------------------------------------------------
-// ROLE PRIORITY
-// --------------------------------------------------
+  organization_admin: "/admin/dashboard",
+  admin: "/admin/dashboard",
+  procurement_manager: "/procurement-manager/dashboard",
+  procurement_specialist: "/procurement-specialist/dashboard",
+  auditor: "/auditor/dashboard",
+  finance_manager: "/finance/dashboard",
+  finance: "/finance/dashboard",
+  department_manager: "/manager/dashboard",
+  manager: "/manager/dashboard",
+  supplier_user: "/supplier/dashboard",
+  requester: "/employee/dashboard",
+  employee: "/employee/dashboard",
+});
 
 const ROLE_PRIORITY = [
   "platform_admin",
-  "procurement_manager",
-  "procurement_specialist",
   "organization_admin",
   "admin",
+  "procurement_manager",
+  "procurement_specialist",
   "finance_manager",
   "finance",
   "auditor",
@@ -90,7 +74,7 @@ const ROLE_PRIORITY = [
 ];
 
 // --------------------------------------------------
-// ROLE NORMALIZATION
+// ROLE HELPERS
 // --------------------------------------------------
 
 function normalizeRole(role) {
@@ -111,12 +95,22 @@ function normalizeRole(role) {
     .replace(/[\s-]+/g, "_");
 }
 
-// --------------------------------------------------
-// GET ALL USER ROLES
-// --------------------------------------------------
-
 function getUserRoles(user) {
-  const possibleRoles = [
+  const roles = [];
+
+  function addRole(value) {
+    if (!value) return;
+
+    if (Array.isArray(value)) {
+      value.forEach(addRole);
+      return;
+    }
+
+    const normalized = normalizeRole(value);
+    if (normalized) roles.push(normalized);
+  }
+
+  [
     user?.role,
     user?.roleName,
     user?.role_name,
@@ -127,44 +121,16 @@ function getUserRoles(user) {
     user?.primary_role,
     user?.roles,
     user?.account?.role,
+    user?.account?.roles,
     user?.permissions?.role,
-  ];
-
-  const roles = [];
-
-  possibleRoles.forEach((value) => {
-    if (Array.isArray(value)) {
-      value.forEach((item) => {
-        const role = normalizeRole(item);
-
-        if (role) {
-          roles.push(role);
-        }
-      });
-    } else {
-      const role = normalizeRole(value);
-
-      if (role) {
-        roles.push(role);
-      }
-    }
-  });
+  ].forEach(addRole);
 
   return [...new Set(roles)];
 }
 
-// --------------------------------------------------
-// GET PRIMARY ROLE
-// --------------------------------------------------
-
 function getPrimaryRole(user) {
   const roles = getUserRoles(user);
-
-  return (
-    ROLE_PRIORITY.find((role) =>
-      roles.includes(role)
-    ) || ""
-  );
+  return ROLE_PRIORITY.find((role) => roles.includes(role)) || "";
 }
 
 // --------------------------------------------------
@@ -173,24 +139,19 @@ function getPrimaryRole(user) {
 
 async function readResponse(response) {
   const body = await response.text();
-
-  if (!body) {
-    return {};
-  }
+  if (!body) return {};
 
   try {
     return JSON.parse(body);
   } catch {
-    return {
-      message: body,
-    };
+    return { message: body };
   }
 }
 
 function getPayload(data) {
   let payload = data;
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     if (
       payload?.data &&
       typeof payload.data === "object" &&
@@ -208,30 +169,15 @@ function getPayload(data) {
 function getErrorCode(data) {
   const error = data?.error;
 
-  if (
-    typeof error === "object" &&
-    error !== null
-  ) {
-    return (
-      error.code ||
-      data?.code ||
-      data?.errorCode ||
-      ""
-    );
+  if (typeof error === "object" && error !== null) {
+    return error.code || data?.code || data?.errorCode || "";
   }
 
-  return (
-    data?.code ||
-    data?.errorCode ||
-    ""
-  );
+  return data?.code || data?.errorCode || "";
 }
 
 function getErrorMessage(data, fallback) {
-  if (
-    typeof data?.message === "string" &&
-    data.message.trim()
-  ) {
+  if (typeof data?.message === "string" && data.message.trim()) {
     return data.message.trim();
   }
 
@@ -242,14 +188,33 @@ function getErrorMessage(data, fallback) {
     return data.error.message.trim();
   }
 
-  if (
-    typeof data?.error === "string" &&
-    data.error.trim()
-  ) {
+  if (typeof data?.error === "string" && data.error.trim()) {
     return data.error.trim();
   }
 
   return fallback;
+}
+
+function getAuthenticatedUser(payload, data) {
+  return (
+    payload?.user ||
+    payload?.account?.user ||
+    payload?.account ||
+    data?.user ||
+    null
+  );
+}
+
+function getAccessToken(payload, data) {
+  return (
+    payload?.accessToken ||
+    payload?.access_token ||
+    payload?.token ||
+    data?.accessToken ||
+    data?.access_token ||
+    data?.token ||
+    ""
+  );
 }
 
 // --------------------------------------------------
@@ -257,40 +222,283 @@ function getErrorMessage(data, fallback) {
 // --------------------------------------------------
 
 function clearSession() {
-  const keys = [
-    "token",
-    "accessToken",
-    "authToken",
-    "user",
-  ];
-
-  keys.forEach((key) => {
+  ["token", "accessToken", "authToken", "user"].forEach((key) => {
     localStorage.removeItem(key);
     sessionStorage.removeItem(key);
   });
 }
 
 function saveSession(user, token) {
-  clearSession();
-
-  if (
-    typeof token !== "string" ||
-    !token.trim()
-  ) {
+  if (typeof token !== "string" || !token.trim()) {
     throw new Error(
       "The login API did not return a valid access token."
     );
   }
 
+  if (!user || typeof user !== "object" || Array.isArray(user)) {
+    throw new Error(
+      "The login API did not return valid user details."
+    );
+  }
+
   const normalizedToken = token.trim();
 
-  localStorage.setItem("token", normalizedToken);
-  localStorage.setItem("accessToken", normalizedToken);
-  localStorage.setItem("authToken", normalizedToken);
+  clearSession();
 
-  localStorage.setItem(
-    "user",
-    JSON.stringify(user)
+  localStorage.setItem("accessToken", normalizedToken);
+  localStorage.setItem("token", normalizedToken);
+  localStorage.setItem("authToken", normalizedToken);
+  localStorage.setItem("user", JSON.stringify(user));
+}
+
+// --------------------------------------------------
+// ANALYTICS DISPLAY
+// Sample data only — not connected to backend APIs.
+// --------------------------------------------------
+
+function OrganizationShowcase() {
+  const activity = [
+    { month: "May", value: 44 },
+    { month: "Jun", value: 59 },
+    { month: "Jul", value: 48 },
+    { month: "Aug", value: 73 },
+    { month: "Sep", value: 62 },
+    { month: "Oct", value: 87 },
+    { month: "Nov", value: 76 },
+  ];
+
+  return (
+    <section className="organization-showcase">
+      <div className="showcase-decoration showcase-decoration-one" />
+      <div className="showcase-decoration showcase-decoration-two" />
+
+      {/* ORGANIZATION HEADER */}
+
+      <header className="showcase-header">
+        <Link to="/landingpage" className="showcase-logo">
+          <span className="showcase-logo-icon">
+            <Building2 size={19} />
+          </span>
+
+          <span className="showcase-logo-copy">
+            <strong>ETDOX</strong>
+            <small>ORGANIZATION</small>
+          </span>
+        </Link>
+
+        <div className="showcase-status">
+          <span className="status-indicator" />
+          ENTERPRISE PLATFORM
+        </div>
+      </header>
+
+      {/* INTRODUCTION */}
+
+      <div className="showcase-intro">
+        <span className="showcase-eyebrow">
+          <span />
+          THE FUTURE OF PROCUREMENT
+        </span>
+
+        <h2>
+          Every decision.
+          <br />
+          <span>One connected platform.</span>
+        </h2>
+
+        <p>
+          Manage purchasing, suppliers, finance, and organizational
+          operations with clarity, control, and confidence.
+        </p>
+      </div>
+
+      {/* KPI ROW */}
+
+      <div className="showcase-kpis">
+        <article className="showcase-kpi">
+          <div className="kpi-top">
+            <span className="kpi-icon kpi-icon-blue">
+              <Wallet size={17} />
+            </span>
+            <span className="kpi-caption">SPEND OVERVIEW</span>
+          </div>
+          <strong>₹24.8L</strong>
+          <small><TrendingUp size={12} /> Illustrative figure</small>
+        </article>
+
+        <article className="showcase-kpi">
+          <div className="kpi-top">
+            <span className="kpi-icon kpi-icon-cyan">
+              <ShoppingCart size={17} />
+            </span>
+            <span className="kpi-caption">PURCHASE ORDERS</span>
+          </div>
+          <strong>128</strong>
+          <small>Sample dashboard metric</small>
+        </article>
+
+        <article className="showcase-kpi">
+          <div className="kpi-top">
+            <span className="kpi-icon kpi-icon-purple">
+              <Users size={17} />
+            </span>
+            <span className="kpi-caption">SUPPLIERS</span>
+          </div>
+          <strong>46</strong>
+          <small>Sample dashboard metric</small>
+        </article>
+      </div>
+
+      {/* MAIN SPEND CHART */}
+
+      <article className="showcase-panel spend-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="panel-overline">FINANCIAL INSIGHTS</span>
+            <h3>Procurement spend</h3>
+          </div>
+
+          <span className="sample-tag">SAMPLE DATA</span>
+        </div>
+
+        <div className="spend-summary">
+          <div>
+            <strong>₹24.8L</strong>
+            <span>Illustrative total spend</span>
+          </div>
+          <span className="spend-trend">
+            <TrendingUp size={13} />
+            Trend preview
+          </span>
+        </div>
+
+        <div className="spend-graph">
+          <div className="spend-axis">
+            <span>30L</span>
+            <span>20L</span>
+            <span>10L</span>
+            <span>0</span>
+          </div>
+
+          <div className="spend-graph-area">
+            <div className="spend-grid">
+              <i />
+              <i />
+              <i />
+              <i />
+            </div>
+
+            <svg
+              viewBox="0 0 600 180"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="Illustrative procurement spend trend"
+              className="spend-line-chart"
+            >
+              <defs>
+                <linearGradient id="etdoxLine" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#40d8e8" />
+                  <stop offset="100%" stopColor="#6e9cff" />
+                </linearGradient>
+
+                <linearGradient id="etdoxArea" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#40d8e8" stopOpacity=".27" />
+                  <stop offset="100%" stopColor="#40d8e8" stopOpacity="0" />
+                </linearGradient>
+              </defs>
+
+              <path
+                d="M0 145 C45 139 55 116 95 122 S150 103 190 110 S235 77 280 88 S335 62 375 74 S430 42 470 53 S530 23 600 17 L600 180 L0 180 Z"
+                fill="url(#etdoxArea)"
+              />
+
+              <path
+                d="M0 145 C45 139 55 116 95 122 S150 103 190 110 S235 77 280 88 S335 62 375 74 S430 42 470 53 S530 23 600 17"
+                fill="none"
+                stroke="url(#etdoxLine)"
+                strokeWidth="3.5"
+                strokeLinecap="round"
+              />
+
+              <circle cx="600" cy="17" r="5" fill="#69e4ee" stroke="#102c4b" strokeWidth="3" />
+            </svg>
+
+            <div className="spend-months">
+              <span>May</span>
+              <span>Jun</span>
+              <span>Jul</span>
+              <span>Aug</span>
+              <span>Sep</span>
+              <span>Oct</span>
+              <span>Nov</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      {/* SUPPORTING ANALYTICS */}
+
+      <div className="showcase-bottom">
+        <article className="showcase-panel mini-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="panel-overline">PROCUREMENT</span>
+              <h3>Monthly activity</h3>
+            </div>
+            <Activity size={17} />
+          </div>
+
+          <div className="activity-graph">
+            {activity.map((item) => (
+              <div className="activity-column" key={item.month}>
+                <div className="activity-track">
+                  <span style={{ height: `${item.value}%` }} />
+                </div>
+                <small>{item.month}</small>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="showcase-panel mini-panel supplier-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="panel-overline">ORGANIZATION</span>
+              <h3>Supplier network</h3>
+            </div>
+            <Users size={17} />
+          </div>
+
+          <div className="supplier-content">
+            <div className="supplier-ring">
+              <div>
+                <strong>46</strong>
+                <small>SUPPLIERS</small>
+              </div>
+            </div>
+
+            <div className="supplier-legend">
+              <span><i className="supplier-blue" /> Active</span>
+              <span><i className="supplier-cyan" /> Review</span>
+              <span><i className="supplier-purple" /> Pending</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      {/* FOOTER */}
+
+      <footer className="showcase-footer">
+        <div className="showcase-security">
+          <ShieldCheck size={15} />
+          <span>Secure enterprise access</span>
+        </div>
+
+        <span className="showcase-footer-label">
+          PROCUREMENT · FINANCE · SUPPLIERS
+        </span>
+      </footer>
+    </section>
   );
 }
 
@@ -304,83 +512,66 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
   const [showPassword, setShowPassword] = useState(false);
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState("");
-
   const [resending, setResending] = useState(false);
   const [resendStatus, setResendStatus] = useState("");
 
   const noticeMessage = location.state?.message;
 
   // ------------------------------------------------
-  // HANDLE LOGIN
+  // LOGIN
   // ------------------------------------------------
 
   async function handleSubmit(event) {
     event.preventDefault();
-
     if (loading) return;
 
     setError("");
     setErrorCode("");
     setResendStatus("");
 
-    const normalizedEmail = email
-      .trim()
-      .toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
     if (!normalizedEmail || !password) {
-      setError(
-        "Enter your email address and password."
-      );
+      setError("Enter your email address and password.");
       return;
     }
 
     setLoading(true);
 
     const controller = new AbortController();
-
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, REQUEST_TIMEOUT);
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT
+    );
 
     try {
       const response = await fetch(LOGIN_URL, {
         method: "POST",
-
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
-
         credentials: "include",
-
         body: JSON.stringify({
           email: normalizedEmail,
           password,
         }),
-
         signal: controller.signal,
       });
 
       const data = await readResponse(response);
 
-      // --------------------------------------------
-      // HANDLE API ERRORS
-      // --------------------------------------------
-
       if (!response.ok) {
         const code = getErrorCode(data);
-
         setErrorCode(code);
 
         if (response.status === 401) {
           throw new Error(
-            "Invalid email or password. Check your credentials and make sure this account exists in the ETDOX database."
+            "Invalid email or password. Check your credentials and try again."
           );
         }
 
@@ -388,126 +579,98 @@ export default function Login() {
           throw new Error(
             getErrorMessage(
               data,
-              "Access denied. Your account may need verification or authorization."
+              "Access denied. Your account may need verification or administrator approval."
             )
           );
         }
 
         if (response.status === 429) {
           throw new Error(
-            "Too many login attempts. Please wait a moment before trying again."
+            "Too many login attempts. Please wait before trying again."
           );
         }
 
         if (response.status >= 500) {
           throw new Error(
-            "The ETDOX server encountered an error. Check the backend terminal for details."
+            getErrorMessage(
+              data,
+              "The ETDOX server encountered an error. Check the backend terminal."
+            )
           );
         }
 
         throw new Error(
-          getErrorMessage(
-            data,
-            `Login failed with HTTP ${response.status}.`
-          )
+          getErrorMessage(data, `Login failed with HTTP ${response.status}.`)
         );
       }
-
-      // --------------------------------------------
-      // EXTRACT RESPONSE DATA
-      // --------------------------------------------
 
       const payload = getPayload(data);
+      const token = getAccessToken(payload, data);
+      const user = getAuthenticatedUser(payload, data);
 
-      const token =
-        payload?.accessToken ||
-        payload?.access_token ||
-        payload?.token ||
-        data?.accessToken ||
-        data?.access_token ||
-        data?.token ||
-        "";
-
-      const user =
-        payload?.user ||
-        data?.user ||
-        payload?.account ||
-        null;
-
-      if (
-        !user ||
-        typeof user !== "object" ||
-        Array.isArray(user)
-      ) {
+      if (!user || typeof user !== "object" || Array.isArray(user)) {
         throw new Error(
-          "Login succeeded, but the API response did not include valid user details. Check the backend login response."
+          "Login succeeded, but the API response did not include valid user details."
         );
       }
-
-      // --------------------------------------------
-      // IDENTIFY ROLE
-      // --------------------------------------------
 
       const roles = getUserRoles(user);
-      const role = getPrimaryRole(user);
+      const primaryRole = getPrimaryRole(user);
 
-      if (!role || !ROLE_DASHBOARDS[role]) {
+      if (!roles.length || !primaryRole) {
         throw new Error(
-          "Your account does not have a supported ETDOX role. Contact your administrator to assign the correct role."
+          "Your account does not have a supported ETDOX role. Contact your administrator."
         );
       }
 
-      // --------------------------------------------
-      // GET ROLE DASHBOARD
-      // --------------------------------------------
+      const dashboard = ROLE_DASHBOARDS[primaryRole];
 
-      const dashboard = ROLE_DASHBOARDS[role];
+      if (!dashboard) {
+        throw new Error(
+          `No dashboard is configured for role: ${primaryRole}.`
+        );
+      }
 
-      // --------------------------------------------
-      // PREPARE AUTHENTICATED USER
-      // --------------------------------------------
+      const userId = user.id || user.userId || user.user_id;
+
+      if (!userId) {
+        throw new Error(
+          "The login response is missing the user ID. Contact your administrator."
+        );
+      }
 
       const authenticatedUser = {
         ...user,
-
+        id: userId,
         email: user.email || normalizedEmail,
-
-        role,
-
+        role: primaryRole,
+        roleName: primaryRole,
         roles,
       };
 
-      // --------------------------------------------
-      // SAVE SESSION
-      // --------------------------------------------
-
       try {
-        saveSession(
-          authenticatedUser,
-          token
-        );
+        saveSession(authenticatedUser, token);
       } catch (storageError) {
         clearSession();
 
         console.error(
-          "[ETDOX Login] Unable to save session:",
+          "[ETDOX Login] Session storage error:",
           storageError
         );
 
         throw new Error(
-          storageError?.message ||
-            "Unable to save your login session. Check browser storage settings."
+          storageError?.message || "Unable to save your login session."
         );
       }
 
-      // --------------------------------------------
-      // NAVIGATE TO ROLE DASHBOARD
-      // --------------------------------------------
-
-      navigate(dashboard, {
-        replace: true,
+      console.info("[ETDOX Login] Authentication successful", {
+        userId,
+        roles,
+        primaryRole,
+        dashboard,
       });
 
+      navigate(dashboard, { replace: true });
     } catch (err) {
       if (err?.name === "AbortError") {
         setError(
@@ -515,20 +678,16 @@ export default function Login() {
         );
       } else if (err instanceof TypeError) {
         setError(
-          `Cannot connect to the API at ${API_BASE_URL}. Check that the backend is running and CORS allows your frontend origin.`
+          `Cannot connect to the API at ${API_BASE_URL}. Check the backend and CORS configuration.`
         );
       } else {
-        setError(
-          err?.message ||
-            "Login failed. Please try again."
-        );
+        setError(err?.message || "Login failed. Please try again.");
       }
 
       console.error("[ETDOX Login Error]", {
         endpoint: LOGIN_URL,
         message: err?.message,
       });
-
     } finally {
       window.clearTimeout(timeoutId);
       setLoading(false);
@@ -536,47 +695,33 @@ export default function Login() {
   }
 
   // ------------------------------------------------
-  // RESEND VERIFICATION EMAIL
+  // RESEND VERIFICATION
   // ------------------------------------------------
 
   async function handleResendVerification() {
-    const normalizedEmail = email
-      .trim()
-      .toLowerCase();
-
-    if (!normalizedEmail || resending) {
-      return;
-    }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || resending) return;
 
     setResending(true);
     setResendStatus("");
 
     const controller = new AbortController();
-
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, REQUEST_TIMEOUT);
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT
+    );
 
     try {
-      const response = await fetch(
-        RESEND_VERIFICATION_URL,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-
-          credentials: "include",
-
-          body: JSON.stringify({
-            email: normalizedEmail,
-          }),
-
-          signal: controller.signal,
-        }
-      );
+      const response = await fetch(RESEND_VERIFICATION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ email: normalizedEmail }),
+        signal: controller.signal,
+      });
 
       const data = await readResponse(response);
 
@@ -595,14 +740,12 @@ export default function Login() {
           )
         );
       }
-
     } catch (err) {
       setResendStatus(
         err?.name === "AbortError"
           ? "The request timed out. Please try again."
           : "Could not contact the server. Check your connection and try again."
       );
-
     } finally {
       window.clearTimeout(timeoutId);
       setResending(false);
@@ -615,279 +758,227 @@ export default function Login() {
 
   return (
     <main className="login-page">
-      <section
-        className="login-card"
-        aria-labelledby="login-title"
-      >
-        {/* BRAND */}
+      <div className="login-layout">
 
-        <Link
-          to="/landingpage"
-          className="login-brand"
-          aria-label="ETDOX home"
-        >
-          <span className="login-brand-icon">
-            <ShieldCheck
-              size={27}
-              aria-hidden="true"
-            />
-          </span>
+        {/* LEFT: LOGIN FORM */}
 
-          <span className="login-brand-text">
-            <strong>ETDOX</strong>
-            <small>Enterprise Platform</small>
-          </span>
-        </Link>
+        <section className="login-card" aria-labelledby="login-title">
+          <div className="login-card-content">
 
-        {/* HEADING */}
+            <Link
+              to="/landingpage"
+              className="login-brand"
+              aria-label="ETDOX home"
+            >
+              <span className="login-brand-icon">
+                <ShieldCheck size={25} />
+              </span>
 
-        <header className="login-heading">
-          <span className="login-eyebrow">
-            SECURE WORKSPACE ACCESS
-          </span>
+              <span className="login-brand-text">
+                <strong>ETDOX</strong>
+                <small>Enterprise Platform</small>
+              </span>
+            </Link>
 
-          <h1 id="login-title">
-            Welcome back
-          </h1>
+            <header className="login-heading">
+              <span className="login-eyebrow">
+                YOUR WORKSPACE AWAITS
+              </span>
 
-          <p>
-            Sign in to continue to your ETDOX procurement dashboard.
-          </p>
-        </header>
+              <h1 id="login-title">Welcome back.</h1>
 
-        {/* NOTICE */}
+              <p>
+                Sign in to access your organization's procurement
+                workspace and business operations.
+              </p>
+            </header>
 
-        {noticeMessage && (
-          <div
-            className="login-notice-banner"
-            role="status"
-          >
-            <Info
-              size={17}
-              aria-hidden="true"
-            />
+            {noticeMessage && (
+              <div className="login-notice-banner" role="status">
+                <Info size={17} />
+                <span>{noticeMessage}</span>
+              </div>
+            )}
 
-            <span>{noticeMessage}</span>
-          </div>
-        )}
+            {error && (
+              <div
+                className="login-error"
+                role="alert"
+                aria-live="polite"
+              >
+                <AlertCircle size={18} />
 
-        {/* ERROR */}
+                <div className="error-body">
+                  <span>{error}</span>
 
-        {error && (
-          <div
-            className="login-error"
-            role="alert"
-            aria-live="polite"
-          >
-            <AlertCircle
-              size={18}
-              aria-hidden="true"
-            />
+                  {errorCode === "EMAIL_NOT_VERIFIED" && (
+                    <div className="unverified-action">
+                      <button
+                        type="button"
+                        className="inline-resend-btn"
+                        onClick={handleResendVerification}
+                        disabled={resending}
+                      >
+                        {resending
+                          ? "Sending…"
+                          : "Resend verification email"}
+                      </button>
 
-            <div className="error-body">
-              <span>{error}</span>
-
-              {errorCode === "EMAIL_NOT_VERIFIED" && (
-                <div className="unverified-action">
-                  <button
-                    type="button"
-                    className="inline-resend-btn"
-                    onClick={handleResendVerification}
-                    disabled={resending}
-                  >
-                    {resending
-                      ? "Sending…"
-                      : "Resend verification email"}
-                  </button>
-
-                  {resendStatus && (
-                    <div
-                      className="inline-resend-feedback"
-                      role="status"
-                    >
-                      {resendStatus}
+                      {resendStatus && (
+                        <div
+                          className="inline-resend-feedback"
+                          role="status"
+                        >
+                          {resendStatus}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
+              </div>
+            )}
 
-        {/* LOGIN FORM */}
+            <form className="login-form" onSubmit={handleSubmit}>
+              <div className="form-group">
+                <label htmlFor="email">Work email address</label>
 
-        <form
-          className="login-form"
-          onSubmit={handleSubmit}
-        >
-          {/* EMAIL */}
+                <div className="input-wrapper">
+                  <Mail size={18} aria-hidden="true" />
 
-          <div className="form-group">
-            <label htmlFor="email">
-              Email address
-            </label>
+                  <input
+                    id="email"
+                    name="email"
+                    type="email"
+                    placeholder="name@organization.com"
+                    value={email}
+                    onChange={(event) => {
+                      setEmail(event.target.value);
+                      setError("");
+                      setErrorCode("");
+                      setResendStatus("");
+                    }}
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+              </div>
 
-            <div className="input-wrapper">
-              <Mail
-                size={19}
-                aria-hidden="true"
-              />
+              <div className="form-group">
+                <div className="label-with-link">
+                  <label htmlFor="password">Password</label>
 
-              <input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="Enter your company email"
-                value={email}
-                onChange={(event) => {
-                  setEmail(event.target.value);
-                  setError("");
-                  setErrorCode("");
-                  setResendStatus("");
-                }}
-                autoComplete="username"
-                autoCapitalize="none"
-                spellCheck={false}
-                required
-                disabled={loading}
-              />
-            </div>
-          </div>
+                  <Link
+                    to="/forgot-password"
+                    className="auth-subtle-link"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
 
-          {/* PASSWORD */}
+                <div className="input-wrapper">
+                  <LockKeyhole size={18} aria-hidden="true" />
 
-          <div className="form-group">
-            <div className="label-with-link">
-              <label htmlFor="password">
-                Password
-              </label>
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value);
+                      setError("");
+                      setErrorCode("");
+                      setResendStatus("");
+                    }}
+                    autoComplete="current-password"
+                    required
+                    disabled={loading}
+                  />
 
-              <Link
-                to="/forgot-password"
-                className="auth-subtle-link"
-              >
-                Forgot password?
-              </Link>
-            </div>
-
-            <div className="input-wrapper">
-              <LockKeyhole
-                size={19}
-                aria-hidden="true"
-              />
-
-              <input
-                id="password"
-                name="password"
-                type={
-                  showPassword
-                    ? "text"
-                    : "password"
-                }
-                placeholder="Enter your password"
-                value={password}
-                onChange={(event) => {
-                  setPassword(event.target.value);
-                  setError("");
-                  setErrorCode("");
-                  setResendStatus("");
-                }}
-                autoComplete="current-password"
-                required
-                disabled={loading}
-              />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() =>
+                      setShowPassword((visible) => !visible)
+                    }
+                    aria-label={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                    aria-pressed={showPassword}
+                    disabled={loading}
+                  >
+                    {showPassword ? (
+                      <EyeOff size={18} />
+                    ) : (
+                      <Eye size={18} />
+                    )}
+                  </button>
+                </div>
+              </div>
 
               <button
-                type="button"
-                className="password-toggle"
-                onClick={() =>
-                  setShowPassword((visible) => !visible)
-                }
-                aria-label={
-                  showPassword
-                    ? "Hide password"
-                    : "Show password"
-                }
-                aria-pressed={showPassword}
+                type="submit"
+                className="login-button"
                 disabled={loading}
               >
-                {showPassword ? (
-                  <EyeOff
-                    size={19}
-                    aria-hidden="true"
-                  />
+                {loading ? (
+                  <>
+                    <LoaderCircle
+                      size={19}
+                      className="login-spinner"
+                    />
+                    Signing in…
+                  </>
                 ) : (
-                  <Eye
-                    size={19}
-                    aria-hidden="true"
-                  />
+                  <>
+                    Access workspace
+                    <ArrowRight size={18} />
+                  </>
                 )}
               </button>
+            </form>
+
+            <div className="login-divider">
+              <span />
+              <small>SECURE ORGANIZATION ACCESS</small>
+              <span />
             </div>
+
+            <div className="login-security-note">
+              <ShieldCheck size={16} />
+              <span>
+                Your account is protected with secure authentication.
+              </span>
+            </div>
+
+            <footer className="login-footer">
+              <p>
+                New to ETDOX?{" "}
+                <Link to="/register" className="login-link-bold">
+                  Create an account
+                </Link>
+              </p>
+
+              <Link to="/landingpage" className="back-home-link">
+                Back to ETDOX home
+                <ChevronRight size={14} />
+              </Link>
+            </footer>
           </div>
 
-          {/* SUBMIT */}
+          <div className="login-card-bottom">
+            <span>© {new Date().getFullYear()} ETDOX</span>
+            <span>Enterprise Procurement Platform</span>
+          </div>
+        </section>
 
-          <button
-            type="submit"
-            className="login-button"
-            disabled={loading}
-          >
-            {loading ? (
-              <>
-                <LoaderCircle
-                  size={19}
-                  className="login-spinner spin"
-                  aria-hidden="true"
-                />
+        {/* RIGHT: ORGANIZATION ANALYTICS */}
 
-                Signing in…
-              </>
-            ) : (
-              <>
-                Sign in
-
-                <ArrowRight
-                  size={19}
-                  aria-hidden="true"
-                />
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* SECURITY */}
-
-        <div className="login-security-note">
-          <CheckCircle2
-            size={16}
-            aria-hidden="true"
-          />
-
-          <span>
-            Protected with secure authentication and enterprise encryption
-          </span>
-        </div>
-
-        {/* FOOTER */}
-
-        <footer className="login-footer">
-          <p>
-            Don't have an account?{" "}
-
-            <Link
-              to="/register"
-              className="login-link-bold"
-            >
-              Create an account
-            </Link>
-          </p>
-
-          <Link to="/landingpage">
-            Back to home
-          </Link>
-        </footer>
-      </section>
+        <OrganizationShowcase />
+      </div>
     </main>
   );
 }
