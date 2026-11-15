@@ -1,4 +1,4 @@
-// backend/src/modules/notifications/notifications.controller.js
+
 
 import {
   listNotificationsService,
